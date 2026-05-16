@@ -1,0 +1,29 @@
+[workspace]
+members = [
+  "crates/nafm-core",
+  "crates/nafm-cli",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://example.invalid/nafm"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+blake3 = "1.8.2"
+chrono = { version = "0.4.41", features = ["serde"] }
+clap = { version = "4.5.38", features = ["derive"] }
+directories = "6.0.0"
+indicatif = "0.17.11"
+rusqlite = { version = "0.32.1", features = ["bundled", "chrono"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tempfile = "3.20.0"
+thiserror = "2.0.12"
+tokio = { version = "1.45.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+trash = "5.2.2"
+uuid = { version = "1.16.0", features = ["v4", "serde"] }
+walkdir = "2.5.0"
