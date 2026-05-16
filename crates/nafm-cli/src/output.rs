@@ -29,9 +29,9 @@ pub fn spinner(json: bool, message: &'static str) -> ProgressBar {
   spinner
 }
 
-pub fn folder_label(id: &str, alias: Option<&str>, path: &Path) -> String {
+pub fn folder_label(display_name: &str, alias: Option<&str>, path: &Path) -> String {
   match alias {
-    Some(alias) => format!("{alias} ({id}) at {}", path.display()),
-    None => format!("{id} at {}", path.display()),
+    Some(alias) => format!("{alias} ({display_name}) at {}", path.display()),
+    None => format!("{display_name} at {}", path.display()),
   }
 }

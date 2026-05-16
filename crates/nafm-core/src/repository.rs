@@ -63,12 +63,14 @@ impl Repository {
       let path = std::fs::canonicalize(&request.path)?;
       let conn = Connection::open(db_path)?;
       let now = Utc::now();
-      let id = folder_id_from_path(&path);
+      let id = Uuid::new_v4().to_string();
+      let display_name = folder_display_name_from_path(&path);
       conn.execute(
-        "insert into folders (id, path, alias, hidden_policy, added_at)
-         values (?1, ?2, ?3, ?4, ?5)",
+        "insert into folders (id, display_name, path, alias, hidden_policy, added_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
           id,
+          display_name,
           path.to_string_lossy(),
           request.alias,
           hidden_policy_to_db(request.hidden_policy),
@@ -77,6 +79,7 @@ impl Repository {
       )?;
       Ok(Folder {
         id,
+        display_name,
         path,
         alias: request.alias,
         hidden_policy: request.hidden_policy,
@@ -202,6 +205,7 @@ impl Repository {
 
         create table if not exists folders (
           id text primary key not null,
+          display_name text not null,
           path text not null unique,
           alias text unique,
           hidden_policy text not null,
@@ -223,6 +227,7 @@ impl Repository {
         create index if not exists idx_files_hash_size on files(content_hash, size_bytes);
         ",
       )?;
+      ensure_folders_display_name_column(&conn)?;
       Ok(())
     })
     .await?
@@ -297,6 +302,7 @@ fn scan_folder_blocking(conn: &Connection, folder: &Folder) -> Result<ScanSummar
 
   Ok(ScanSummary {
     folder_id: folder.id.clone(),
+    folder_name: folder.display_name.clone(),
     files_seen,
     files_hashed,
     files_reused,
@@ -552,9 +558,9 @@ fn duplicate_file_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Duplicat
 
 fn list_folders(conn: &Connection) -> Result<Vec<Folder>> {
   let mut stmt = conn.prepare(
-    "select id, path, alias, hidden_policy, added_at
+    "select id, display_name, path, alias, hidden_policy, added_at
      from folders
-     order by coalesce(alias, path)",
+     order by coalesce(alias, display_name, path)",
   )?;
   stmt
     .query_map([], folder_from_row)?
@@ -565,9 +571,9 @@ fn list_folders(conn: &Connection) -> Result<Vec<Folder>> {
 fn find_folder(conn: &Connection, selector: &str) -> Result<Option<Folder>> {
   conn
     .query_row(
-      "select id, path, alias, hidden_policy, added_at
+      "select id, display_name, path, alias, hidden_policy, added_at
        from folders
-       where id = ?1 or alias = ?1 or path = ?1",
+       where id = ?1 or display_name = ?1 or alias = ?1 or path = ?1",
       params![selector],
       folder_from_row,
     )
@@ -576,13 +582,14 @@ fn find_folder(conn: &Connection, selector: &str) -> Result<Option<Folder>> {
 }
 
 fn folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Folder> {
-  let hidden_policy: String = row.get(3)?;
+  let hidden_policy: String = row.get(4)?;
   Ok(Folder {
     id: row.get(0)?,
-    path: PathBuf::from(row.get::<_, String>(1)?),
-    alias: row.get(2)?,
+    display_name: row.get(1)?,
+    path: PathBuf::from(row.get::<_, String>(2)?),
+    alias: row.get(3)?,
     hidden_policy: hidden_policy_from_db(&hidden_policy),
-    added_at: row.get(4)?,
+    added_at: row.get(5)?,
   })
 }
 
@@ -600,7 +607,7 @@ fn hidden_policy_from_db(value: &str) -> HiddenPolicy {
   }
 }
 
-fn folder_id_from_path(path: &Path) -> String {
+fn folder_display_name_from_path(path: &Path) -> String {
   let name = path
     .file_name()
     .and_then(|name| name.to_str())
@@ -624,4 +631,43 @@ fn sanitize_folder_name(name: &str) -> String {
     }
   }
   sanitized.trim_matches('-').to_owned()
+}
+
+fn ensure_folders_display_name_column(conn: &Connection) -> Result<()> {
+  let mut stmt = conn.prepare("pragma table_info(folders)")?;
+  let has_display_name = stmt
+    .query_map([], |row| row.get::<_, String>(1))?
+    .collect::<std::result::Result<Vec<_>, _>>()?
+    .iter()
+    .any(|column| column == "display_name");
+
+  if !has_display_name {
+    conn.execute(
+      "alter table folders add column display_name text not null default ''",
+      [],
+    )?;
+  }
+
+  let mut stmt = conn.prepare("select id, path, display_name from folders")?;
+  let rows = stmt
+    .query_map([], |row| {
+      Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+      ))
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+  for (id, path, display_name) in rows {
+    if display_name.is_empty() {
+      let derived_name = folder_display_name_from_path(Path::new(&path));
+      conn.execute(
+        "update folders set display_name = ?1 where id = ?2",
+        params![derived_name, id],
+      )?;
+    }
+  }
+
+  Ok(())
 }

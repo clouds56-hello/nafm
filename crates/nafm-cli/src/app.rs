@@ -35,7 +35,7 @@ async fn handle_folder(repo: &Repository, command: FolderCommand, json: bool) ->
       print_json_or(json, &folder, || {
         println!(
           "added folder {}",
-          folder_label(&folder.id, folder.alias.as_deref(), &folder.path)
+          folder_label(&folder.display_name, folder.alias.as_deref(), &folder.path)
         );
       })?;
     }
@@ -47,9 +47,10 @@ async fn handle_folder(repo: &Repository, command: FolderCommand, json: bool) ->
         } else {
           for folder in &folders {
             println!(
-              "{}  {}  hidden={:?}",
-              folder.id,
+              "{}  {}  id={}  hidden={:?}",
+              folder.display_name,
               folder.alias.as_deref().unwrap_or("-"),
+              folder.id,
               folder.hidden_policy
             );
             println!("  {}", folder.path.display());
@@ -83,7 +84,7 @@ async fn handle_scan(repo: &Repository, selector: Option<String>, json: bool) ->
     for summary in &summaries {
       println!(
         "folder {}: {} files, {} hashed, {} reused, {} duplicate groups",
-        summary.folder_id, summary.files_seen, summary.files_hashed, summary.files_reused, summary.duplicate_groups
+        summary.folder_name, summary.files_seen, summary.files_hashed, summary.files_reused, summary.duplicate_groups
       );
     }
   })?;

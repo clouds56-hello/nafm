@@ -13,6 +13,7 @@ pub enum HiddenPolicy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Folder {
   pub id: String,
+  pub display_name: String,
   pub path: PathBuf,
   pub alias: Option<String>,
   pub hidden_policy: HiddenPolicy,
@@ -29,6 +30,7 @@ pub struct AddFolderRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScanSummary {
   pub folder_id: String,
+  pub folder_name: String,
   pub files_seen: u64,
   pub files_hashed: u64,
   pub files_reused: u64,

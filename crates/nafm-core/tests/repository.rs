@@ -15,6 +15,7 @@ async fn scan_finds_exact_duplicates_and_reuses_hashes() {
 
   let first = fixture.repo.scan_folder(&folder.id).await.unwrap();
   assert_eq!(first.files_seen, 3);
+  assert_eq!(first.folder_name, folder.display_name);
   assert_eq!(first.files_hashed, 2);
   assert_eq!(first.duplicate_groups, 1);
   assert_eq!(first.duplicate_files, 2);
@@ -129,7 +130,7 @@ async fn scan_invalidates_stale_hash_when_same_size_file_changes() {
 }
 
 #[tokio::test]
-async fn add_folder_uses_stable_name_plus_path_hash_id() {
+async fn add_folder_uses_uuid_id_and_stable_display_name() {
   let fixture = Fixture::new().await;
   let named_dir = fixture.root.path().join("Project Files");
   fs::create_dir(&named_dir).unwrap();
@@ -143,8 +144,9 @@ async fn add_folder_uses_stable_name_plus_path_hash_id() {
     .await
     .unwrap();
 
-  assert!(folder.id.starts_with("project-files-"));
-  assert_eq!(folder.id.len(), "project-files-".len() + 10);
+  assert!(uuid::Uuid::parse_str(&folder.id).is_ok());
+  assert!(folder.display_name.starts_with("project-files-"));
+  assert_eq!(folder.display_name.len(), "project-files-".len() + 10);
 }
 
 struct Fixture {
