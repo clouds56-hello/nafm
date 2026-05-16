@@ -111,6 +111,40 @@ async fn scan_hashes_cross_folder_size_collisions_for_global_duplicates() {
     assert_eq!(duplicates[0].files.len(), 2);
 }
 
+#[tokio::test]
+async fn scan_invalidates_stale_hash_when_same_size_file_changes() {
+    let fixture = Fixture::new().await;
+    let first_path = fixture.root.path().join("a.txt");
+    let second_path = fixture.root.path().join("b.txt");
+    fs::write(&first_path, "same").unwrap();
+    fs::write(&second_path, "same").unwrap();
+
+    fixture.add_folder("docs", HiddenPolicy::Include).await;
+    fixture.repo.scan_folder("docs").await.unwrap();
+    assert_eq!(
+        fixture
+            .repo
+            .find_duplicates(Some("docs"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    fs::write(&second_path, "diff").unwrap();
+
+    fixture.repo.scan_folder("docs").await.unwrap();
+    assert!(
+        fixture
+            .repo
+            .find_duplicates(Some("docs"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 struct Fixture {
     root: TempDir,
     _cache: TempDir,

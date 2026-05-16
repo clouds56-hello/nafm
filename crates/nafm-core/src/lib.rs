@@ -363,7 +363,20 @@ fn scan_folder_blocking(conn: &Connection, folder: &Folder) -> Result<ScanSummar
                     }
                 }
             } else {
-                existing.and_then(|record| record.content_hash)
+                match existing {
+                    Some(record)
+                        if record.content_hash.is_some()
+                            && record_matches(
+                                conn,
+                                &record.id,
+                                file.size_bytes,
+                                file.modified_unix_nanos,
+                            )? =>
+                    {
+                        record.content_hash
+                    }
+                    _ => None,
+                }
             };
 
             upsert_file(conn, folder, file, hash.as_deref(), scan_time)?;
