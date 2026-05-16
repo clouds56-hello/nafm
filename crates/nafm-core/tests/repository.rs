@@ -128,6 +128,25 @@ async fn scan_invalidates_stale_hash_when_same_size_file_changes() {
   assert!(fixture.repo.find_duplicates(Some("docs")).await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn add_folder_uses_stable_name_plus_path_hash_id() {
+  let fixture = Fixture::new().await;
+  let named_dir = fixture.root.path().join("Project Files");
+  fs::create_dir(&named_dir).unwrap();
+  let folder = fixture
+    .repo
+    .add_folder(AddFolderRequest {
+      path: named_dir,
+      alias: Some("docs".to_owned()),
+      hidden_policy: HiddenPolicy::Include,
+    })
+    .await
+    .unwrap();
+
+  assert!(folder.id.starts_with("project-files-"));
+  assert_eq!(folder.id.len(), "project-files-".len() + 10);
+}
+
 struct Fixture {
   root: TempDir,
   _cache: TempDir,

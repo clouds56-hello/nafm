@@ -63,7 +63,7 @@ impl Repository {
       let path = std::fs::canonicalize(&request.path)?;
       let conn = Connection::open(db_path)?;
       let now = Utc::now();
-      let id = Uuid::new_v4().to_string();
+      let id = folder_id_from_path(&path);
       conn.execute(
         "insert into folders (id, path, alias, hidden_policy, added_at)
          values (?1, ?2, ?3, ?4, ?5)",
@@ -598,4 +598,30 @@ fn hidden_policy_from_db(value: &str) -> HiddenPolicy {
     "skip" => HiddenPolicy::Skip,
     _ => HiddenPolicy::Include,
   }
+}
+
+fn folder_id_from_path(path: &Path) -> String {
+  let name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .map(sanitize_folder_name)
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| "folder".to_owned());
+  let hash = blake3::hash(path.to_string_lossy().as_bytes()).to_hex().to_string();
+  format!("{name}-{}", &hash[..10])
+}
+
+fn sanitize_folder_name(name: &str) -> String {
+  let mut sanitized = String::with_capacity(name.len());
+  let mut last_was_dash = false;
+  for ch in name.chars() {
+    if ch.is_ascii_alphanumeric() {
+      sanitized.push(ch.to_ascii_lowercase());
+      last_was_dash = false;
+    } else if !last_was_dash {
+      sanitized.push('-');
+      last_was_dash = true;
+    }
+  }
+  sanitized.trim_matches('-').to_owned()
 }
