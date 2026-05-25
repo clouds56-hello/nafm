@@ -15,7 +15,8 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanProgress, ScanSummary,
-  Site, SiteFolder, StageAddReport, StageCommitDryRun, StageWarning, StageWarningReason,
+  Site, SiteFolder, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport,
+  StageWarning, StageWarningReason,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -63,6 +64,23 @@ struct ScanProgressContext {
 #[derive(Clone, Debug)]
 struct StagedFileRecord {
   file: DuplicateFile,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StageMutationKind {
+  Add,
+  Remove,
+  Reset,
+}
+
+impl StageMutationKind {
+  fn as_str(self) -> &'static str {
+    match self {
+      StageMutationKind::Add => "add",
+      StageMutationKind::Remove => "remove",
+      StageMutationKind::Reset => "reset",
+    }
+  }
 }
 
 impl Repository {
@@ -305,6 +323,44 @@ impl Repository {
     .await?
   }
 
+  pub async fn stage_remove_path(&self, path: &Path) -> Result<StageRemoveReport> {
+    let db_path = self.db_path.clone();
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let canonical_path = std::fs::canonicalize(&path)?;
+      stage_remove_path(&conn, &canonical_path)
+    })
+    .await?
+  }
+
+  pub async fn stage_reset(&self) -> Result<StageResetReport> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      stage_reset(&conn)
+    })
+    .await?
+  }
+
+  pub async fn stage_undo(&self) -> Result<StageHistoryReport> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      stage_undo(&conn)
+    })
+    .await?
+  }
+
+  pub async fn stage_redo(&self) -> Result<StageHistoryReport> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      stage_redo(&conn)
+    })
+    .await?
+  }
+
   async fn initialize(&self) -> Result<()> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
@@ -354,8 +410,26 @@ impl Repository {
           file_id text primary key not null references file_records(id) on delete cascade,
           added_at text not null
         );
+
+        create table if not exists stage_snapshots (
+          id integer primary key autoincrement,
+          mutation_kind text not null,
+          created_at text not null
+        );
+
+        create table if not exists stage_snapshot_files (
+          snapshot_id integer not null references stage_snapshots(id) on delete cascade,
+          file_id text not null references file_records(id) on delete cascade,
+          primary key(snapshot_id, file_id)
+        );
+
+        create table if not exists stage_state (
+          singleton integer primary key check (singleton = 1),
+          current_snapshot_id integer references stage_snapshots(id)
+        );
         ",
       )?;
+      initialize_stage_history(&conn)?;
       Ok(())
     })
     .await?
@@ -898,10 +972,113 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
     }
   }
 
+  if !staged_now.is_empty() {
+    record_stage_snapshot(conn, StageMutationKind::Add)?;
+  }
+
   Ok(StageAddReport {
     staged_files: staged_now,
     warnings,
   })
+}
+
+fn stage_remove_path(conn: &Connection, canonical_path: &Path) -> Result<StageRemoveReport> {
+  let staged_files = list_staged_files(conn)?;
+  let staged_by_path = staged_files
+    .iter()
+    .map(|record| (record.file.path.clone(), record.file.clone()))
+    .collect::<BTreeMap<_, _>>();
+
+  let removed_files = if canonical_path.is_dir() {
+    staged_by_path
+      .values()
+      .filter(|file| file.path.starts_with(canonical_path))
+      .cloned()
+      .collect::<Vec<_>>()
+  } else {
+    match staged_by_path.get(canonical_path) {
+      Some(file) => vec![file.clone()],
+      None => Vec::new(),
+    }
+  };
+
+  let mut warnings = Vec::new();
+  if canonical_path.is_file() && removed_files.is_empty() {
+    let warning_reason = if tracked_file_exists(conn, canonical_path)? {
+      StageWarningReason::NotStaged
+    } else {
+      StageWarningReason::NotTracked
+    };
+    warnings.push(StageWarning {
+      path: canonical_path.to_path_buf(),
+      reason: warning_reason,
+    });
+  }
+
+  if canonical_path.is_dir() && removed_files.is_empty() {
+    if tracked_descendant_exists(conn, canonical_path)? {
+      warnings.push(StageWarning {
+        path: canonical_path.to_path_buf(),
+        reason: StageWarningReason::NotStaged,
+      });
+    } else {
+      return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
+    }
+  }
+
+  if !removed_files.is_empty() {
+    for file in &removed_files {
+      conn.execute("delete from stage_entries where file_id = ?1", params![file.file_id])?;
+    }
+    record_stage_snapshot(conn, StageMutationKind::Remove)?;
+  }
+
+  Ok(StageRemoveReport {
+    removed_files,
+    warnings,
+  })
+}
+
+fn stage_reset(conn: &Connection) -> Result<StageResetReport> {
+  let removed_files = list_staged_files(conn)?
+    .into_iter()
+    .map(|record| record.file)
+    .collect::<Vec<_>>();
+  if !removed_files.is_empty() {
+    conn.execute("delete from stage_entries", [])?;
+    record_stage_snapshot(conn, StageMutationKind::Reset)?;
+  }
+  Ok(StageResetReport { removed_files })
+}
+
+fn stage_undo(conn: &Connection) -> Result<StageHistoryReport> {
+  let current_snapshot_id = current_stage_snapshot_id(conn)?;
+  let previous_snapshot_id = conn
+    .query_row(
+      "select id from stage_snapshots where id < ?1 order by id desc limit 1",
+      params![current_snapshot_id],
+      |row| row.get::<_, i64>(0),
+    )
+    .optional()?;
+  let Some(previous_snapshot_id) = previous_snapshot_id else {
+    return Err(NafmError::StageHistoryUnavailable("undo"));
+  };
+  restore_stage_snapshot(conn, previous_snapshot_id)
+}
+
+fn stage_redo(conn: &Connection) -> Result<StageHistoryReport> {
+  let current_snapshot_id = current_stage_snapshot_id(conn)?;
+  let next_snapshot_id = conn
+    .query_row(
+      "select id from stage_snapshots where id > ?1 order by id asc limit 1",
+      params![current_snapshot_id],
+      |row| row.get::<_, i64>(0),
+    )
+    .optional()?;
+  let Some(next_snapshot_id) = next_snapshot_id else {
+    return Err(NafmError::StageHistoryUnavailable("redo"));
+  };
+  restore_stage_snapshot(conn, next_snapshot_id)
 }
 
 fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
@@ -985,6 +1162,95 @@ fn list_staged_files(conn: &Connection) -> Result<Vec<StagedFileRecord>> {
       })
     })?
     .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+fn tracked_descendant_exists(conn: &Connection, path: &Path) -> Result<bool> {
+  let prefix = format!("{}/%", path.to_string_lossy());
+  conn
+    .query_row(
+      "select exists(select 1 from file_records where path like ?1)",
+      params![prefix],
+      |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn initialize_stage_history(conn: &Connection) -> Result<()> {
+  conn.execute(
+    "insert or ignore into stage_state (singleton, current_snapshot_id) values (1, null)",
+    [],
+  )?;
+  let current_snapshot_id = current_stage_snapshot_id_optional(conn)?;
+  if current_snapshot_id.is_none() {
+    record_stage_snapshot(conn, StageMutationKind::Reset)?;
+  }
+  Ok(())
+}
+
+fn record_stage_snapshot(conn: &Connection, mutation_kind: StageMutationKind) -> Result<i64> {
+  let now = Utc::now();
+  let current_snapshot_id = current_stage_snapshot_id_optional(conn)?;
+  if let Some(current_snapshot_id) = current_snapshot_id {
+    conn.execute(
+      "delete from stage_snapshots where id > ?1",
+      params![current_snapshot_id],
+    )?;
+  }
+  conn.execute(
+    "insert into stage_snapshots (mutation_kind, created_at) values (?1, ?2)",
+    params![mutation_kind.as_str(), now],
+  )?;
+  let snapshot_id = conn.last_insert_rowid();
+  conn.execute(
+    "insert into stage_snapshot_files (snapshot_id, file_id)
+     select ?1, file_id from stage_entries",
+    params![snapshot_id],
+  )?;
+  conn.execute(
+    "update stage_state set current_snapshot_id = ?1 where singleton = 1",
+    params![snapshot_id],
+  )?;
+  Ok(snapshot_id)
+}
+
+fn restore_stage_snapshot(conn: &Connection, snapshot_id: i64) -> Result<StageHistoryReport> {
+  conn.execute("delete from stage_entries", [])?;
+  let now = Utc::now();
+  conn.execute(
+    "insert into stage_entries (file_id, added_at)
+     select file_id, ?2
+     from stage_snapshot_files
+     where snapshot_id = ?1",
+    params![snapshot_id, now],
+  )?;
+  conn.execute(
+    "update stage_state set current_snapshot_id = ?1 where singleton = 1",
+    params![snapshot_id],
+  )?;
+  let restored_files = list_staged_files(conn)?
+    .into_iter()
+    .map(|record| record.file)
+    .collect::<Vec<_>>();
+  Ok(StageHistoryReport {
+    applied: true,
+    restored_files,
+  })
+}
+
+fn current_stage_snapshot_id(conn: &Connection) -> Result<i64> {
+  current_stage_snapshot_id_optional(conn)?.ok_or(NafmError::StageHistoryUnavailable("undo"))
+}
+
+fn current_stage_snapshot_id_optional(conn: &Connection) -> Result<Option<i64>> {
+  conn
+    .query_row(
+      "select current_snapshot_id from stage_state where singleton = 1",
+      [],
+      |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(|row| row.flatten())
     .map_err(Into::into)
 }
 

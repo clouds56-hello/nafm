@@ -97,6 +97,7 @@ pub enum StageWarningReason {
   NotTracked,
   NotDuplicate,
   AlreadyStaged,
+  NotStaged,
   WouldRemoveLastCopy,
 }
 
@@ -104,6 +105,23 @@ pub enum StageWarningReason {
 pub struct StageAddReport {
   pub staged_files: Vec<DuplicateFile>,
   pub warnings: Vec<StageWarning>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageRemoveReport {
+  pub removed_files: Vec<DuplicateFile>,
+  pub warnings: Vec<StageWarning>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageResetReport {
+  pub removed_files: Vec<DuplicateFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageHistoryReport {
+  pub applied: bool,
+  pub restored_files: Vec<DuplicateFile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

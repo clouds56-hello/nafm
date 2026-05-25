@@ -12,6 +12,8 @@ pub enum NafmError {
   SiteFolderNotFound(String),
   #[error("no tracked file or folder found at path: {0}")]
   TrackedPathNotFound(PathBuf),
+  #[error("no stage history available for {0}")]
+  StageHistoryUnavailable(&'static str),
   #[error("site name cannot be empty")]
   EmptySiteName,
   #[error("cache path has no parent directory: {0}")]

@@ -53,6 +53,60 @@ async fn handle_stage(repo: &Repository, command: StageCommand, json: bool) -> R
         }
       })?;
     }
+    StageCommand::Remove { path } => {
+      let report = repo.stage_remove_path(&path).await?;
+      print_json_or(json, &report, || {
+        if report.removed_files.is_empty() {
+          println!("no files removed from stage");
+        } else {
+          println!("removed {} files from stage:", report.removed_files.len());
+          for file in &report.removed_files {
+            println!("  {}", file.path.display());
+          }
+        }
+        if !report.warnings.is_empty() {
+          println!("warnings:");
+          for warning in &report.warnings {
+            println!("  {}: {}", warning.path.display(), stage_warning_label(&warning.reason));
+          }
+        }
+      })?;
+    }
+    StageCommand::Undo => {
+      let report = repo.stage_undo().await?;
+      print_json_or(json, &report, || {
+        if report.applied {
+          println!("stage undo restored {} staged files", report.restored_files.len());
+          for file in &report.restored_files {
+            println!("  {}", file.path.display());
+          }
+        }
+      })?;
+    }
+    StageCommand::Redo => {
+      let report = repo.stage_redo().await?;
+      print_json_or(json, &report, || {
+        if report.applied {
+          println!("stage redo restored {} staged files", report.restored_files.len());
+          for file in &report.restored_files {
+            println!("  {}", file.path.display());
+          }
+        }
+      })?;
+    }
+    StageCommand::Reset => {
+      let report = repo.stage_reset().await?;
+      print_json_or(json, &report, || {
+        if report.removed_files.is_empty() {
+          println!("stage already empty");
+        } else {
+          println!("removed {} files from stage:", report.removed_files.len());
+          for file in &report.removed_files {
+            println!("  {}", file.path.display());
+          }
+        }
+      })?;
+    }
     StageCommand::Commit => {
       let report = repo.stage_commit_dry_run().await?;
       print_json_or(json, &report, || {
@@ -259,6 +313,7 @@ fn stage_warning_label(reason: &nafm_core::StageWarningReason) -> &'static str {
     nafm_core::StageWarningReason::NotTracked => "not tracked",
     nafm_core::StageWarningReason::NotDuplicate => "not duplicate",
     nafm_core::StageWarningReason::AlreadyStaged => "already staged",
+    nafm_core::StageWarningReason::NotStaged => "not staged",
     nafm_core::StageWarningReason::WouldRemoveLastCopy => "would remove last copy",
   }
 }

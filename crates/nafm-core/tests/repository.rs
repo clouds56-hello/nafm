@@ -338,6 +338,85 @@ async fn stage_commit_dry_run_reports_remaining_duplicates() {
   assert_eq!(report.duplicate_file_count_after, 2);
 }
 
+#[tokio::test]
+async fn stage_remove_path_unstages_a_file() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  let first_file = first.join("a.txt");
+  fs::write(&first_file, "same").unwrap();
+  fs::write(second.join("b.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &second, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  fixture.repo.stage_add_path(&first_file).await.unwrap();
+  let report = fixture.repo.stage_remove_path(&first_file).await.unwrap();
+  assert_eq!(report.removed_files.len(), 1);
+
+  let commit = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert!(commit.staged_files.is_empty());
+}
+
+#[tokio::test]
+async fn stage_reset_clears_all_staged_files() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  let third = fixture.mkdir("third");
+  fs::write(first.join("a.txt"), "same").unwrap();
+  fs::write(second.join("b.txt"), "same").unwrap();
+  fs::write(third.join("c.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &second, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &third, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  fixture.repo.stage_add_path(&first.join("a.txt")).await.unwrap();
+  fixture.repo.stage_add_path(&second.join("b.txt")).await.unwrap();
+  let report = fixture.repo.stage_reset().await.unwrap();
+
+  assert_eq!(report.removed_files.len(), 2);
+  assert!(
+    fixture
+      .repo
+      .stage_commit_dry_run()
+      .await
+      .unwrap()
+      .staged_files
+      .is_empty()
+  );
+}
+
+#[tokio::test]
+async fn stage_undo_and_redo_restore_stage_state() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  let first_file = first.join("a.txt");
+  fs::write(&first_file, "same").unwrap();
+  fs::write(second.join("b.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &second, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  fixture.repo.stage_add_path(&first_file).await.unwrap();
+  fixture.repo.stage_remove_path(&first_file).await.unwrap();
+
+  let undo = fixture.repo.stage_undo().await.unwrap();
+  assert_eq!(undo.restored_files.len(), 1);
+  assert!(undo.restored_files[0].path.ends_with("a.txt"));
+
+  let redo = fixture.repo.stage_redo().await.unwrap();
+  assert!(redo.restored_files.is_empty());
+}
+
 struct Fixture {
   root: TempDir,
   _cache: TempDir,

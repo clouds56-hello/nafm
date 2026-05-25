@@ -52,6 +52,10 @@ pub enum SiteCommand {
 #[derive(Debug, Subcommand)]
 pub enum StageCommand {
   Add { path: PathBuf },
+  Remove { path: PathBuf },
+  Undo,
+  Redo,
+  Reset,
   Commit,
 }
 
