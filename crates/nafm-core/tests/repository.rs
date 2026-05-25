@@ -842,9 +842,7 @@ impl StageModel {
     }
     self.cursor -= 1;
     self.stage = self.snapshots[self.cursor].clone();
-    Some(sorted_paths(
-      self.stage.iter().collect::<Vec<_>>().iter().map(|path| *path),
-    ))
+    Some(sorted_paths(self.stage.iter().collect::<Vec<_>>().iter().copied()))
   }
 
   fn redo(&mut self) -> Option<Vec<PathBuf>> {
@@ -853,9 +851,7 @@ impl StageModel {
     }
     self.cursor += 1;
     self.stage = self.snapshots[self.cursor].clone();
-    Some(sorted_paths(
-      self.stage.iter().collect::<Vec<_>>().iter().map(|path| *path),
-    ))
+    Some(sorted_paths(self.stage.iter().collect::<Vec<_>>().iter().copied()))
   }
 
   fn add_file(&mut self, path: &Path) -> ModelMutation {
