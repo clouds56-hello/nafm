@@ -6,7 +6,7 @@ use clap::Parser;
 use nafm_core::{AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
 
 use crate::cli::{Cli, Command, HiddenArg, SiteCommand};
-use crate::output::{print_json_or, site_folder_label, spinner};
+use crate::output::{format_duplicate_groups_by_folder, print_json_or, site_folder_label, spinner};
 
 pub async fn run() -> Result<()> {
   let cli = Cli::parse();
@@ -138,26 +138,21 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
 }
 
 async fn handle_duplicates(repo: &Repository, selector: &str, json: bool) -> Result<()> {
+  let site_selector = if selector == "all" { None } else { Some(selector) };
   let groups = if selector == "all" {
     repo.find_duplicates(None).await?
   } else {
     repo.find_duplicates(Some(selector)).await?
   };
+  let file_counts_by_parent_folder = repo.file_counts_by_parent_folder(site_selector).await?;
   print_json_or(json, &groups, || {
     if groups.is_empty() {
       println!("no duplicates found");
-    }
-    for group in &groups {
+    } else {
       println!(
-        "group {}: {} files, {} bytes each, algo={}",
-        group.group_id,
-        group.files.len(),
-        group.size_bytes,
-        group.hash_algorithm
+        "{}",
+        format_duplicate_groups_by_folder(&groups, &file_counts_by_parent_folder)
       );
-      for file in &group.files {
-        println!("  {}  {}", file.file_id, file.path.display());
-      }
     }
   })?;
   Ok(())

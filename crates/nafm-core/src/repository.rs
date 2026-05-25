@@ -168,6 +168,24 @@ impl Repository {
     .await?
   }
 
+  pub async fn file_counts_by_parent_folder(&self, site_selector: Option<&str>) -> Result<BTreeMap<String, u64>> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.map(str::to_owned);
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site_id = match site_selector {
+        Some(selector) => Some(
+          find_site(&conn, &selector)?
+            .ok_or_else(|| NafmError::SiteNotFound(selector))?
+            .id,
+        ),
+        None => None,
+      };
+      file_counts_by_parent_folder(&conn, site_id.as_deref())
+    })
+    .await?
+  }
+
   pub async fn scan_all(&self) -> Result<Vec<ScanSummary>> {
     self.scan_all_with_progress(None).await
   }
@@ -772,6 +790,36 @@ fn list_site_folders(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Sit
       .collect::<std::result::Result<Vec<_>, _>>()
       .map_err(Into::into)
   }
+}
+
+fn file_counts_by_parent_folder(conn: &Connection, site_id: Option<&str>) -> Result<BTreeMap<String, u64>> {
+  let paths = if let Some(site_id) = site_id {
+    let mut stmt = conn.prepare(
+      "select path
+       from file_records
+       where site_id = ?1",
+    )?;
+    stmt
+      .query_map(params![site_id], |row| row.get::<_, String>(0))?
+      .collect::<std::result::Result<Vec<_>, _>>()?
+  } else {
+    let mut stmt = conn.prepare("select path from file_records")?;
+    stmt
+      .query_map([], |row| row.get::<_, String>(0))?
+      .collect::<std::result::Result<Vec<_>, _>>()?
+  };
+
+  let mut counts = BTreeMap::new();
+  for path in paths {
+    let parent = Path::new(&path)
+      .parent()
+      .unwrap_or_else(|| Path::new(""))
+      .display()
+      .to_string();
+    *counts.entry(parent).or_insert(0) += 1;
+  }
+
+  Ok(counts)
 }
 
 fn find_site(conn: &Connection, selector: &str) -> Result<Option<Site>> {
