@@ -880,12 +880,6 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
     }
   }
 
-  let tracked_descendant_paths = if canonical_path.is_dir() {
-    tracked_file_paths_under_prefix(conn, canonical_path)?
-  } else {
-    Vec::new()
-  };
-
   let requested_files = if canonical_path.is_dir() {
     files_by_path
       .values()
@@ -899,10 +893,7 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
         if tracked_file_exists(conn, canonical_path)? {
           return Ok(StageAddReport {
             staged_files: Vec::new(),
-            warnings: vec![StageWarning {
-              path: canonical_path.to_path_buf(),
-              reason: StageWarningReason::NotDuplicate,
-            }],
+            warnings: Vec::new(),
           });
         }
         return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
@@ -911,37 +902,11 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
   };
 
   if canonical_path.is_dir() && requested_files.is_empty() {
-    if !tracked_descendant_paths.is_empty() {
-      return Ok(StageAddReport {
-        staged_files: Vec::new(),
-        warnings: tracked_descendant_paths
-          .into_iter()
-          .map(|path| StageWarning {
-            path,
-            reason: StageWarningReason::NotDuplicate,
-          })
-          .collect(),
-      });
-    }
     return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
   }
 
   let mut requested_by_group = BTreeMap::<String, Vec<DuplicateFile>>::new();
   let mut warnings = Vec::new();
-  if canonical_path.is_dir() {
-    let duplicate_paths = requested_files
-      .iter()
-      .map(|file| file.path.clone())
-      .collect::<std::collections::HashSet<_>>();
-    for path in tracked_descendant_paths {
-      if !duplicate_paths.contains(&path) {
-        warnings.push(StageWarning {
-          path,
-          reason: StageWarningReason::NotDuplicate,
-        });
-      }
-    }
-  }
   for file in requested_files {
     if staged_by_path.contains_key(&file.path) {
       warnings.push(StageWarning {

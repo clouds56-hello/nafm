@@ -308,13 +308,7 @@ async fn stage_add_folder_recursively_stages_duplicate_files_and_warns_on_last_c
   let report = fixture.repo.stage_add_path(&root).await.unwrap();
   assert_eq!(report.staged_files.len(), 2);
   assert!(report.staged_files.iter().any(|file| file.path.ends_with("left.txt")));
-  assert_eq!(report.warnings.len(), 2);
-  assert!(
-    report
-      .warnings
-      .iter()
-      .any(|warning| warning.path.ends_with("unique.txt"))
-  );
+  assert_eq!(report.warnings.len(), 1);
   assert!(
     report
       .warnings
@@ -439,11 +433,7 @@ async fn stage_add_unique_only_folder_warns_instead_of_failing() {
   fixture.add_site_folder("docs", &root, HiddenPolicy::Include).await;
   fixture.repo.scan_site("docs").await.unwrap();
 
-  let report = fixture.repo.stage_add_path(&root).await.unwrap();
-  assert!(report.staged_files.is_empty());
-  assert_eq!(report.warnings.len(), 1);
-  assert!(report.warnings[0].path.ends_with("only.txt"));
-  assert!(matches!(report.warnings[0].reason, StageWarningReason::NotDuplicate));
+  assert!(fixture.repo.stage_add_path(&root).await.is_err());
 }
 
 #[tokio::test]
@@ -563,13 +553,16 @@ async fn stage_randomized_sequence_matches_model() {
     match rng.next_u64() % 6 {
       0 => {
         let target = add_targets[rng.index(add_targets.len())].clone();
-        let repo_report = fixture.repo().stage_add_path(&target).await.unwrap();
         let model_report = model.add_path(&target);
-        assert_eq!(
-          sorted_paths(repo_report.staged_files.iter().map(|file| &file.path)),
-          model_report.changed_paths
-        );
-        assert_eq!(sorted_warning_reasons(&repo_report), model_report.warning_reasons);
+        let repo_result = fixture.repo().stage_add_path(&target).await;
+        assert_eq!(repo_result.is_err(), model_report.expect_error);
+        if let Ok(repo_report) = repo_result {
+          assert_eq!(
+            sorted_paths(repo_report.staged_files.iter().map(|file| &file.path)),
+            model_report.changed_paths
+          );
+          assert_eq!(sorted_warning_reasons(&repo_report), model_report.warning_reasons);
+        }
       }
       1 => {
         let target = remove_targets[rng.index(remove_targets.len())].clone();
@@ -839,6 +832,7 @@ impl StageModel {
     ModelMutation {
       changed_paths: sorted_paths(changed_paths.iter()),
       warning_reasons: Vec::new(),
+      expect_error: false,
     }
   }
 
@@ -872,13 +866,14 @@ impl StageModel {
       return ModelMutation {
         changed_paths,
         warning_reasons,
+        expect_error: false,
       };
     }
     let Some(group_index) = self.group_index_for(&path) else {
-      warning_reasons.push((path, StageWarningReason::NotDuplicate));
       return ModelMutation {
         changed_paths,
         warning_reasons,
+        expect_error: false,
       };
     };
     if self.stage.contains(&path) {
@@ -886,6 +881,7 @@ impl StageModel {
       return ModelMutation {
         changed_paths,
         warning_reasons,
+        expect_error: false,
       };
     }
     let group = &self.groups[group_index];
@@ -903,6 +899,7 @@ impl StageModel {
     ModelMutation {
       changed_paths: sorted_paths(changed_paths.iter()),
       warning_reasons: sort_model_warnings(warning_reasons),
+      expect_error: false,
     }
   }
 
@@ -911,6 +908,7 @@ impl StageModel {
       return ModelMutation {
         changed_paths: Vec::new(),
         warning_reasons: Vec::new(),
+        expect_error: false,
       };
     };
     let mut warnings = Vec::new();
@@ -920,23 +918,11 @@ impl StageModel {
       .cloned()
       .collect::<Vec<_>>();
     if duplicate_candidates.is_empty() {
-      warnings.extend(
-        tracked_descendants
-          .iter()
-          .cloned()
-          .map(|tracked| (tracked, StageWarningReason::NotDuplicate)),
-      );
       return ModelMutation {
         changed_paths: Vec::new(),
         warning_reasons: sort_model_warnings(warnings),
+        expect_error: true,
       };
-    }
-
-    let duplicate_set = duplicate_candidates.iter().cloned().collect::<BTreeSet<_>>();
-    for tracked in tracked_descendants {
-      if !duplicate_set.contains(tracked) {
-        warnings.push((tracked.clone(), StageWarningReason::NotDuplicate));
-      }
     }
 
     let mut requested_by_group = BTreeMap::<usize, Vec<PathBuf>>::new();
@@ -988,6 +974,7 @@ impl StageModel {
     ModelMutation {
       changed_paths: sorted_paths(changed_paths.iter()),
       warning_reasons: sort_model_warnings(warnings),
+      expect_error: false,
     }
   }
 
@@ -999,6 +986,7 @@ impl StageModel {
       return ModelMutation {
         changed_paths,
         warning_reasons: Vec::new(),
+        expect_error: false,
       };
     }
 
@@ -1010,6 +998,7 @@ impl StageModel {
     ModelMutation {
       changed_paths: Vec::new(),
       warning_reasons: vec![(path, reason)],
+      expect_error: false,
     }
   }
 
@@ -1018,6 +1007,7 @@ impl StageModel {
       return ModelMutation {
         changed_paths: Vec::new(),
         warning_reasons: Vec::new(),
+        expect_error: false,
       };
     };
     let removed = tracked_descendants
@@ -1029,6 +1019,7 @@ impl StageModel {
       return ModelMutation {
         changed_paths: Vec::new(),
         warning_reasons: vec![(path.to_path_buf(), StageWarningReason::NotStaged)],
+        expect_error: false,
       };
     }
 
@@ -1039,6 +1030,7 @@ impl StageModel {
     ModelMutation {
       changed_paths: sorted_paths(removed.iter()),
       warning_reasons: Vec::new(),
+      expect_error: false,
     }
   }
 
@@ -1059,6 +1051,7 @@ impl StageModel {
 struct ModelMutation {
   changed_paths: Vec<PathBuf>,
   warning_reasons: Vec<(PathBuf, StageWarningReason)>,
+  expect_error: bool,
 }
 
 fn sort_model_warnings(mut warnings: Vec<(PathBuf, StageWarningReason)>) -> Vec<(PathBuf, StageWarningReason)> {
