@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions};
 use tempfile::TempDir;
@@ -173,6 +173,41 @@ async fn changing_hash_algorithm_invalidates_cached_hashes() {
   assert_eq!(summary.files_hashed, 2);
   assert_eq!(summary.files_reused, 0);
   assert_eq!(duplicates.len(), 1);
+}
+
+#[tokio::test]
+async fn scan_site_reports_current_file_progress() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("a.txt"), "alpha").unwrap();
+  fs::write(docs.join("b.txt"), "beta").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let seen_clone = seen.clone();
+  fixture
+    .repo
+    .scan_site_with_progress(
+      "docs",
+      Some(Arc::new(move |progress| {
+        seen_clone.lock().unwrap().push((
+          progress.current_path.clone(),
+          progress.files_scanned,
+          progress.total_files,
+        ));
+      })),
+    )
+    .await
+    .unwrap();
+
+  let seen = seen.lock().unwrap();
+  assert_eq!(seen.len(), 2);
+  assert_eq!(seen[0].1, 1);
+  assert_eq!(seen[0].2, 2);
+  assert!(seen.iter().any(|(path, _, _)| path.ends_with("a.txt")));
+  assert!(seen.iter().any(|(path, _, _)| path.ends_with("b.txt")));
 }
 
 struct Fixture {

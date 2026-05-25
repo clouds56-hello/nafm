@@ -46,6 +46,15 @@ pub struct ScanSummary {
   pub duplicate_files: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct ScanProgress {
+  pub site_id: String,
+  pub site_name: String,
+  pub current_path: PathBuf,
+  pub files_scanned: u64,
+  pub total_files: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DuplicateFile {
   pub file_id: String,

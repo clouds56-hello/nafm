@@ -13,8 +13,11 @@ use walkdir::{DirEntry, WalkDir};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
-  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanSummary, Site, SiteFolder,
+  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanProgress, ScanSummary,
+  Site, SiteFolder,
 };
+
+type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -152,15 +155,34 @@ impl Repository {
   }
 
   pub async fn scan_all(&self) -> Result<Vec<ScanSummary>> {
+    self.scan_all_with_progress(None).await
+  }
+
+  pub async fn scan_all_with_progress(
+    &self,
+    progress_callback: Option<ScanProgressCallback>,
+  ) -> Result<Vec<ScanSummary>> {
     let sites = self.list_sites().await?;
     let mut summaries = Vec::with_capacity(sites.len());
     for site in sites {
-      summaries.push(self.scan_site(&site.id).await?);
+      summaries.push(
+        self
+          .scan_site_with_progress(&site.id, progress_callback.clone())
+          .await?,
+      );
     }
     Ok(summaries)
   }
 
   pub async fn scan_site(&self, selector: &str) -> Result<ScanSummary> {
+    self.scan_site_with_progress(selector, None).await
+  }
+
+  pub async fn scan_site_with_progress(
+    &self,
+    selector: &str,
+    progress_callback: Option<ScanProgressCallback>,
+  ) -> Result<ScanSummary> {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
     let hash_algorithm = self.hash_algorithm.clone();
@@ -168,7 +190,13 @@ impl Repository {
       let conn = Connection::open(&db_path)?;
       let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
       let site_folders = list_site_folders(&conn, Some(&site.id))?;
-      scan_site_blocking(&conn, &site, &site_folders, hash_algorithm.as_ref())
+      scan_site_blocking(
+        &conn,
+        &site,
+        &site_folders,
+        hash_algorithm.as_ref(),
+        progress_callback.as_ref(),
+      )
     })
     .await?
   }
@@ -272,8 +300,10 @@ fn scan_site_blocking(
   site: &Site,
   site_folders: &[SiteFolder],
   hash_algorithm: &dyn HashAlgorithm,
+  progress_callback: Option<&ScanProgressCallback>,
 ) -> Result<ScanSummary> {
   let files = discover_site_files(site_folders)?;
+  let total_files = files.len() as u64;
   let scan_time = Utc::now();
   let mut files_seen = 0;
   let mut files_hashed = 0;
@@ -282,6 +312,15 @@ fn scan_site_blocking(
 
   for file in &files {
     files_seen += 1;
+    if let Some(progress_callback) = progress_callback {
+      progress_callback(&ScanProgress {
+        site_id: site.id.clone(),
+        site_name: site.name.clone(),
+        current_path: file.path.clone(),
+        files_scanned: files_seen,
+        total_files,
+      });
+    }
     let existing = existing_record(conn, &file.path)?;
     let can_reuse = match existing.as_ref() {
       Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm.name() => {

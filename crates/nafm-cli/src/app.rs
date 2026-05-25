@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
@@ -96,10 +97,23 @@ async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Res
 
 async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()> {
   let spinner = spinner(json, "scanning");
-  let summaries = if selector == "all" {
-    repo.scan_all().await?
+  let progress_callback = if json {
+    None
   } else {
-    vec![repo.scan_site(selector).await?]
+    let spinner = spinner.clone();
+    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
+      spinner.set_message(format!(
+        "scanning {}/{} {}",
+        progress.files_scanned,
+        progress.total_files,
+        progress.current_path.display()
+      ));
+    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
+  };
+  let summaries = if selector == "all" {
+    repo.scan_all_with_progress(progress_callback).await?
+  } else {
+    vec![repo.scan_site_with_progress(selector, progress_callback).await?]
   };
   spinner.finish_and_clear();
 
