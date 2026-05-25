@@ -1,10 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions};
+use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions, StageWarningReason};
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -307,8 +308,19 @@ async fn stage_add_folder_recursively_stages_duplicate_files_and_warns_on_last_c
   let report = fixture.repo.stage_add_path(&root).await.unwrap();
   assert_eq!(report.staged_files.len(), 2);
   assert!(report.staged_files.iter().any(|file| file.path.ends_with("left.txt")));
-  assert_eq!(report.warnings.len(), 1);
-  assert!(report.warnings[0].path.ends_with("two.txt") || report.warnings[0].path.ends_with("one.txt"));
+  assert_eq!(report.warnings.len(), 2);
+  assert!(
+    report
+      .warnings
+      .iter()
+      .any(|warning| warning.path.ends_with("unique.txt"))
+  );
+  assert!(
+    report
+      .warnings
+      .iter()
+      .any(|warning| warning.path.ends_with("two.txt") || warning.path.ends_with("one.txt"))
+  );
 }
 
 #[tokio::test]
@@ -417,6 +429,202 @@ async fn stage_undo_and_redo_restore_stage_state() {
   assert!(redo.restored_files.is_empty());
 }
 
+#[tokio::test]
+async fn stage_add_unique_only_folder_warns_instead_of_failing() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("root");
+  fs::write(root.join("only.txt"), "unique").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &root, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let report = fixture.repo.stage_add_path(&root).await.unwrap();
+  assert!(report.staged_files.is_empty());
+  assert_eq!(report.warnings.len(), 1);
+  assert!(report.warnings[0].path.ends_with("only.txt"));
+  assert!(matches!(report.warnings[0].reason, StageWarningReason::NotDuplicate));
+}
+
+#[tokio::test]
+async fn stage_remove_non_staged_tracked_file_warns() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("root");
+  let other = fixture.mkdir("other");
+  let target = root.join("dup.txt");
+  fs::write(&target, "same").unwrap();
+  fs::write(other.join("peer.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &root, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &other, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let report = fixture.repo.stage_remove_path(&target).await.unwrap();
+  assert!(report.removed_files.is_empty());
+  assert_eq!(report.warnings.len(), 1);
+  assert!(matches!(report.warnings[0].reason, StageWarningReason::NotStaged));
+}
+
+#[tokio::test]
+async fn stage_remove_non_staged_tracked_folder_warns() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("root");
+  let dup = root.join("dup");
+  fs::create_dir(&dup).unwrap();
+  fs::write(dup.join("file.txt"), "same").unwrap();
+  let other = fixture.mkdir("other");
+  fs::write(other.join("peer.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &root, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &other, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let report = fixture.repo.stage_remove_path(&dup).await.unwrap();
+  assert!(report.removed_files.is_empty());
+  assert_eq!(report.warnings.len(), 1);
+  assert!(matches!(report.warnings[0].reason, StageWarningReason::NotStaged));
+}
+
+#[tokio::test]
+async fn stage_undo_and_redo_fail_at_history_boundaries() {
+  let fixture = Fixture::new().await;
+  assert!(fixture.repo.stage_undo().await.is_err());
+  assert!(fixture.repo.stage_redo().await.is_err());
+}
+
+#[tokio::test]
+async fn stage_redo_is_cleared_by_new_mutation_after_undo() {
+  let fixture = build_stage_matrix_fixture().await;
+  let alpha_one = fixture.path("alpha", "one.txt");
+  let beta_one = fixture.path("beta", "one.txt");
+  let gamma_one = fixture.path("gamma", "one.txt");
+
+  fixture.repo().stage_add_path(&alpha_one).await.unwrap();
+  fixture.repo().stage_add_path(&beta_one).await.unwrap();
+  fixture.repo().stage_undo().await.unwrap();
+  fixture.repo().stage_add_path(&gamma_one).await.unwrap();
+
+  assert!(fixture.repo().stage_redo().await.is_err());
+  assert_eq!(fixture.stage_paths().await, BTreeSet::from([alpha_one, gamma_one]));
+}
+
+#[tokio::test]
+async fn stage_randomized_sequence_matches_model() {
+  let fixture = build_stage_matrix_fixture().await;
+  let alpha_dir = fixture.dir("alpha");
+  let beta_dir = fixture.dir("beta");
+  let gamma_dir = fixture.dir("gamma");
+  let unique_dir = fixture.dir("unique");
+  let alpha_one = fixture.path("alpha", "one.txt");
+  let beta_one = fixture.path("beta", "one.txt");
+  let gamma_one = fixture.path("gamma", "one.txt");
+  let beta_two = fixture.path("beta", "two.txt");
+  let gamma_two = fixture.path("gamma", "two.txt");
+  let unique = fixture.path("unique", "only.txt");
+
+  let groups = vec![
+    vec![alpha_one.clone(), beta_one.clone(), gamma_one.clone()],
+    vec![beta_two.clone(), gamma_two.clone()],
+  ];
+  let tracked_files = vec![
+    alpha_one.clone(),
+    beta_one.clone(),
+    gamma_one.clone(),
+    beta_two.clone(),
+    gamma_two.clone(),
+    unique.clone(),
+  ];
+  let dir_members = BTreeMap::from([
+    (alpha_dir.clone(), vec![alpha_one.clone()]),
+    (beta_dir.clone(), vec![beta_one.clone(), beta_two.clone()]),
+    (gamma_dir.clone(), vec![gamma_one.clone(), gamma_two.clone()]),
+    (unique_dir.clone(), vec![unique.clone()]),
+  ]);
+
+  let mut model = StageModel::new(groups, tracked_files, dir_members);
+  let mut rng = Lcg::new(0x5eed_1234_abcd_7788);
+  let add_targets = vec![
+    alpha_one.clone(),
+    beta_one.clone(),
+    gamma_one.clone(),
+    beta_two.clone(),
+    gamma_two.clone(),
+    unique.clone(),
+    alpha_dir.clone(),
+    beta_dir.clone(),
+    gamma_dir.clone(),
+    unique_dir.clone(),
+  ];
+  let remove_targets = add_targets.clone();
+
+  for _step in 0..200 {
+    match rng.next_u64() % 6 {
+      0 => {
+        let target = add_targets[rng.index(add_targets.len())].clone();
+        let repo_report = fixture.repo().stage_add_path(&target).await.unwrap();
+        let model_report = model.add_path(&target);
+        assert_eq!(
+          sorted_paths(repo_report.staged_files.iter().map(|file| &file.path)),
+          model_report.changed_paths
+        );
+        assert_eq!(sorted_warning_reasons(&repo_report), model_report.warning_reasons);
+      }
+      1 => {
+        let target = remove_targets[rng.index(remove_targets.len())].clone();
+        let repo_report = fixture.repo().stage_remove_path(&target).await.unwrap();
+        let model_report = model.remove_path(&target);
+        assert_eq!(
+          sorted_paths(repo_report.removed_files.iter().map(|file| &file.path)),
+          model_report.changed_paths
+        );
+        assert_eq!(
+          sorted_warning_reasons_remove(&repo_report),
+          model_report.warning_reasons
+        );
+      }
+      2 => {
+        let repo_report = fixture.repo().stage_reset().await.unwrap();
+        let model_report = model.reset();
+        assert_eq!(
+          sorted_paths(repo_report.removed_files.iter().map(|file| &file.path)),
+          model_report.changed_paths
+        );
+      }
+      3 => {
+        let repo_result = fixture.repo().stage_undo().await;
+        let model_result = model.undo();
+        assert_eq!(repo_result.is_ok(), model_result.is_some());
+        if let (Ok(repo_report), Some(expected)) = (repo_result, model_result) {
+          assert_eq!(
+            sorted_paths(repo_report.restored_files.iter().map(|file| &file.path)),
+            expected
+          );
+        }
+      }
+      4 => {
+        let repo_result = fixture.repo().stage_redo().await;
+        let model_result = model.redo();
+        assert_eq!(repo_result.is_ok(), model_result.is_some());
+        if let (Ok(repo_report), Some(expected)) = (repo_result, model_result) {
+          assert_eq!(
+            sorted_paths(repo_report.restored_files.iter().map(|file| &file.path)),
+            expected
+          );
+        }
+      }
+      _ => {
+        let repo_stage = fixture.stage_paths().await;
+        assert_eq!(repo_stage, model.stage);
+      }
+    }
+
+    let repo_stage = fixture.stage_paths().await;
+    assert_eq!(repo_stage, model.stage);
+  }
+}
+
 struct Fixture {
   root: TempDir,
   _cache: TempDir,
@@ -462,6 +670,421 @@ impl Fixture {
       )
       .await
       .unwrap();
+  }
+
+  async fn stage_paths(&self) -> BTreeSet<PathBuf> {
+    self
+      .repo
+      .stage_commit_dry_run()
+      .await
+      .unwrap()
+      .staged_files
+      .into_iter()
+      .map(|file| file.path)
+      .collect()
+  }
+}
+
+struct StageMatrixFixture {
+  fixture: Fixture,
+  dirs: BTreeMap<&'static str, PathBuf>,
+  paths: BTreeMap<(&'static str, &'static str), PathBuf>,
+}
+
+impl StageMatrixFixture {
+  fn repo(&self) -> &Repository {
+    &self.fixture.repo
+  }
+
+  fn dir(&self, key: &'static str) -> PathBuf {
+    self.dirs.get(key).unwrap().clone()
+  }
+
+  fn path(&self, dir: &'static str, file: &'static str) -> PathBuf {
+    self.paths.get(&(dir, file)).unwrap().clone()
+  }
+
+  async fn stage_paths(&self) -> BTreeSet<PathBuf> {
+    self.fixture.stage_paths().await
+  }
+}
+
+async fn build_stage_matrix_fixture() -> StageMatrixFixture {
+  let fixture = Fixture::new().await;
+  let alpha = fixture.mkdir("alpha");
+  let beta = fixture.mkdir("beta");
+  let gamma = fixture.mkdir("gamma");
+  let unique_dir = fixture.mkdir("unique");
+  let alpha_one = alpha.join("one.txt");
+  let beta_one = beta.join("one.txt");
+  let gamma_one = gamma.join("one.txt");
+  let beta_two = beta.join("two.txt");
+  let gamma_two = gamma.join("two.txt");
+  let unique = unique_dir.join("only.txt");
+  fs::write(&alpha_one, "group-one").unwrap();
+  fs::write(&beta_one, "group-one").unwrap();
+  fs::write(&gamma_one, "group-one").unwrap();
+  fs::write(&beta_two, "group-two").unwrap();
+  fs::write(&gamma_two, "group-two").unwrap();
+  fs::write(&unique, "unique").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &alpha, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &beta, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &gamma, HiddenPolicy::Include).await;
+  fixture
+    .add_site_folder("docs", &unique_dir, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let alpha = fs::canonicalize(alpha).unwrap();
+  let beta = fs::canonicalize(beta).unwrap();
+  let gamma = fs::canonicalize(gamma).unwrap();
+  let unique_dir = fs::canonicalize(unique_dir).unwrap();
+  let alpha_one = fs::canonicalize(alpha_one).unwrap();
+  let beta_one = fs::canonicalize(beta_one).unwrap();
+  let gamma_one = fs::canonicalize(gamma_one).unwrap();
+  let beta_two = fs::canonicalize(beta_two).unwrap();
+  let gamma_two = fs::canonicalize(gamma_two).unwrap();
+  let unique = fs::canonicalize(unique).unwrap();
+
+  StageMatrixFixture {
+    fixture,
+    dirs: BTreeMap::from([
+      ("alpha", alpha),
+      ("beta", beta),
+      ("gamma", gamma),
+      ("unique", unique_dir),
+    ]),
+    paths: BTreeMap::from([
+      (("alpha", "one.txt"), alpha_one),
+      (("beta", "one.txt"), beta_one),
+      (("gamma", "one.txt"), gamma_one),
+      (("beta", "two.txt"), beta_two),
+      (("gamma", "two.txt"), gamma_two),
+      (("unique", "only.txt"), unique),
+    ]),
+  }
+}
+
+fn sorted_paths<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
+  let mut values = paths.into_iter().cloned().collect::<Vec<_>>();
+  values.sort();
+  values
+}
+
+fn sorted_warning_reasons(report: &nafm_core::StageAddReport) -> Vec<(PathBuf, StageWarningReason)> {
+  let mut values = report
+    .warnings
+    .iter()
+    .map(|warning| (warning.path.clone(), warning.reason.clone()))
+    .collect::<Vec<_>>();
+  values.sort_by(|left, right| left.0.cmp(&right.0));
+  values
+}
+
+fn sorted_warning_reasons_remove(report: &nafm_core::StageRemoveReport) -> Vec<(PathBuf, StageWarningReason)> {
+  let mut values = report
+    .warnings
+    .iter()
+    .map(|warning| (warning.path.clone(), warning.reason.clone()))
+    .collect::<Vec<_>>();
+  values.sort_by(|left, right| left.0.cmp(&right.0));
+  values
+}
+
+struct StageModel {
+  groups: Vec<Vec<PathBuf>>,
+  tracked_files: BTreeSet<PathBuf>,
+  dir_members: BTreeMap<PathBuf, Vec<PathBuf>>,
+  stage: BTreeSet<PathBuf>,
+  snapshots: Vec<BTreeSet<PathBuf>>,
+  cursor: usize,
+}
+
+impl StageModel {
+  fn new(groups: Vec<Vec<PathBuf>>, tracked_files: Vec<PathBuf>, dir_members: BTreeMap<PathBuf, Vec<PathBuf>>) -> Self {
+    Self {
+      groups,
+      tracked_files: tracked_files.into_iter().collect(),
+      dir_members,
+      stage: BTreeSet::new(),
+      snapshots: vec![BTreeSet::new()],
+      cursor: 0,
+    }
+  }
+
+  fn add_path(&mut self, path: &Path) -> ModelMutation {
+    if path.is_dir() {
+      self.add_dir(path)
+    } else {
+      self.add_file(path)
+    }
+  }
+
+  fn remove_path(&mut self, path: &Path) -> ModelMutation {
+    if path.is_dir() {
+      self.remove_dir(path)
+    } else {
+      self.remove_file(path)
+    }
+  }
+
+  fn reset(&mut self) -> ModelMutation {
+    let changed_paths = self.stage.iter().cloned().collect::<Vec<_>>();
+    if !changed_paths.is_empty() {
+      self.stage.clear();
+      self.push_snapshot();
+    }
+    ModelMutation {
+      changed_paths: sorted_paths(changed_paths.iter()),
+      warning_reasons: Vec::new(),
+    }
+  }
+
+  fn undo(&mut self) -> Option<Vec<PathBuf>> {
+    if self.cursor == 0 {
+      return None;
+    }
+    self.cursor -= 1;
+    self.stage = self.snapshots[self.cursor].clone();
+    Some(sorted_paths(
+      self.stage.iter().collect::<Vec<_>>().iter().map(|path| *path),
+    ))
+  }
+
+  fn redo(&mut self) -> Option<Vec<PathBuf>> {
+    if self.cursor + 1 >= self.snapshots.len() {
+      return None;
+    }
+    self.cursor += 1;
+    self.stage = self.snapshots[self.cursor].clone();
+    Some(sorted_paths(
+      self.stage.iter().collect::<Vec<_>>().iter().map(|path| *path),
+    ))
+  }
+
+  fn add_file(&mut self, path: &Path) -> ModelMutation {
+    let mut warning_reasons = Vec::new();
+    let mut changed_paths = Vec::new();
+    let path = path.to_path_buf();
+    if !self.tracked_files.contains(&path) {
+      return ModelMutation {
+        changed_paths,
+        warning_reasons,
+      };
+    }
+    let Some(group_index) = self.group_index_for(&path) else {
+      warning_reasons.push((path, StageWarningReason::NotDuplicate));
+      return ModelMutation {
+        changed_paths,
+        warning_reasons,
+      };
+    };
+    if self.stage.contains(&path) {
+      warning_reasons.push((path, StageWarningReason::AlreadyStaged));
+      return ModelMutation {
+        changed_paths,
+        warning_reasons,
+      };
+    }
+    let group = &self.groups[group_index];
+    let unstaged_count = group
+      .iter()
+      .filter(|candidate| !self.stage.contains(*candidate))
+      .count();
+    if unstaged_count > 1 {
+      self.stage.insert(path.clone());
+      changed_paths.push(path);
+      self.push_snapshot();
+    } else {
+      warning_reasons.push((path, StageWarningReason::WouldRemoveLastCopy));
+    }
+    ModelMutation {
+      changed_paths: sorted_paths(changed_paths.iter()),
+      warning_reasons: sort_model_warnings(warning_reasons),
+    }
+  }
+
+  fn add_dir(&mut self, path: &Path) -> ModelMutation {
+    let Some(tracked_descendants) = self.dir_members.get(path) else {
+      return ModelMutation {
+        changed_paths: Vec::new(),
+        warning_reasons: Vec::new(),
+      };
+    };
+    let mut warnings = Vec::new();
+    let duplicate_candidates = tracked_descendants
+      .iter()
+      .filter(|candidate| self.group_index_for(candidate).is_some())
+      .cloned()
+      .collect::<Vec<_>>();
+    if duplicate_candidates.is_empty() {
+      warnings.extend(
+        tracked_descendants
+          .iter()
+          .cloned()
+          .map(|tracked| (tracked, StageWarningReason::NotDuplicate)),
+      );
+      return ModelMutation {
+        changed_paths: Vec::new(),
+        warning_reasons: sort_model_warnings(warnings),
+      };
+    }
+
+    let duplicate_set = duplicate_candidates.iter().cloned().collect::<BTreeSet<_>>();
+    for tracked in tracked_descendants {
+      if !duplicate_set.contains(tracked) {
+        warnings.push((tracked.clone(), StageWarningReason::NotDuplicate));
+      }
+    }
+
+    let mut requested_by_group = BTreeMap::<usize, Vec<PathBuf>>::new();
+    for candidate in duplicate_candidates {
+      if self.stage.contains(&candidate) {
+        warnings.push((candidate, StageWarningReason::AlreadyStaged));
+      } else {
+        requested_by_group
+          .entry(self.group_index_for(&candidate).unwrap())
+          .or_default()
+          .push(candidate);
+      }
+    }
+
+    let mut changed_paths = Vec::new();
+    for (group_index, mut requested) in requested_by_group {
+      let group = &self.groups[group_index];
+      let mut unstaged_group = group
+        .iter()
+        .filter(|candidate| !self.stage.contains(*candidate))
+        .cloned()
+        .collect::<Vec<_>>();
+      unstaged_group.sort();
+      requested.sort();
+      let requested_set = requested.iter().cloned().collect::<BTreeSet<_>>();
+      let outside_requested_count = unstaged_group
+        .iter()
+        .filter(|candidate| !requested_set.contains(*candidate))
+        .count();
+      let allowed = if outside_requested_count > 0 {
+        requested.len()
+      } else {
+        requested.len().saturating_sub(1)
+      };
+      for (index, file) in requested.into_iter().enumerate() {
+        if index < allowed {
+          self.stage.insert(file.clone());
+          changed_paths.push(file);
+        } else {
+          warnings.push((file, StageWarningReason::WouldRemoveLastCopy));
+        }
+      }
+    }
+
+    if !changed_paths.is_empty() {
+      self.push_snapshot();
+    }
+
+    ModelMutation {
+      changed_paths: sorted_paths(changed_paths.iter()),
+      warning_reasons: sort_model_warnings(warnings),
+    }
+  }
+
+  fn remove_file(&mut self, path: &Path) -> ModelMutation {
+    let path = path.to_path_buf();
+    if self.stage.remove(&path) {
+      let changed_paths = vec![path];
+      self.push_snapshot();
+      return ModelMutation {
+        changed_paths,
+        warning_reasons: Vec::new(),
+      };
+    }
+
+    let reason = if self.tracked_files.contains(&path) {
+      StageWarningReason::NotStaged
+    } else {
+      StageWarningReason::NotTracked
+    };
+    ModelMutation {
+      changed_paths: Vec::new(),
+      warning_reasons: vec![(path, reason)],
+    }
+  }
+
+  fn remove_dir(&mut self, path: &Path) -> ModelMutation {
+    let Some(tracked_descendants) = self.dir_members.get(path) else {
+      return ModelMutation {
+        changed_paths: Vec::new(),
+        warning_reasons: Vec::new(),
+      };
+    };
+    let removed = tracked_descendants
+      .iter()
+      .filter(|candidate| self.stage.contains(*candidate))
+      .cloned()
+      .collect::<Vec<_>>();
+    if removed.is_empty() {
+      return ModelMutation {
+        changed_paths: Vec::new(),
+        warning_reasons: vec![(path.to_path_buf(), StageWarningReason::NotStaged)],
+      };
+    }
+
+    for candidate in &removed {
+      self.stage.remove(candidate);
+    }
+    self.push_snapshot();
+    ModelMutation {
+      changed_paths: sorted_paths(removed.iter()),
+      warning_reasons: Vec::new(),
+    }
+  }
+
+  fn group_index_for(&self, path: &Path) -> Option<usize> {
+    self
+      .groups
+      .iter()
+      .position(|group| group.iter().any(|candidate| candidate == path))
+  }
+
+  fn push_snapshot(&mut self) {
+    self.snapshots.truncate(self.cursor + 1);
+    self.snapshots.push(self.stage.clone());
+    self.cursor = self.snapshots.len() - 1;
+  }
+}
+
+struct ModelMutation {
+  changed_paths: Vec<PathBuf>,
+  warning_reasons: Vec<(PathBuf, StageWarningReason)>,
+}
+
+fn sort_model_warnings(mut warnings: Vec<(PathBuf, StageWarningReason)>) -> Vec<(PathBuf, StageWarningReason)> {
+  warnings.sort_by(|left, right| left.0.cmp(&right.0));
+  warnings
+}
+
+struct Lcg {
+  state: u64,
+}
+
+impl Lcg {
+  fn new(seed: u64) -> Self {
+    Self { state: seed }
+  }
+
+  fn next_u64(&mut self) -> u64 {
+    self.state = self
+      .state
+      .wrapping_mul(6364136223846793005)
+      .wrapping_add(1442695040888963407);
+    self.state
+  }
+
+  fn index(&mut self, len: usize) -> usize {
+    (self.next_u64() as usize) % len
   }
 }
 
