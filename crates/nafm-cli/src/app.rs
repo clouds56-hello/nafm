@@ -14,6 +14,7 @@ use crate::output::{format_duplicate_groups_by_folder, print_json_or, site_folde
 pub async fn run() -> Result<()> {
   let cli = Cli::parse();
   let workspace_manager = WorkspaceManager::from_default_root()?;
+  workspace_manager.ensure_default_workspace(None).await?;
 
   match cli.command {
     Command::Workspace(command) => handle_workspace(&workspace_manager, command, cli.json).await?,

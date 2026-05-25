@@ -96,6 +96,15 @@ impl WorkspaceManager {
     Ok(self.workspace_db_path(name)?.is_file())
   }
 
+  pub async fn ensure_default_workspace(&self, hash_algorithm: Option<Arc<dyn HashAlgorithm>>) -> Result<()> {
+    if !self.workspace_exists(DEFAULT_WORKSPACE_NAME)? {
+      self
+        .create_workspace(DEFAULT_WORKSPACE_NAME, false, hash_algorithm)
+        .await?;
+    }
+    Ok(())
+  }
+
   pub fn activate_workspace(&self, name: &str) -> Result<()> {
     let name = normalize_workspace_name(name)?;
     if !self.workspace_exists(&name)? {

@@ -14,6 +14,20 @@ async fn workspace_defaults_to_default_name_without_config() {
 }
 
 #[tokio::test]
+async fn ensure_default_workspace_creates_default_database() {
+  let temp = tempfile::tempdir().unwrap();
+  let manager = WorkspaceManager::new(temp.path().to_path_buf());
+
+  manager.ensure_default_workspace(None).await.unwrap();
+
+  assert!(manager.workspace_exists(DEFAULT_WORKSPACE_NAME).unwrap());
+  let workspaces = manager.list_workspaces().unwrap();
+  assert_eq!(workspaces.len(), 1);
+  assert_eq!(workspaces[0].name, DEFAULT_WORKSPACE_NAME);
+  assert!(workspaces[0].active);
+}
+
+#[tokio::test]
 async fn workspace_create_with_activate_sets_current_workspace() {
   let temp = tempfile::tempdir().unwrap();
   let manager = WorkspaceManager::new(temp.path().to_path_buf());
