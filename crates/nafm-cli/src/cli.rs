@@ -9,6 +9,8 @@ pub struct Cli {
   #[arg(long, global = true)]
   pub cache: Option<PathBuf>,
   #[arg(long, global = true)]
+  pub workspace: Option<String>,
+  #[arg(long, global = true)]
   pub json: bool,
   #[arg(long, global = true)]
   pub no_color: bool,
@@ -18,6 +20,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+  #[command(subcommand)]
+  Workspace(WorkspaceCommand),
   #[command(subcommand)]
   Site(SiteCommand),
   #[command(subcommand)]
@@ -46,6 +50,20 @@ pub enum SiteCommand {
     #[arg(long, value_enum, default_value_t = HiddenArg::Include)]
     hidden: HiddenArg,
   },
+  List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceCommand {
+  Create {
+    name: String,
+    #[arg(long)]
+    activate: bool,
+  },
+  Activate {
+    name: String,
+  },
+  Current,
   List,
 }
 

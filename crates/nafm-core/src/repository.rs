@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
-use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::task::{self, JoinSet};
 use uuid::Uuid;
@@ -91,14 +90,6 @@ impl Repository {
     };
     repo.initialize().await?;
     Ok(repo)
-  }
-
-  pub async fn open_default() -> Result<Self> {
-    Self::open(RepositoryOptions {
-      cache_path: default_cache_path()?,
-      hash_algorithm: None,
-    })
-    .await
   }
 
   pub fn db_path(&self) -> &Path {
@@ -434,11 +425,6 @@ impl Repository {
     })
     .await?
   }
-}
-
-pub fn default_cache_path() -> Result<PathBuf> {
-  let dirs = ProjectDirs::from("dev", "nafm", "nafm").ok_or(NafmError::AppDataDirectoryUnavailable)?;
-  Ok(dirs.data_dir().join("nafm.sqlite3"))
 }
 
 fn scan_site_blocking(

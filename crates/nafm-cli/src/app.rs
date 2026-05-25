@@ -1,32 +1,121 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
-use nafm_core::{AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
+use nafm_core::{
+  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, Repository, RepositoryOptions, WorkspaceManager,
+};
 
-use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand};
+use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
 use crate::output::{format_duplicate_groups_by_folder, print_json_or, site_folder_label, spinner};
 
 pub async fn run() -> Result<()> {
   let cli = Cli::parse();
-  let repo = match cli.cache {
+  let workspace_manager = WorkspaceManager::from_default_root()?;
+
+  match cli.command {
+    Command::Workspace(command) => handle_workspace(&workspace_manager, command, cli.json).await?,
+    command => {
+      let repo = open_repository(&workspace_manager, cli.workspace.as_deref(), cli.cache).await?;
+      match command {
+        Command::Site(command) => handle_site(&repo, command, cli.json).await?,
+        Command::Stage(command) => handle_stage(&repo, command, cli.json).await?,
+        Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
+        Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
+        Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
+        Command::Workspace(_) => unreachable!("workspace command handled separately"),
+      }
+    }
+  }
+
+  Ok(())
+}
+
+async fn open_repository(
+  workspace_manager: &WorkspaceManager,
+  explicit_workspace: Option<&str>,
+  cache_path: Option<PathBuf>,
+) -> Result<Repository> {
+  match cache_path {
     Some(cache_path) => {
+      if explicit_workspace.is_some() {
+        bail!("--cache cannot be combined with --workspace");
+      }
       Repository::open(RepositoryOptions {
         cache_path,
         hash_algorithm: None,
       })
-      .await?
+      .await
+      .map_err(Into::into)
     }
-    None => Repository::open_default().await?,
-  };
+    None => {
+      let workspace_name = workspace_manager.resolve_workspace_name(explicit_workspace)?;
+      let cache_path = workspace_manager.workspace_db_path(&workspace_name)?;
+      Repository::open(RepositoryOptions {
+        cache_path,
+        hash_algorithm: None,
+      })
+      .await
+      .map_err(Into::into)
+    }
+  }
+}
 
-  match cli.command {
-    Command::Site(command) => handle_site(&repo, command, cli.json).await?,
-    Command::Stage(command) => handle_stage(&repo, command, cli.json).await?,
-    Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
-    Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
-    Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
+async fn handle_workspace(manager: &WorkspaceManager, command: WorkspaceCommand, json: bool) -> Result<()> {
+  match command {
+    WorkspaceCommand::Create { name, activate } => {
+      manager.create_workspace(&name, activate, None).await?;
+      let current_workspace = manager.current_workspace_name()?;
+      print_json_or(
+        json,
+        &serde_json::json!({
+          "name": name,
+          "activate": activate,
+          "current_workspace": current_workspace,
+        }),
+        || {
+          if activate {
+            println!("created and activated workspace {name}");
+          } else {
+            println!("created workspace {name}");
+          }
+        },
+      )?;
+    }
+    WorkspaceCommand::Activate { name } => {
+      manager.activate_workspace(&name)?;
+      print_json_or(json, &serde_json::json!({ "workspace": name }), || {
+        println!("activated workspace {name}");
+      })?;
+    }
+    WorkspaceCommand::Current => {
+      let current_workspace = manager.current_workspace_name()?;
+      print_json_or(json, &serde_json::json!({ "workspace": current_workspace }), || {
+        if current_workspace == DEFAULT_WORKSPACE_NAME {
+          println!("current workspace {current_workspace} (default)");
+        } else {
+          println!("current workspace {current_workspace}");
+        }
+      })?;
+    }
+    WorkspaceCommand::List => {
+      let workspaces = manager.list_workspaces()?;
+      print_json_or(json, &workspaces, || {
+        if workspaces.is_empty() {
+          println!("no workspaces created");
+        } else {
+          for workspace in &workspaces {
+            if workspace.active {
+              println!("{}  active", workspace.name);
+            } else {
+              println!("{}", workspace.name);
+            }
+          }
+        }
+      })?;
+    }
   }
 
   Ok(())
@@ -325,7 +414,7 @@ fn parent_folder_counts_from_duplicates(groups: &[nafm_core::DuplicateGroup]) ->
       let parent = file
         .path
         .parent()
-        .unwrap_or_else(|| std::path::Path::new(""))
+        .unwrap_or_else(|| Path::new(""))
         .display()
         .to_string();
       *counts.entry(parent).or_insert(0) += 1;
