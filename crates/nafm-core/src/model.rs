@@ -84,3 +84,37 @@ pub struct MissingContentGroup {
   pub size_bytes: u64,
   pub source_files: Vec<DuplicateFile>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageWarning {
+  pub path: PathBuf,
+  pub reason: StageWarningReason,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageWarningReason {
+  NotTracked,
+  NotDuplicate,
+  AlreadyStaged,
+  WouldRemoveLastCopy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageAddReport {
+  pub staged_files: Vec<DuplicateFile>,
+  pub warnings: Vec<StageWarning>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageCommitDryRun {
+  pub staged_files: Vec<DuplicateFile>,
+  pub tracked_file_count_before: u64,
+  pub tracked_file_count_after: u64,
+  pub duplicate_group_count_before: u64,
+  pub duplicate_group_count_after: u64,
+  pub duplicate_file_count_before: u64,
+  pub duplicate_file_count_after: u64,
+  pub db_entry_count_stable: bool,
+  pub duplicate_groups_after: Vec<DuplicateGroup>,
+}

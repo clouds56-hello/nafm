@@ -260,6 +260,84 @@ async fn scan_site_hashes_files_in_parallel() {
   assert!(max.load(Ordering::SeqCst) > 1);
 }
 
+#[tokio::test]
+async fn stage_add_file_stages_only_one_copy_of_a_pair() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  let first_file = first.join("a.txt");
+  let second_file = second.join("b.txt");
+  fs::write(&first_file, "same").unwrap();
+  fs::write(&second_file, "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &second, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let report = fixture.repo.stage_add_path(&first_file).await.unwrap();
+  assert_eq!(report.staged_files.len(), 1);
+  assert!(report.warnings.is_empty());
+
+  let second_report = fixture.repo.stage_add_path(&second_file).await.unwrap();
+  assert!(second_report.staged_files.is_empty());
+  assert_eq!(second_report.warnings.len(), 1);
+}
+
+#[tokio::test]
+async fn stage_add_folder_recursively_stages_duplicate_files_and_warns_on_last_copy() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("root");
+  let other = fixture.mkdir("other");
+  let dup_dir = root.join("dup");
+  let pair_dir = root.join("pair");
+  fs::create_dir(&dup_dir).unwrap();
+  fs::create_dir(&pair_dir).unwrap();
+  fs::write(dup_dir.join("one.txt"), "same-a").unwrap();
+  fs::write(dup_dir.join("two.txt"), "same-a").unwrap();
+  fs::write(pair_dir.join("left.txt"), "same-b").unwrap();
+  fs::write(other.join("right.txt"), "same-b").unwrap();
+  fs::write(root.join("unique.txt"), "unique").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &root, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &other, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let report = fixture.repo.stage_add_path(&root).await.unwrap();
+  assert_eq!(report.staged_files.len(), 2);
+  assert!(report.staged_files.iter().any(|file| file.path.ends_with("left.txt")));
+  assert_eq!(report.warnings.len(), 1);
+  assert!(report.warnings[0].path.ends_with("two.txt") || report.warnings[0].path.ends_with("one.txt"));
+}
+
+#[tokio::test]
+async fn stage_commit_dry_run_reports_remaining_duplicates() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  let third = fixture.mkdir("third");
+  fs::write(first.join("a.txt"), "same").unwrap();
+  fs::write(second.join("b.txt"), "same").unwrap();
+  fs::write(third.join("c.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &second, HiddenPolicy::Include).await;
+  fixture.add_site_folder("docs", &third, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  fixture.repo.stage_add_path(&first.join("a.txt")).await.unwrap();
+  let report = fixture.repo.stage_commit_dry_run().await.unwrap();
+
+  assert_eq!(report.staged_files.len(), 1);
+  assert!(report.db_entry_count_stable);
+  assert_eq!(report.duplicate_group_count_before, 1);
+  assert_eq!(report.duplicate_group_count_after, 1);
+  assert_eq!(report.duplicate_file_count_before, 3);
+  assert_eq!(report.duplicate_file_count_after, 2);
+}
+
 struct Fixture {
   root: TempDir,
   _cache: TempDir,

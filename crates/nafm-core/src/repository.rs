@@ -15,7 +15,7 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanProgress, ScanSummary,
-  Site, SiteFolder,
+  Site, SiteFolder, StageAddReport, StageCommitDryRun, StageWarning, StageWarningReason,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -58,6 +58,11 @@ struct ScanProgressContext {
   site_id: String,
   site_name: String,
   total_files: u64,
+}
+
+#[derive(Clone, Debug)]
+struct StagedFileRecord {
+  file: DuplicateFile,
 }
 
 impl Repository {
@@ -280,6 +285,26 @@ impl Repository {
     .await?
   }
 
+  pub async fn stage_add_path(&self, path: &Path) -> Result<StageAddReport> {
+    let db_path = self.db_path.clone();
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let canonical_path = std::fs::canonicalize(&path)?;
+      stage_add_path(&conn, &canonical_path)
+    })
+    .await?
+  }
+
+  pub async fn stage_commit_dry_run(&self) -> Result<StageCommitDryRun> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      stage_commit_dry_run(&conn)
+    })
+    .await?
+  }
+
   async fn initialize(&self) -> Result<()> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
@@ -324,6 +349,11 @@ impl Repository {
         create index if not exists idx_file_records_site_id on file_records(site_id);
         create index if not exists idx_file_records_site_folder_id on file_records(site_folder_id);
         create index if not exists idx_file_records_hash on file_records(hash_algorithm, content_hash, size_bytes);
+
+        create table if not exists stage_entries (
+          file_id text primary key not null references file_records(id) on delete cascade,
+          added_at text not null
+        );
         ",
       )?;
       Ok(())
@@ -753,6 +783,225 @@ fn duplicate_file_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Duplicat
     size_bytes: row.get(4)?,
     modified_unix_nanos: row.get(5)?,
   })
+}
+
+fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddReport> {
+  let duplicate_groups = find_duplicates(conn, None)?;
+  let staged_files = list_staged_files(conn)?;
+  let mut staged_file_ids = staged_files
+    .iter()
+    .map(|record| record.file.file_id.clone())
+    .collect::<std::collections::HashSet<_>>();
+  let staged_by_path = staged_files
+    .iter()
+    .map(|record| (record.file.path.clone(), record.file.clone()))
+    .collect::<BTreeMap<_, _>>();
+  let mut files_by_path = BTreeMap::new();
+  let mut group_by_file_id = BTreeMap::new();
+
+  for group in &duplicate_groups {
+    for file in &group.files {
+      files_by_path.insert(file.path.clone(), file.clone());
+      group_by_file_id.insert(file.file_id.clone(), group.clone());
+    }
+  }
+
+  let requested_files = if canonical_path.is_dir() {
+    files_by_path
+      .values()
+      .filter(|file| file.path.starts_with(canonical_path))
+      .cloned()
+      .collect::<Vec<_>>()
+  } else {
+    match files_by_path.get(canonical_path) {
+      Some(file) => vec![file.clone()],
+      None => {
+        if tracked_file_exists(conn, canonical_path)? {
+          return Ok(StageAddReport {
+            staged_files: Vec::new(),
+            warnings: vec![StageWarning {
+              path: canonical_path.to_path_buf(),
+              reason: StageWarningReason::NotDuplicate,
+            }],
+          });
+        }
+        return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
+      }
+    }
+  };
+
+  if canonical_path.is_dir() && requested_files.is_empty() {
+    return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
+  }
+
+  let mut requested_by_group = BTreeMap::<String, Vec<DuplicateFile>>::new();
+  let mut warnings = Vec::new();
+  for file in requested_files {
+    if staged_by_path.contains_key(&file.path) {
+      warnings.push(StageWarning {
+        path: file.path.clone(),
+        reason: StageWarningReason::AlreadyStaged,
+      });
+      continue;
+    }
+    let Some(group) = group_by_file_id.get(&file.file_id) else {
+      warnings.push(StageWarning {
+        path: file.path.clone(),
+        reason: StageWarningReason::NotDuplicate,
+      });
+      continue;
+    };
+    requested_by_group.entry(group.group_id.clone()).or_default().push(file);
+  }
+
+  let mut staged_now = Vec::new();
+  let now = Utc::now();
+  for (group_id, mut requested) in requested_by_group {
+    let group = group_by_file_id
+      .values()
+      .find(|group| group.group_id == group_id)
+      .expect("group id should resolve");
+    let mut unstaged_group_files = group
+      .files
+      .iter()
+      .filter(|file| !staged_file_ids.contains(&file.file_id))
+      .cloned()
+      .collect::<Vec<_>>();
+    unstaged_group_files.sort_by(|left, right| left.path.cmp(&right.path));
+    requested.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let outside_requested_count = unstaged_group_files
+      .iter()
+      .filter(|file| !requested.iter().any(|candidate| candidate.file_id == file.file_id))
+      .count();
+
+    let allowed_from_requested = if outside_requested_count > 0 {
+      requested.len()
+    } else {
+      requested.len().saturating_sub(1)
+    };
+
+    for (index, file) in requested.into_iter().enumerate() {
+      if index < allowed_from_requested {
+        conn.execute(
+          "insert or ignore into stage_entries (file_id, added_at) values (?1, ?2)",
+          params![file.file_id, now],
+        )?;
+        staged_file_ids.insert(file.file_id.clone());
+        staged_now.push(file);
+      } else {
+        warnings.push(StageWarning {
+          path: file.path,
+          reason: StageWarningReason::WouldRemoveLastCopy,
+        });
+      }
+    }
+  }
+
+  Ok(StageAddReport {
+    staged_files: staged_now,
+    warnings,
+  })
+}
+
+fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
+  let tracked_file_count_before = total_file_record_count(conn)?;
+  let duplicate_groups_before = find_duplicates(conn, None)?;
+  let duplicate_group_count_before = duplicate_groups_before.len() as u64;
+  let duplicate_file_count_before = duplicate_groups_before
+    .iter()
+    .map(|group| group.files.len() as u64)
+    .sum();
+  let staged_files = list_staged_files(conn)?
+    .into_iter()
+    .map(|record| record.file)
+    .collect::<Vec<_>>();
+  let staged_ids = staged_files
+    .iter()
+    .map(|file| file.file_id.clone())
+    .collect::<std::collections::HashSet<_>>();
+
+  let duplicate_groups_after = duplicate_groups_before
+    .iter()
+    .filter_map(|group| {
+      let remaining_files = group
+        .files
+        .iter()
+        .filter(|file| !staged_ids.contains(&file.file_id))
+        .cloned()
+        .collect::<Vec<_>>();
+      if remaining_files.len() > 1 {
+        Some(DuplicateGroup {
+          group_id: group.group_id.clone(),
+          hash_algorithm: group.hash_algorithm.clone(),
+          hash: group.hash.clone(),
+          size_bytes: group.size_bytes,
+          files: remaining_files,
+        })
+      } else {
+        None
+      }
+    })
+    .collect::<Vec<_>>();
+  let duplicate_group_count_after = duplicate_groups_after.len() as u64;
+  let duplicate_file_count_after = duplicate_groups_after
+    .iter()
+    .map(|group| group.files.len() as u64)
+    .sum();
+  let tracked_file_count_after = tracked_file_count_before.saturating_sub(staged_files.len() as u64);
+  let db_entry_count_stable = tracked_file_count_before == total_file_record_count(conn)?;
+
+  Ok(StageCommitDryRun {
+    staged_files,
+    tracked_file_count_before,
+    tracked_file_count_after,
+    duplicate_group_count_before,
+    duplicate_group_count_after,
+    duplicate_file_count_before,
+    duplicate_file_count_after,
+    db_entry_count_stable,
+    duplicate_groups_after,
+  })
+}
+
+fn list_staged_files(conn: &Connection) -> Result<Vec<StagedFileRecord>> {
+  let mut stmt = conn.prepare(
+    "select f.id, f.site_id, f.site_folder_id, f.path, f.size_bytes, f.modified_unix_nanos, s.added_at
+     from stage_entries s
+     join file_records f on f.id = s.file_id
+     order by s.added_at, f.path",
+  )?;
+  stmt
+    .query_map([], |row| {
+      Ok(StagedFileRecord {
+        file: DuplicateFile {
+          file_id: row.get(0)?,
+          site_id: row.get(1)?,
+          site_folder_id: row.get(2)?,
+          path: PathBuf::from(row.get::<_, String>(3)?),
+          size_bytes: row.get(4)?,
+          modified_unix_nanos: row.get(5)?,
+        },
+      })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+fn total_file_record_count(conn: &Connection) -> Result<u64> {
+  conn
+    .query_row("select count(*) from file_records", [], |row| row.get::<_, u64>(0))
+    .map_err(Into::into)
+}
+
+fn tracked_file_exists(conn: &Connection, path: &Path) -> Result<bool> {
+  conn
+    .query_row(
+      "select exists(select 1 from file_records where path = ?1)",
+      params![path.to_string_lossy()],
+      |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
 }
 
 fn list_sites(conn: &Connection) -> Result<Vec<Site>> {

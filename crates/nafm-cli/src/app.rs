@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Parser;
 use nafm_core::{AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
 
-use crate::cli::{Cli, Command, HiddenArg, SiteCommand};
+use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand};
 use crate::output::{format_duplicate_groups_by_folder, print_json_or, site_folder_label, spinner};
 
 pub async fn run() -> Result<()> {
@@ -23,11 +23,76 @@ pub async fn run() -> Result<()> {
 
   match cli.command {
     Command::Site(command) => handle_site(&repo, command, cli.json).await?,
+    Command::Stage(command) => handle_stage(&repo, command, cli.json).await?,
     Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
     Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
     Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
   }
 
+  Ok(())
+}
+
+async fn handle_stage(repo: &Repository, command: StageCommand, json: bool) -> Result<()> {
+  match command {
+    StageCommand::Add { path } => {
+      let report = repo.stage_add_path(&path).await?;
+      print_json_or(json, &report, || {
+        if report.staged_files.is_empty() {
+          println!("no files added to stage");
+        } else {
+          println!("staged {} files:", report.staged_files.len());
+          for file in &report.staged_files {
+            println!("  {}", file.path.display());
+          }
+        }
+        if !report.warnings.is_empty() {
+          println!("warnings:");
+          for warning in &report.warnings {
+            println!("  {}: {}", warning.path.display(), stage_warning_label(&warning.reason));
+          }
+        }
+      })?;
+    }
+    StageCommand::Commit => {
+      let report = repo.stage_commit_dry_run().await?;
+      print_json_or(json, &report, || {
+        println!("stage commit dry-run");
+        println!("db entry count stable: {}", report.db_entry_count_stable);
+        println!(
+          "tracked files: {} -> {}",
+          report.tracked_file_count_before, report.tracked_file_count_after
+        );
+        println!(
+          "duplicate groups: {} -> {}",
+          report.duplicate_group_count_before, report.duplicate_group_count_after
+        );
+        println!(
+          "duplicate files: {} -> {}",
+          report.duplicate_file_count_before, report.duplicate_file_count_after
+        );
+        if report.staged_files.is_empty() {
+          println!("no files staged for deletion");
+        } else {
+          println!("files to be deleted:");
+          for file in &report.staged_files {
+            println!("  {}", file.path.display());
+          }
+        }
+        if report.duplicate_groups_after.is_empty() {
+          println!("no duplicates would remain");
+        } else {
+          println!("duplicates that would remain:");
+          println!(
+            "{}",
+            format_duplicate_groups_by_folder(
+              &report.duplicate_groups_after,
+              &parent_folder_counts_from_duplicates(&report.duplicate_groups_after),
+            )
+          );
+        }
+      })?;
+    }
+  }
   Ok(())
 }
 
@@ -187,4 +252,29 @@ impl From<HiddenArg> for HiddenPolicy {
       HiddenArg::Skip => HiddenPolicy::Skip,
     }
   }
+}
+
+fn stage_warning_label(reason: &nafm_core::StageWarningReason) -> &'static str {
+  match reason {
+    nafm_core::StageWarningReason::NotTracked => "not tracked",
+    nafm_core::StageWarningReason::NotDuplicate => "not duplicate",
+    nafm_core::StageWarningReason::AlreadyStaged => "already staged",
+    nafm_core::StageWarningReason::WouldRemoveLastCopy => "would remove last copy",
+  }
+}
+
+fn parent_folder_counts_from_duplicates(groups: &[nafm_core::DuplicateGroup]) -> BTreeMap<String, u64> {
+  let mut counts = BTreeMap::new();
+  for group in groups {
+    for file in &group.files {
+      let parent = file
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .display()
+        .to_string();
+      *counts.entry(parent).or_insert(0) += 1;
+    }
+  }
+  counts
 }

@@ -10,6 +10,8 @@ pub enum NafmError {
   SiteNotFound(String),
   #[error("site folder not found: {0}")]
   SiteFolderNotFound(String),
+  #[error("no tracked file or folder found at path: {0}")]
+  TrackedPathNotFound(PathBuf),
   #[error("site name cannot be empty")]
   EmptySiteName,
   #[error("cache path has no parent directory: {0}")]

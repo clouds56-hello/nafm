@@ -20,6 +20,8 @@ pub struct Cli {
 pub enum Command {
   #[command(subcommand)]
   Site(SiteCommand),
+  #[command(subcommand)]
+  Stage(StageCommand),
   Scan {
     selector: String,
   },
@@ -45,6 +47,12 @@ pub enum SiteCommand {
     hidden: HiddenArg,
   },
   List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StageCommand {
+  Add { path: PathBuf },
+  Commit,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
