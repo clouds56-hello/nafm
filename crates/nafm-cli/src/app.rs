@@ -103,7 +103,8 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
     let spinner = spinner.clone();
     Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
       spinner.set_message(format!(
-        "scanning {}/{} {}",
+        "scanning {} {}/{} {}",
+        progress.site_name,
         progress.files_scanned,
         progress.total_files,
         progress.current_path.display()

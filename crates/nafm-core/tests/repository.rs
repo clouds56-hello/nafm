@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions};
 use tempfile::TempDir;
@@ -210,6 +212,54 @@ async fn scan_site_reports_current_file_progress() {
   assert!(seen.iter().any(|(path, _, _)| path.ends_with("b.txt")));
 }
 
+#[tokio::test]
+async fn scan_site_hashes_files_in_parallel() {
+  if std::thread::available_parallelism()
+    .map(|parallelism| parallelism.get())
+    .unwrap_or(1)
+    < 2
+  {
+    return;
+  }
+
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  for index in 0..8 {
+    fs::write(
+      root.path().join(format!("file-{index}.txt")),
+      format!("content-{index}"),
+    )
+    .unwrap();
+  }
+
+  let current = Arc::new(AtomicUsize::new(0));
+  let max = Arc::new(AtomicUsize::new(0));
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(SlowHashAlgorithm {
+      current: current.clone(),
+      max: max.clone(),
+    })),
+  })
+  .await
+  .unwrap();
+  repo.create_site("docs").await.unwrap();
+  repo
+    .add_site_folder(
+      "docs",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  repo.scan_site("docs").await.unwrap();
+
+  assert!(max.load(Ordering::SeqCst) > 1);
+}
+
 struct Fixture {
   root: TempDir,
   _cache: TempDir,
@@ -268,5 +318,35 @@ impl HashAlgorithm for FirstByteHashAlgorithm {
   fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
     let bytes = fs::read(path)?;
     Ok(bytes.first().copied().unwrap_or_default().to_string())
+  }
+}
+
+struct SlowHashAlgorithm {
+  current: Arc<AtomicUsize>,
+  max: Arc<AtomicUsize>,
+}
+
+impl HashAlgorithm for SlowHashAlgorithm {
+  fn name(&self) -> &'static str {
+    "slow_hash"
+  }
+
+  fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
+    let in_flight = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut observed_max = self.max.load(Ordering::SeqCst);
+    while in_flight > observed_max {
+      match self
+        .max
+        .compare_exchange(observed_max, in_flight, Ordering::SeqCst, Ordering::SeqCst)
+      {
+        Ok(_) => break,
+        Err(next) => observed_max = next,
+      }
+    }
+
+    std::thread::sleep(Duration::from_millis(25));
+    let bytes = fs::read(path)?;
+    self.current.fetch_sub(1, Ordering::SeqCst);
+    Ok(bytes.len().to_string())
   }
 }

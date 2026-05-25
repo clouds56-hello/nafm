@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
-use tokio::task;
+use tokio::task::{self, JoinSet};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
@@ -44,6 +45,19 @@ struct ExistingRecord {
   id: String,
   content_hash: Option<String>,
   hash_algorithm: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingFileRecord {
+  file: FileProbe,
+  content_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ScanProgressContext {
+  site_id: String,
+  site_name: String,
+  total_files: u64,
 }
 
 impl Repository {
@@ -163,15 +177,25 @@ impl Repository {
     progress_callback: Option<ScanProgressCallback>,
   ) -> Result<Vec<ScanSummary>> {
     let sites = self.list_sites().await?;
-    let mut summaries = Vec::with_capacity(sites.len());
-    for site in sites {
-      summaries.push(
-        self
-          .scan_site_with_progress(&site.id, progress_callback.clone())
-          .await?,
-      );
+    let mut tasks = JoinSet::new();
+    for (index, site) in sites.into_iter().enumerate() {
+      let repo = self.clone();
+      let progress_callback = progress_callback.clone();
+      tasks.spawn(async move { (index, repo.scan_site_with_progress(&site.id, progress_callback).await) });
     }
-    Ok(summaries)
+
+    let mut summaries = vec![None; tasks.len()];
+    while let Some(result) = tasks.join_next().await {
+      let (index, summary) = result?;
+      summaries[index] = Some(summary?);
+    }
+
+    Ok(
+      summaries
+        .into_iter()
+        .map(|summary| summary.expect("scan task should fill summary slot"))
+        .collect(),
+    )
   }
 
   pub async fn scan_site(&self, selector: &str) -> Result<ScanSummary> {
@@ -303,24 +327,22 @@ fn scan_site_blocking(
   progress_callback: Option<&ScanProgressCallback>,
 ) -> Result<ScanSummary> {
   let files = discover_site_files(site_folders)?;
-  let total_files = files.len() as u64;
+  let progress_context = Arc::new(ScanProgressContext {
+    site_id: site.id.clone(),
+    site_name: site.name.clone(),
+    total_files: files.len() as u64,
+  });
   let scan_time = Utc::now();
   let mut files_seen = 0;
   let mut files_hashed = 0;
   let mut files_reused = 0;
   let mut bytes_hashed = 0;
+  let processed_files = AtomicU64::new(0);
+  let mut pending_records = Vec::with_capacity(files.len());
+  let mut hash_targets = Vec::new();
 
-  for file in &files {
+  for file in files {
     files_seen += 1;
-    if let Some(progress_callback) = progress_callback {
-      progress_callback(&ScanProgress {
-        site_id: site.id.clone(),
-        site_name: site.name.clone(),
-        current_path: file.path.clone(),
-        files_scanned: files_seen,
-        total_files,
-      });
-    }
     let existing = existing_record(conn, &file.path)?;
     let can_reuse = match existing.as_ref() {
       Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm.name() => {
@@ -334,21 +356,42 @@ fn scan_site_blocking(
       }
       _ => false,
     };
-    let content_hash = if can_reuse {
+    if can_reuse {
       files_reused += 1;
-      existing.and_then(|record| record.content_hash)
+      report_scan_progress(progress_callback, &progress_context, &file.path, &processed_files);
+      pending_records.push(PendingFileRecord {
+        file,
+        content_hash: existing.and_then(|record| record.content_hash),
+      });
     } else {
       files_hashed += 1;
       bytes_hashed += file.size_bytes;
-      Some(hash_algorithm.hash_file(&file.path)?)
-    };
+      hash_targets.push((pending_records.len(), file.clone()));
+      pending_records.push(PendingFileRecord {
+        file,
+        content_hash: None,
+      });
+    }
+  }
 
+  let hashed_records = hash_files_in_parallel(
+    &hash_targets,
+    hash_algorithm,
+    progress_callback,
+    &progress_context,
+    &processed_files,
+  )?;
+  for (index, content_hash) in hashed_records {
+    pending_records[index].content_hash = Some(content_hash);
+  }
+
+  for pending_record in &pending_records {
     upsert_file(
       conn,
       site,
-      file,
+      &pending_record.file,
       hash_algorithm.name(),
-      content_hash.as_deref(),
+      pending_record.content_hash.as_deref(),
       scan_time,
     )?;
   }
@@ -372,6 +415,66 @@ fn scan_site_blocking(
     duplicate_groups: duplicate_groups.len() as u64,
     duplicate_files,
   })
+}
+
+fn hash_files_in_parallel(
+  hash_targets: &[(usize, FileProbe)],
+  hash_algorithm: &dyn HashAlgorithm,
+  progress_callback: Option<&ScanProgressCallback>,
+  progress_context: &Arc<ScanProgressContext>,
+  processed_files: &AtomicU64,
+) -> Result<Vec<(usize, String)>> {
+  if hash_targets.is_empty() {
+    return Ok(Vec::new());
+  }
+
+  let worker_count = std::thread::available_parallelism()
+    .map(|parallelism| parallelism.get())
+    .unwrap_or(1)
+    .min(hash_targets.len());
+  let chunk_size = hash_targets.len().div_ceil(worker_count);
+  let mut hashed_records = Vec::with_capacity(hash_targets.len());
+
+  std::thread::scope(|scope| -> Result<()> {
+    let mut tasks = Vec::with_capacity(worker_count);
+    for chunk in hash_targets.chunks(chunk_size) {
+      let progress_context = progress_context.clone();
+      tasks.push(scope.spawn(move || -> Result<Vec<(usize, String)>> {
+        let mut results = Vec::with_capacity(chunk.len());
+        for (index, file) in chunk {
+          let content_hash = hash_algorithm.hash_file(&file.path)?;
+          report_scan_progress(progress_callback, &progress_context, &file.path, processed_files);
+          results.push((*index, content_hash));
+        }
+        Ok(results)
+      }));
+    }
+
+    for task in tasks {
+      hashed_records.extend(task.join().expect("hash worker thread should not panic")?);
+    }
+    Ok(())
+  })?;
+
+  Ok(hashed_records)
+}
+
+fn report_scan_progress(
+  progress_callback: Option<&ScanProgressCallback>,
+  progress_context: &ScanProgressContext,
+  current_path: &Path,
+  processed_files: &AtomicU64,
+) {
+  let Some(progress_callback) = progress_callback else {
+    return;
+  };
+  progress_callback(&ScanProgress {
+    site_id: progress_context.site_id.clone(),
+    site_name: progress_context.site_name.clone(),
+    current_path: current_path.to_path_buf(),
+    files_scanned: processed_files.fetch_add(1, Ordering::Relaxed) + 1,
+    total_files: progress_context.total_files,
+  });
 }
 
 fn discover_site_files(site_folders: &[SiteFolder]) -> Result<Vec<FileProbe>> {
