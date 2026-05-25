@@ -11,26 +11,32 @@ pub enum HiddenPolicy {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Folder {
+pub struct Site {
   pub id: String,
-  pub display_name: String,
+  pub name: String,
+  pub added_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SiteFolder {
+  pub id: String,
+  pub site_id: String,
   pub path: PathBuf,
-  pub alias: Option<String>,
   pub hidden_policy: HiddenPolicy,
   pub added_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
-pub struct AddFolderRequest {
+pub struct AddSiteFolderRequest {
   pub path: PathBuf,
-  pub alias: Option<String>,
   pub hidden_policy: HiddenPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScanSummary {
-  pub folder_id: String,
-  pub folder_name: String,
+  pub site_id: String,
+  pub site_name: String,
+  pub site_folders: u64,
   pub files_seen: u64,
   pub files_hashed: u64,
   pub files_reused: u64,
@@ -43,7 +49,8 @@ pub struct ScanSummary {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DuplicateFile {
   pub file_id: String,
-  pub folder_id: String,
+  pub site_id: String,
+  pub site_folder_id: String,
   pub path: PathBuf,
   pub size_bytes: u64,
   pub modified_unix_nanos: i64,
@@ -52,15 +59,19 @@ pub struct DuplicateFile {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DuplicateGroup {
   pub group_id: String,
+  pub hash_algorithm: String,
   pub hash: String,
   pub size_bytes: u64,
   pub files: Vec<DuplicateFile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TrashPlan {
+pub struct MissingContentGroup {
   pub group_id: String,
-  pub kept_file_id: String,
-  pub trashed_files: Vec<DuplicateFile>,
-  pub dry_run: bool,
+  pub source_site_id: String,
+  pub target_site_id: String,
+  pub hash_algorithm: String,
+  pub hash: String,
+  pub size_bytes: u64,
+  pub source_files: Vec<DuplicateFile>,
 }

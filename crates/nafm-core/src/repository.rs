@@ -1,7 +1,6 @@
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::Read;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -12,20 +11,26 @@ use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::error::{NafmError, Result};
-use crate::model::{AddFolderRequest, DuplicateFile, DuplicateGroup, Folder, HiddenPolicy, ScanSummary, TrashPlan};
+use crate::hash::{HashAlgorithm, default_hash_algorithm};
+use crate::model::{
+  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanSummary, Site, SiteFolder,
+};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Repository {
   db_path: PathBuf,
+  hash_algorithm: Arc<dyn HashAlgorithm>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RepositoryOptions {
   pub cache_path: PathBuf,
+  pub hash_algorithm: Option<Arc<dyn HashAlgorithm>>,
 }
 
 #[derive(Clone, Debug)]
 struct FileProbe {
+  site_folder_id: String,
   path: PathBuf,
   size_bytes: u64,
   modified_unix_nanos: i64,
@@ -35,12 +40,14 @@ struct FileProbe {
 struct ExistingRecord {
   id: String,
   content_hash: Option<String>,
+  hash_algorithm: String,
 }
 
 impl Repository {
   pub async fn open(options: RepositoryOptions) -> Result<Self> {
     let repo = Self {
       db_path: options.cache_path,
+      hash_algorithm: options.hash_algorithm.unwrap_or_else(default_hash_algorithm),
     };
     repo.initialize().await?;
     Ok(repo)
@@ -49,6 +56,7 @@ impl Repository {
   pub async fn open_default() -> Result<Self> {
     Self::open(RepositoryOptions {
       cache_path: default_cache_path()?,
+      hash_algorithm: None,
     })
     .await
   }
@@ -57,134 +65,147 @@ impl Repository {
     &self.db_path
   }
 
-  pub async fn add_folder(&self, request: AddFolderRequest) -> Result<Folder> {
+  pub fn hash_algorithm_name(&self) -> &str {
+    self.hash_algorithm.name()
+  }
+
+  pub async fn create_site(&self, name: &str) -> Result<Site> {
     let db_path = self.db_path.clone();
+    let name = name.trim().to_owned();
     task::spawn_blocking(move || {
-      let path = std::fs::canonicalize(&request.path)?;
+      if name.is_empty() {
+        return Err(NafmError::EmptySiteName);
+      }
+
       let conn = Connection::open(db_path)?;
       let now = Utc::now();
-      let id = Uuid::new_v4().to_string();
-      let display_name = folder_display_name_from_path(&path);
+      let site = Site {
+        id: Uuid::new_v4().to_string(),
+        name,
+        added_at: now,
+      };
       conn.execute(
-        "insert into folders (id, display_name, path, alias, hidden_policy, added_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-          id,
-          display_name,
-          path.to_string_lossy(),
-          request.alias,
-          hidden_policy_to_db(request.hidden_policy),
-          now
-        ],
+        "insert into sites (id, name, added_at) values (?1, ?2, ?3)",
+        params![site.id, site.name, site.added_at],
       )?;
-      Ok(Folder {
-        id,
-        display_name,
+      Ok(site)
+    })
+    .await?
+  }
+
+  pub async fn add_site_folder(&self, site_selector: &str, request: AddSiteFolderRequest) -> Result<SiteFolder> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
+      let path = std::fs::canonicalize(&request.path)?;
+      let now = Utc::now();
+      let site_folder = SiteFolder {
+        id: Uuid::new_v4().to_string(),
+        site_id: site.id,
         path,
-        alias: request.alias,
         hidden_policy: request.hidden_policy,
         added_at: now,
-      })
+      };
+      conn.execute(
+        "insert into site_folders (id, site_id, path, hidden_policy, added_at)
+         values (?1, ?2, ?3, ?4, ?5)",
+        params![
+          site_folder.id,
+          site_folder.site_id,
+          site_folder.path.to_string_lossy(),
+          hidden_policy_to_db(site_folder.hidden_policy),
+          site_folder.added_at
+        ],
+      )?;
+      Ok(site_folder)
     })
     .await?
   }
 
-  pub async fn remove_folder(&self, selector: &str) -> Result<Option<Folder>> {
+  pub async fn list_sites(&self) -> Result<Vec<Site>> {
     let db_path = self.db_path.clone();
-    let selector = selector.to_owned();
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      let folder = find_folder(&conn, &selector)?;
-      if let Some(folder) = &folder {
-        conn.execute("delete from files where folder_id = ?1", params![folder.id])?;
-        conn.execute("delete from folders where id = ?1", params![folder.id])?;
-      }
-      Ok(folder)
+      list_sites(&conn)
     })
     .await?
   }
 
-  pub async fn list_folders(&self) -> Result<Vec<Folder>> {
+  pub async fn list_site_folders(&self, site_selector: Option<&str>) -> Result<Vec<SiteFolder>> {
     let db_path = self.db_path.clone();
+    let site_selector = site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      list_folders(&conn)
+      let site_id = match site_selector {
+        Some(selector) => Some(
+          find_site(&conn, &selector)?
+            .ok_or_else(|| NafmError::SiteNotFound(selector))?
+            .id,
+        ),
+        None => None,
+      };
+      list_site_folders(&conn, site_id.as_deref())
     })
     .await?
   }
 
   pub async fn scan_all(&self) -> Result<Vec<ScanSummary>> {
-    let folders = self.list_folders().await?;
-    let mut summaries = Vec::with_capacity(folders.len());
-    for folder in folders {
-      summaries.push(self.scan_folder(&folder.id).await?);
+    let sites = self.list_sites().await?;
+    let mut summaries = Vec::with_capacity(sites.len());
+    for site in sites {
+      summaries.push(self.scan_site(&site.id).await?);
     }
     Ok(summaries)
   }
 
-  pub async fn scan_folder(&self, selector: &str) -> Result<ScanSummary> {
+  pub async fn scan_site(&self, selector: &str) -> Result<ScanSummary> {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
+    let hash_algorithm = self.hash_algorithm.clone();
     task::spawn_blocking(move || {
       let conn = Connection::open(&db_path)?;
-      let folder = find_folder(&conn, &selector)?.ok_or_else(|| NafmError::FolderNotFound(selector.clone()))?;
-      scan_folder_blocking(&conn, &folder)
+      let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
+      let site_folders = list_site_folders(&conn, Some(&site.id))?;
+      scan_site_blocking(&conn, &site, &site_folders, hash_algorithm.as_ref())
     })
     .await?
   }
 
-  pub async fn find_duplicates(&self, selector: Option<&str>) -> Result<Vec<DuplicateGroup>> {
+  pub async fn find_duplicates(&self, site_selector: Option<&str>) -> Result<Vec<DuplicateGroup>> {
     let db_path = self.db_path.clone();
-    let selector = selector.map(str::to_owned);
+    let site_selector = site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      let folder_id = match selector {
+      let site_id = match site_selector {
         Some(selector) => Some(
-          find_folder(&conn, &selector)?
-            .ok_or_else(|| NafmError::FolderNotFound(selector))?
+          find_site(&conn, &selector)?
+            .ok_or_else(|| NafmError::SiteNotFound(selector))?
             .id,
         ),
         None => None,
       };
-      find_duplicates(&conn, folder_id.as_deref())
+      find_duplicates(&conn, site_id.as_deref())
     })
     .await?
   }
 
-  pub async fn trash_duplicate_group(&self, group_id: &str, keep_file_id: &str, dry_run: bool) -> Result<TrashPlan> {
+  pub async fn find_missing(
+    &self,
+    source_site_selector: &str,
+    target_site_selector: &str,
+  ) -> Result<Vec<MissingContentGroup>> {
     let db_path = self.db_path.clone();
-    let group_id = group_id.to_owned();
-    let keep_file_id = keep_file_id.to_owned();
+    let source_site_selector = source_site_selector.to_owned();
+    let target_site_selector = target_site_selector.to_owned();
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      let group = find_duplicates(&conn, None)?
-        .into_iter()
-        .find(|group| group.group_id == group_id)
-        .ok_or_else(|| NafmError::DuplicateGroupNotFound(group_id.clone()))?;
-
-      if !group.files.iter().any(|file| file.file_id == keep_file_id) {
-        return Err(NafmError::FileNotInDuplicateGroup(keep_file_id));
-      }
-
-      let trashed_files = group
-        .files
-        .into_iter()
-        .filter(|file| file.file_id != keep_file_id)
-        .collect::<Vec<_>>();
-
-      if !dry_run {
-        for file in &trashed_files {
-          trash::delete(&file.path).map_err(|err| NafmError::Trash(err.to_string()))?;
-          conn.execute("delete from files where id = ?1", params![file.file_id])?;
-        }
-      }
-
-      Ok(TrashPlan {
-        group_id,
-        kept_file_id: keep_file_id,
-        trashed_files,
-        dry_run,
-      })
+      let source_site = find_site(&conn, &source_site_selector)?
+        .ok_or_else(|| NafmError::SiteNotFound(source_site_selector.clone()))?;
+      let target_site = find_site(&conn, &target_site_selector)?
+        .ok_or_else(|| NafmError::SiteNotFound(target_site_selector.clone()))?;
+      find_missing(&conn, &source_site.id, &target_site.id)
     })
     .await?
   }
@@ -203,31 +224,38 @@ impl Repository {
         "
         pragma foreign_keys = on;
 
-        create table if not exists folders (
+        create table if not exists sites (
           id text primary key not null,
-          display_name text not null,
+          name text not null unique,
+          added_at text not null
+        );
+
+        create table if not exists site_folders (
+          id text primary key not null,
+          site_id text not null references sites(id) on delete cascade,
           path text not null unique,
-          alias text unique,
           hidden_policy text not null,
           added_at text not null
         );
 
-        create table if not exists files (
+        create table if not exists file_records (
           id text primary key not null,
-          folder_id text not null references folders(id) on delete cascade,
+          site_id text not null references sites(id) on delete cascade,
+          site_folder_id text not null references site_folders(id) on delete cascade,
           path text not null unique,
           size_bytes integer not null,
           modified_unix_nanos integer not null,
+          hash_algorithm text not null,
           content_hash text,
-          last_seen_at text not null,
-          foreign key(folder_id) references folders(id)
+          last_seen_at text not null
         );
 
-        create index if not exists idx_files_folder_id on files(folder_id);
-        create index if not exists idx_files_hash_size on files(content_hash, size_bytes);
+        create index if not exists idx_site_folders_site_id on site_folders(site_id);
+        create index if not exists idx_file_records_site_id on file_records(site_id);
+        create index if not exists idx_file_records_site_folder_id on file_records(site_folder_id);
+        create index if not exists idx_file_records_hash on file_records(hash_algorithm, content_hash, size_bytes);
         ",
       )?;
-      ensure_folders_display_name_column(&conn)?;
       Ok(())
     })
     .await?
@@ -239,70 +267,64 @@ pub fn default_cache_path() -> Result<PathBuf> {
   Ok(dirs.data_dir().join("nafm.sqlite3"))
 }
 
-fn scan_folder_blocking(conn: &Connection, folder: &Folder) -> Result<ScanSummary> {
-  let files = discover_files(folder)?;
+fn scan_site_blocking(
+  conn: &Connection,
+  site: &Site,
+  site_folders: &[SiteFolder],
+  hash_algorithm: &dyn HashAlgorithm,
+) -> Result<ScanSummary> {
+  let files = discover_site_files(site_folders)?;
   let scan_time = Utc::now();
-  let mut by_size: HashMap<u64, Vec<FileProbe>> = HashMap::new();
-  for file in files {
-    by_size.entry(file.size_bytes).or_default().push(file);
-  }
-
   let mut files_seen = 0;
   let mut files_hashed = 0;
   let mut files_reused = 0;
   let mut bytes_hashed = 0;
 
-  for candidates in by_size.values() {
-    let should_hash = candidates.len() > 1 || has_external_size_collision(conn, candidates)?;
-    for file in candidates {
-      files_seen += 1;
-      let existing = existing_record(conn, &file.path)?;
-      let hash = if should_hash {
-        match existing {
-          Some(record)
-            if record.content_hash.is_some()
-              && record_matches(conn, &record.id, file.size_bytes, file.modified_unix_nanos)? =>
-          {
-            files_reused += 1;
-            record.content_hash
-          }
-          _ => {
-            files_hashed += 1;
-            bytes_hashed += file.size_bytes;
-            Some(hash_file(&file.path)?)
-          }
-        }
-      } else {
-        match existing {
-          Some(record)
-            if record.content_hash.is_some()
-              && record_matches(conn, &record.id, file.size_bytes, file.modified_unix_nanos)? =>
-          {
-            record.content_hash
-          }
-          _ => None,
-        }
-      };
+  for file in &files {
+    files_seen += 1;
+    let existing = existing_record(conn, &file.path)?;
+    let can_reuse = match existing.as_ref() {
+      Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm.name() => {
+        record_matches(
+          conn,
+          &record.id,
+          file.size_bytes,
+          file.modified_unix_nanos,
+          hash_algorithm.name(),
+        )?
+      }
+      _ => false,
+    };
+    let content_hash = if can_reuse {
+      files_reused += 1;
+      existing.and_then(|record| record.content_hash)
+    } else {
+      files_hashed += 1;
+      bytes_hashed += file.size_bytes;
+      Some(hash_algorithm.hash_file(&file.path)?)
+    };
 
-      upsert_file(conn, folder, file, hash.as_deref(), scan_time)?;
-    }
-    if should_hash {
-      let (extra_files_hashed, extra_bytes_hashed) = hash_unhashed_same_size_records(conn, candidates[0].size_bytes)?;
-      files_hashed += extra_files_hashed;
-      bytes_hashed += extra_bytes_hashed;
-    }
+    upsert_file(
+      conn,
+      site,
+      file,
+      hash_algorithm.name(),
+      content_hash.as_deref(),
+      scan_time,
+    )?;
   }
 
   let removed = conn.execute(
-    "delete from files where folder_id = ?1 and last_seen_at <> ?2",
-    params![folder.id, scan_time],
+    "delete from file_records where site_id = ?1 and last_seen_at <> ?2",
+    params![site.id, scan_time],
   )?;
-  let duplicate_groups = find_duplicates(conn, Some(&folder.id))?;
+  let duplicate_groups = find_duplicates(conn, Some(&site.id))?;
   let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
 
   Ok(ScanSummary {
-    folder_id: folder.id.clone(),
-    folder_name: folder.display_name.clone(),
+    site_id: site.id.clone(),
+    site_name: site.name.clone(),
+    site_folders: site_folders.len() as u64,
     files_seen,
     files_hashed,
     files_reused,
@@ -313,22 +335,36 @@ fn scan_folder_blocking(conn: &Connection, folder: &Folder) -> Result<ScanSummar
   })
 }
 
-fn discover_files(folder: &Folder) -> Result<Vec<FileProbe>> {
-  let mut files = Vec::new();
-  let walker = WalkDir::new(&folder.path).follow_links(false).into_iter();
-  for entry in walker.filter_entry(|entry| should_visit(entry, folder.hidden_policy)) {
-    let entry = entry.map_err(|err| std::io::Error::other(err.to_string()))?;
-    if !entry.file_type().is_file() {
-      continue;
+fn discover_site_files(site_folders: &[SiteFolder]) -> Result<Vec<FileProbe>> {
+  let mut files_by_path = BTreeMap::new();
+  let mut sorted_site_folders = site_folders.to_vec();
+  sorted_site_folders.sort_by_key(|site_folder| std::cmp::Reverse(site_folder.path.components().count()));
+
+  for site_folder in &sorted_site_folders {
+    let walker = WalkDir::new(&site_folder.path).follow_links(false).into_iter();
+    for entry in walker.filter_entry(|entry| should_visit(entry, site_folder.hidden_policy)) {
+      let entry = entry.map_err(|err| std::io::Error::other(err.to_string()))?;
+      if !entry.file_type().is_file() {
+        continue;
+      }
+      let path = entry.path().to_path_buf();
+      if files_by_path.contains_key(&path) {
+        continue;
+      }
+      let metadata = entry.metadata().map_err(|err| std::io::Error::other(err.to_string()))?;
+      files_by_path.insert(
+        path.clone(),
+        FileProbe {
+          site_folder_id: site_folder.id.clone(),
+          path,
+          size_bytes: metadata.len(),
+          modified_unix_nanos: modified_unix_nanos(metadata.modified()?)?,
+        },
+      );
     }
-    let metadata = entry.metadata().map_err(|err| std::io::Error::other(err.to_string()))?;
-    files.push(FileProbe {
-      path: entry.path().to_path_buf(),
-      size_bytes: metadata.len(),
-      modified_unix_nanos: modified_unix_nanos(metadata.modified()?)?,
-    });
   }
-  Ok(files)
+
+  Ok(files_by_path.into_values().collect())
 }
 
 fn should_visit(entry: &DirEntry, hidden_policy: HiddenPolicy) -> bool {
@@ -348,29 +384,16 @@ fn modified_unix_nanos(time: SystemTime) -> Result<i64> {
   Ok((duration.as_secs() as i64 * 1_000_000_000) + duration.subsec_nanos() as i64)
 }
 
-fn hash_file(path: &Path) -> Result<String> {
-  let mut file = File::open(path)?;
-  let mut hasher = blake3::Hasher::new();
-  let mut buffer = [0; 1024 * 64];
-  loop {
-    let read = file.read(&mut buffer)?;
-    if read == 0 {
-      break;
-    }
-    hasher.update(&buffer[..read]);
-  }
-  Ok(hasher.finalize().to_hex().to_string())
-}
-
 fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingRecord>> {
   conn
     .query_row(
-      "select id, content_hash from files where path = ?1",
+      "select id, content_hash, hash_algorithm from file_records where path = ?1",
       params![path.to_string_lossy()],
       |row| {
         Ok(ExistingRecord {
           id: row.get(0)?,
           content_hash: row.get(1)?,
+          hash_algorithm: row.get(2)?,
         })
       },
     )
@@ -378,65 +401,19 @@ fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingReco
     .map_err(Into::into)
 }
 
-fn has_external_size_collision(conn: &Connection, candidates: &[FileProbe]) -> Result<bool> {
-  let Some(first) = candidates.first() else {
-    return Ok(false);
-  };
-  let candidate_paths = candidates
-    .iter()
-    .map(|file| file.path.to_string_lossy().to_string())
-    .collect::<HashSet<_>>();
-  let mut stmt = conn.prepare("select path from files where size_bytes = ?1")?;
-  let existing_paths = stmt
-    .query_map(params![first.size_bytes], |row| row.get::<_, String>(0))?
-    .collect::<std::result::Result<Vec<_>, _>>()?;
-  Ok(existing_paths.iter().any(|path| !candidate_paths.contains(path)))
-}
-
-fn hash_unhashed_same_size_records(conn: &Connection, size_bytes: u64) -> Result<(u64, u64)> {
-  let records = {
-    let mut stmt = conn.prepare(
-      "select id, path, size_bytes
-       from files
-       where size_bytes = ?1 and content_hash is null",
-    )?;
-    stmt
-      .query_map(params![size_bytes], |row| {
-        Ok((
-          row.get::<_, String>(0)?,
-          PathBuf::from(row.get::<_, String>(1)?),
-          row.get::<_, u64>(2)?,
-        ))
-      })?
-      .collect::<std::result::Result<Vec<_>, _>>()?
-  };
-
-  let mut files_hashed = 0;
-  let mut bytes_hashed = 0;
-  for (id, path, size_bytes) in records {
-    if !path.is_file() {
-      conn.execute("delete from files where id = ?1", params![id])?;
-      continue;
-    }
-    let content_hash = hash_file(&path)?;
-    conn.execute(
-      "update files set content_hash = ?1 where id = ?2",
-      params![content_hash, id],
-    )?;
-    files_hashed += 1;
-    bytes_hashed += size_bytes;
-  }
-
-  Ok((files_hashed, bytes_hashed))
-}
-
-fn record_matches(conn: &Connection, id: &str, size_bytes: u64, modified_unix_nanos: i64) -> Result<bool> {
+fn record_matches(
+  conn: &Connection,
+  id: &str,
+  size_bytes: u64,
+  modified_unix_nanos: i64,
+  hash_algorithm: &str,
+) -> Result<bool> {
   let found = conn.query_row(
     "select exists(
-      select 1 from files
-      where id = ?1 and size_bytes = ?2 and modified_unix_nanos = ?3
+      select 1 from file_records
+      where id = ?1 and size_bytes = ?2 and modified_unix_nanos = ?3 and hash_algorithm = ?4
     )",
-    params![id, size_bytes, modified_unix_nanos],
+    params![id, size_bytes, modified_unix_nanos, hash_algorithm],
     |row| row.get::<_, bool>(0),
   )?;
   Ok(found)
@@ -444,28 +421,33 @@ fn record_matches(conn: &Connection, id: &str, size_bytes: u64, modified_unix_na
 
 fn upsert_file(
   conn: &Connection,
-  folder: &Folder,
+  site: &Site,
   file: &FileProbe,
+  hash_algorithm: &str,
   content_hash: Option<&str>,
   last_seen_at: DateTime<Utc>,
 ) -> Result<()> {
   conn.execute(
-    "insert into files (
-      id, folder_id, path, size_bytes, modified_unix_nanos, content_hash, last_seen_at
+    "insert into file_records (
+      id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, last_seen_at
     )
-    values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
     on conflict(path) do update set
-      folder_id = excluded.folder_id,
+      site_id = excluded.site_id,
+      site_folder_id = excluded.site_folder_id,
       size_bytes = excluded.size_bytes,
       modified_unix_nanos = excluded.modified_unix_nanos,
+      hash_algorithm = excluded.hash_algorithm,
       content_hash = excluded.content_hash,
       last_seen_at = excluded.last_seen_at",
     params![
       Uuid::new_v4().to_string(),
-      folder.id,
+      site.id,
+      file.site_folder_id,
       file.path.to_string_lossy(),
       file.size_bytes,
       file.modified_unix_nanos,
+      hash_algorithm,
       content_hash,
       last_seen_at,
     ],
@@ -473,40 +455,51 @@ fn upsert_file(
   Ok(())
 }
 
-fn find_duplicates(conn: &Connection, folder_id: Option<&str>) -> Result<Vec<DuplicateGroup>> {
-  let mut groups = if let Some(folder_id) = folder_id {
+fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<DuplicateGroup>> {
+  let groups = if let Some(site_id) = site_id {
     conn
       .prepare(
-        "select content_hash, size_bytes
-         from files
-         where content_hash is not null and folder_id = ?1
-         group by content_hash, size_bytes
+        "select hash_algorithm, content_hash, size_bytes
+         from file_records
+         where content_hash is not null and site_id = ?1
+         group by hash_algorithm, content_hash, size_bytes
          having count(*) > 1
          order by size_bytes desc, content_hash",
       )?
-      .query_map(params![folder_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+      .query_map(params![site_id], |row| {
+        Ok((
+          row.get::<_, String>(0)?,
+          row.get::<_, String>(1)?,
+          row.get::<_, u64>(2)?,
+        ))
       })?
       .collect::<std::result::Result<Vec<_>, _>>()?
   } else {
     conn
       .prepare(
-        "select content_hash, size_bytes
-         from files
+        "select hash_algorithm, content_hash, size_bytes
+         from file_records
          where content_hash is not null
-         group by content_hash, size_bytes
+         group by hash_algorithm, content_hash, size_bytes
          having count(*) > 1
          order by size_bytes desc, content_hash",
       )?
-      .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+      .query_map([], |row| {
+        Ok((
+          row.get::<_, String>(0)?,
+          row.get::<_, String>(1)?,
+          row.get::<_, u64>(2)?,
+        ))
+      })?
       .collect::<std::result::Result<Vec<_>, _>>()?
   };
 
   let mut duplicate_groups = Vec::with_capacity(groups.len());
-  for (hash, size_bytes) in groups.drain(..) {
-    let files = duplicate_files(conn, folder_id, &hash, size_bytes)?;
+  for (hash_algorithm, hash, size_bytes) in groups {
+    let files = duplicate_files(conn, site_id, &hash_algorithm, &hash, size_bytes)?;
     duplicate_groups.push(DuplicateGroup {
-      group_id: hash.clone(),
+      group_id: format!("{hash_algorithm}:{hash}:{size_bytes}"),
+      hash_algorithm,
       hash,
       size_bytes,
       files,
@@ -517,79 +510,157 @@ fn find_duplicates(conn: &Connection, folder_id: Option<&str>) -> Result<Vec<Dup
 
 fn duplicate_files(
   conn: &Connection,
-  folder_id: Option<&str>,
+  site_id: Option<&str>,
+  hash_algorithm: &str,
   hash: &str,
   size_bytes: u64,
 ) -> Result<Vec<DuplicateFile>> {
-  if let Some(folder_id) = folder_id {
+  if let Some(site_id) = site_id {
     let mut stmt = conn.prepare(
-      "select id, folder_id, path, size_bytes, modified_unix_nanos
-       from files
-       where folder_id = ?1 and content_hash = ?2 and size_bytes = ?3
+      "select id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos
+       from file_records
+       where site_id = ?1 and hash_algorithm = ?2 and content_hash = ?3 and size_bytes = ?4
        order by path",
     )?;
     stmt
-      .query_map(params![folder_id, hash, size_bytes], duplicate_file_from_row)?
+      .query_map(
+        params![site_id, hash_algorithm, hash, size_bytes],
+        duplicate_file_from_row,
+      )?
       .collect::<std::result::Result<Vec<_>, _>>()
       .map_err(Into::into)
   } else {
     let mut stmt = conn.prepare(
-      "select id, folder_id, path, size_bytes, modified_unix_nanos
-       from files
-       where content_hash = ?1 and size_bytes = ?2
+      "select id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos
+       from file_records
+       where hash_algorithm = ?1 and content_hash = ?2 and size_bytes = ?3
        order by path",
     )?;
     stmt
-      .query_map(params![hash, size_bytes], duplicate_file_from_row)?
+      .query_map(params![hash_algorithm, hash, size_bytes], duplicate_file_from_row)?
       .collect::<std::result::Result<Vec<_>, _>>()
       .map_err(Into::into)
   }
 }
 
+fn find_missing(conn: &Connection, source_site_id: &str, target_site_id: &str) -> Result<Vec<MissingContentGroup>> {
+  let groups = conn
+    .prepare(
+      "select distinct source.hash_algorithm, source.content_hash, source.size_bytes
+       from file_records source
+       where source.site_id = ?1
+         and source.content_hash is not null
+         and not exists (
+           select 1
+           from file_records target
+           where target.site_id = ?2
+             and target.hash_algorithm = source.hash_algorithm
+             and target.content_hash = source.content_hash
+             and target.size_bytes = source.size_bytes
+         )
+       order by source.size_bytes desc, source.content_hash",
+    )?
+    .query_map(params![source_site_id, target_site_id], |row| {
+      Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, u64>(2)?,
+      ))
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+  let mut missing_groups = Vec::with_capacity(groups.len());
+  for (hash_algorithm, hash, size_bytes) in groups {
+    missing_groups.push(MissingContentGroup {
+      group_id: format!("{source_site_id}:{target_site_id}:{hash_algorithm}:{hash}:{size_bytes}"),
+      source_site_id: source_site_id.to_owned(),
+      target_site_id: target_site_id.to_owned(),
+      hash_algorithm: hash_algorithm.clone(),
+      hash: hash.clone(),
+      size_bytes,
+      source_files: duplicate_files(conn, Some(source_site_id), &hash_algorithm, &hash, size_bytes)?,
+    });
+  }
+  Ok(missing_groups)
+}
+
 fn duplicate_file_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DuplicateFile> {
   Ok(DuplicateFile {
     file_id: row.get(0)?,
-    folder_id: row.get(1)?,
-    path: PathBuf::from(row.get::<_, String>(2)?),
-    size_bytes: row.get(3)?,
-    modified_unix_nanos: row.get(4)?,
+    site_id: row.get(1)?,
+    site_folder_id: row.get(2)?,
+    path: PathBuf::from(row.get::<_, String>(3)?),
+    size_bytes: row.get(4)?,
+    modified_unix_nanos: row.get(5)?,
   })
 }
 
-fn list_folders(conn: &Connection) -> Result<Vec<Folder>> {
+fn list_sites(conn: &Connection) -> Result<Vec<Site>> {
   let mut stmt = conn.prepare(
-    "select id, display_name, path, alias, hidden_policy, added_at
-     from folders
-     order by coalesce(alias, display_name, path)",
+    "select id, name, added_at
+     from sites
+     order by name",
   )?;
   stmt
-    .query_map([], folder_from_row)?
+    .query_map([], site_from_row)?
     .collect::<std::result::Result<Vec<_>, _>>()
     .map_err(Into::into)
 }
 
-fn find_folder(conn: &Connection, selector: &str) -> Result<Option<Folder>> {
+fn list_site_folders(conn: &Connection, site_id: Option<&str>) -> Result<Vec<SiteFolder>> {
+  if let Some(site_id) = site_id {
+    let mut stmt = conn.prepare(
+      "select id, site_id, path, hidden_policy, added_at
+       from site_folders
+       where site_id = ?1
+       order by path",
+    )?;
+    stmt
+      .query_map(params![site_id], site_folder_from_row)?
+      .collect::<std::result::Result<Vec<_>, _>>()
+      .map_err(Into::into)
+  } else {
+    let mut stmt = conn.prepare(
+      "select id, site_id, path, hidden_policy, added_at
+       from site_folders
+       order by path",
+    )?;
+    stmt
+      .query_map([], site_folder_from_row)?
+      .collect::<std::result::Result<Vec<_>, _>>()
+      .map_err(Into::into)
+  }
+}
+
+fn find_site(conn: &Connection, selector: &str) -> Result<Option<Site>> {
   conn
     .query_row(
-      "select id, display_name, path, alias, hidden_policy, added_at
-       from folders
-       where id = ?1 or display_name = ?1 or alias = ?1 or path = ?1",
+      "select id, name, added_at
+       from sites
+       where id = ?1 or name = ?1",
       params![selector],
-      folder_from_row,
+      site_from_row,
     )
     .optional()
     .map_err(Into::into)
 }
 
-fn folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Folder> {
-  let hidden_policy: String = row.get(4)?;
-  Ok(Folder {
+fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
+  Ok(Site {
     id: row.get(0)?,
-    display_name: row.get(1)?,
+    name: row.get(1)?,
+    added_at: row.get(2)?,
+  })
+}
+
+fn site_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SiteFolder> {
+  let hidden_policy: String = row.get(3)?;
+  Ok(SiteFolder {
+    id: row.get(0)?,
+    site_id: row.get(1)?,
     path: PathBuf::from(row.get::<_, String>(2)?),
-    alias: row.get(3)?,
     hidden_policy: hidden_policy_from_db(&hidden_policy),
-    added_at: row.get(5)?,
+    added_at: row.get(4)?,
   })
 }
 
@@ -605,69 +676,4 @@ fn hidden_policy_from_db(value: &str) -> HiddenPolicy {
     "skip" => HiddenPolicy::Skip,
     _ => HiddenPolicy::Include,
   }
-}
-
-fn folder_display_name_from_path(path: &Path) -> String {
-  let name = path
-    .file_name()
-    .and_then(|name| name.to_str())
-    .map(sanitize_folder_name)
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "folder".to_owned());
-  let hash = blake3::hash(path.to_string_lossy().as_bytes()).to_hex().to_string();
-  format!("{name}-{}", &hash[..10])
-}
-
-fn sanitize_folder_name(name: &str) -> String {
-  let mut sanitized = String::with_capacity(name.len());
-  let mut last_was_dash = false;
-  for ch in name.chars() {
-    if ch.is_ascii_alphanumeric() {
-      sanitized.push(ch.to_ascii_lowercase());
-      last_was_dash = false;
-    } else if !last_was_dash {
-      sanitized.push('-');
-      last_was_dash = true;
-    }
-  }
-  sanitized.trim_matches('-').to_owned()
-}
-
-fn ensure_folders_display_name_column(conn: &Connection) -> Result<()> {
-  let mut stmt = conn.prepare("pragma table_info(folders)")?;
-  let has_display_name = stmt
-    .query_map([], |row| row.get::<_, String>(1))?
-    .collect::<std::result::Result<Vec<_>, _>>()?
-    .iter()
-    .any(|column| column == "display_name");
-
-  if !has_display_name {
-    conn.execute(
-      "alter table folders add column display_name text not null default ''",
-      [],
-    )?;
-  }
-
-  let mut stmt = conn.prepare("select id, path, display_name from folders")?;
-  let rows = stmt
-    .query_map([], |row| {
-      Ok((
-        row.get::<_, String>(0)?,
-        row.get::<_, String>(1)?,
-        row.get::<_, String>(2)?,
-      ))
-    })?
-    .collect::<std::result::Result<Vec<_>, _>>()?;
-
-  for (id, path, display_name) in rows {
-    if display_name.is_empty() {
-      let derived_name = folder_display_name_from_path(Path::new(&path));
-      conn.execute(
-        "update folders set display_name = ?1 where id = ?2",
-        params![derived_name, id],
-      )?;
-    }
-  }
-
-  Ok(())
 }

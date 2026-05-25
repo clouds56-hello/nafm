@@ -6,12 +6,12 @@ pub type Result<T> = std::result::Result<T, NafmError>;
 
 #[derive(Debug, Error)]
 pub enum NafmError {
-  #[error("folder not found: {0}")]
-  FolderNotFound(String),
-  #[error("duplicate group not found: {0}")]
-  DuplicateGroupNotFound(String),
-  #[error("file is not part of duplicate group: {0}")]
-  FileNotInDuplicateGroup(String),
+  #[error("site not found: {0}")]
+  SiteNotFound(String),
+  #[error("site folder not found: {0}")]
+  SiteFolderNotFound(String),
+  #[error("site name cannot be empty")]
+  EmptySiteName,
   #[error("cache path has no parent directory: {0}")]
   CachePathHasNoParent(PathBuf),
   #[error("unable to resolve app data directory")]
@@ -22,6 +22,4 @@ pub enum NafmError {
   Io(#[from] std::io::Error),
   #[error("blocking task failed: {0}")]
   Join(#[from] tokio::task::JoinError),
-  #[error("trash error: {0}")]
-  Trash(String),
 }

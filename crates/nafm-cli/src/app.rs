@@ -1,108 +1,144 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use clap::Parser;
-use nafm_core::{AddFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
+use nafm_core::{AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
 
-use crate::cli::{Cli, Command, FolderCommand, HiddenArg};
-use crate::output::{folder_label, print_json_or, spinner};
+use crate::cli::{Cli, Command, HiddenArg, SiteCommand};
+use crate::output::{print_json_or, site_folder_label, spinner};
 
 pub async fn run() -> Result<()> {
   let cli = Cli::parse();
   let repo = match cli.cache {
-    Some(cache_path) => Repository::open(RepositoryOptions { cache_path }).await?,
+    Some(cache_path) => {
+      Repository::open(RepositoryOptions {
+        cache_path,
+        hash_algorithm: None,
+      })
+      .await?
+    }
     None => Repository::open_default().await?,
   };
 
   match cli.command {
-    Command::Folder(command) => handle_folder(&repo, command, cli.json).await?,
-    Command::Scan { selector } => handle_scan(&repo, selector, cli.json).await?,
-    Command::Duplicates { selector } => handle_duplicates(&repo, selector, cli.json).await?,
-    Command::Trash { group, keep, dry_run } => handle_trash(&repo, group, keep, dry_run, cli.json).await?,
+    Command::Site(command) => handle_site(&repo, command, cli.json).await?,
+    Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
+    Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
+    Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
   }
 
   Ok(())
 }
 
-async fn handle_folder(repo: &Repository, command: FolderCommand, json: bool) -> Result<()> {
+async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Result<()> {
   match command {
-    FolderCommand::Add { path, alias, hidden } => {
-      let folder = repo
-        .add_folder(AddFolderRequest {
-          path,
-          alias,
-          hidden_policy: hidden.into(),
-        })
-        .await?;
-      print_json_or(json, &folder, || {
-        println!(
-          "added folder {}",
-          folder_label(&folder.display_name, folder.alias.as_deref(), &folder.path)
-        );
+    SiteCommand::Create { name } => {
+      let site = repo.create_site(&name).await?;
+      print_json_or(json, &site, || {
+        println!("created site {}", site.name);
       })?;
     }
-    FolderCommand::List => {
-      let folders = repo.list_folders().await?;
-      print_json_or(json, &folders, || {
-        if folders.is_empty() {
-          println!("no folders registered");
+    SiteCommand::Add { site, folder, hidden } => {
+      let site_folder = repo
+        .add_site_folder(
+          &site,
+          AddSiteFolderRequest {
+            path: folder,
+            hidden_policy: hidden.into(),
+          },
+        )
+        .await?;
+      print_json_or(json, &site_folder, || {
+        println!("added site folder {}", site_folder_label(&site, &site_folder.path));
+      })?;
+    }
+    SiteCommand::List => {
+      let sites = repo.list_sites().await?;
+      let site_folders = repo.list_site_folders(None).await?;
+      let mut folders_by_site = BTreeMap::new();
+      for site_folder in site_folders {
+        folders_by_site
+          .entry(site_folder.site_id.clone())
+          .or_insert_with(Vec::new)
+          .push(site_folder);
+      }
+
+      let payload = sites
+        .iter()
+        .map(|site| (site, folders_by_site.get(&site.id).cloned().unwrap_or_default()))
+        .collect::<Vec<_>>();
+
+      print_json_or(json, &payload, || {
+        if sites.is_empty() {
+          println!("no sites registered");
         } else {
-          for folder in &folders {
-            println!(
-              "{}  {}  id={}  hidden={:?}",
-              folder.display_name,
-              folder.alias.as_deref().unwrap_or("-"),
-              folder.id,
-              folder.hidden_policy
-            );
-            println!("  {}", folder.path.display());
+          for site in &sites {
+            println!("{}  id={}", site.name, site.id);
+            match folders_by_site.get(&site.id) {
+              Some(site_folders) => {
+                for site_folder in site_folders {
+                  println!(
+                    "  {}  hidden={:?}",
+                    site_folder.path.display(),
+                    site_folder.hidden_policy
+                  );
+                }
+              }
+              None => println!("  no folders"),
+            }
           }
         }
       })?;
     }
-    FolderCommand::Remove { selector } => {
-      let removed = repo.remove_folder(&selector).await?;
-      print_json_or(json, &removed, || match &removed {
-        Some(folder) => println!("removed folder {}", folder.path.display()),
-        None => println!("folder not found: {selector}"),
-      })?;
-    }
   }
   Ok(())
 }
 
-async fn handle_scan(repo: &Repository, selector: Option<String>, json: bool) -> Result<()> {
+async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()> {
   let spinner = spinner(json, "scanning");
-  let summaries = match selector {
-    Some(selector) => vec![repo.scan_folder(&selector).await?],
-    None => repo.scan_all().await?,
+  let summaries = if selector == "all" {
+    repo.scan_all().await?
+  } else {
+    vec![repo.scan_site(selector).await?]
   };
   spinner.finish_and_clear();
 
   print_json_or(json, &summaries, || {
     if summaries.is_empty() {
-      println!("no folders registered");
+      println!("no sites registered");
     }
     for summary in &summaries {
       println!(
-        "folder {}: {} files, {} hashed, {} reused, {} duplicate groups",
-        summary.folder_name, summary.files_seen, summary.files_hashed, summary.files_reused, summary.duplicate_groups
+        "site {}: {} folders, {} files, {} hashed, {} reused, {} duplicate groups",
+        summary.site_name,
+        summary.site_folders,
+        summary.files_seen,
+        summary.files_hashed,
+        summary.files_reused,
+        summary.duplicate_groups
       );
     }
   })?;
   Ok(())
 }
 
-async fn handle_duplicates(repo: &Repository, selector: Option<String>, json: bool) -> Result<()> {
-  let groups = repo.find_duplicates(selector.as_deref()).await?;
+async fn handle_duplicates(repo: &Repository, selector: &str, json: bool) -> Result<()> {
+  let groups = if selector == "all" {
+    repo.find_duplicates(None).await?
+  } else {
+    repo.find_duplicates(Some(selector)).await?
+  };
   print_json_or(json, &groups, || {
     if groups.is_empty() {
       println!("no duplicates found");
     }
     for group in &groups {
       println!(
-        "group {}: {} files, {} bytes each",
+        "group {}: {} files, {} bytes each, algo={}",
         group.group_id,
         group.files.len(),
-        group.size_bytes
+        group.size_bytes,
+        group.hash_algorithm
       );
       for file in &group.files {
         println!("  {}  {}", file.file_id, file.path.display());
@@ -112,19 +148,23 @@ async fn handle_duplicates(repo: &Repository, selector: Option<String>, json: bo
   Ok(())
 }
 
-async fn handle_trash(repo: &Repository, group: String, keep: String, dry_run: bool, json: bool) -> Result<()> {
-  let plan = repo.trash_duplicate_group(&group, &keep, dry_run).await?;
-  print_json_or(json, &plan, || {
-    let verb = if dry_run { "would trash" } else { "trashed" };
-    println!(
-      "{} {} files from group {}; kept {}",
-      verb,
-      plan.trashed_files.len(),
-      plan.group_id,
-      plan.kept_file_id
-    );
-    for file in &plan.trashed_files {
-      println!("  {}", file.path.display());
+async fn handle_missing(repo: &Repository, site: &str, against: &str, json: bool) -> Result<()> {
+  let groups = repo.find_missing(site, against).await?;
+  print_json_or(json, &groups, || {
+    if groups.is_empty() {
+      println!("no missing content from {} to {}", site, against);
+    }
+    for group in &groups {
+      println!(
+        "missing group {}: {} source files, {} bytes, algo={}",
+        group.group_id,
+        group.source_files.len(),
+        group.size_bytes,
+        group.hash_algorithm
+      );
+      for file in &group.source_files {
+        println!("  {}", file.path.display());
+      }
     }
   })?;
   Ok(())

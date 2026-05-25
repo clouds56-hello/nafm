@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(name = "nafm")]
-#[command(about = "Manage folders and find duplicate files")]
+#[command(about = "Manage sites and detect duplicate or missing files")]
 pub struct Cli {
   #[arg(long, global = true)]
   pub cache: Option<PathBuf>,
@@ -19,36 +19,32 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
   #[command(subcommand)]
-  Folder(FolderCommand),
+  Site(SiteCommand),
   Scan {
-    selector: Option<String>,
+    selector: String,
   },
   Duplicates {
-    selector: Option<String>,
+    selector: String,
   },
-  Trash {
+  Missing {
+    site: String,
     #[arg(long)]
-    group: String,
-    #[arg(long)]
-    keep: String,
-    #[arg(long)]
-    dry_run: bool,
+    against: String,
   },
 }
 
 #[derive(Debug, Subcommand)]
-pub enum FolderCommand {
+pub enum SiteCommand {
+  Create {
+    name: String,
+  },
   Add {
-    path: PathBuf,
-    #[arg(long)]
-    alias: Option<String>,
+    site: String,
+    folder: PathBuf,
     #[arg(long, value_enum, default_value_t = HiddenArg::Include)]
     hidden: HiddenArg,
   },
   List,
-  Remove {
-    selector: String,
-  },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

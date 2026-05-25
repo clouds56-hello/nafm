@@ -1,152 +1,178 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use nafm_core::{AddFolderRequest, HiddenPolicy, Repository, RepositoryOptions};
+use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions};
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn scan_finds_exact_duplicates_and_reuses_hashes() {
+async fn scan_site_detects_duplicates_across_site_folders() {
   let fixture = Fixture::new().await;
-  fs::write(fixture.root.path().join("a.txt"), "same").unwrap();
-  fs::write(fixture.root.path().join("b.txt"), "same").unwrap();
-  fs::write(fixture.root.path().join("c.txt"), "other").unwrap();
+  let first = fixture.mkdir("first");
+  let second = fixture.mkdir("second");
+  fs::write(first.join("a.txt"), "same").unwrap();
+  fs::write(second.join("b.txt"), "same").unwrap();
+  fs::write(second.join("c.txt"), "other").unwrap();
 
-  let folder = fixture.add_folder("docs", HiddenPolicy::Include).await;
+  fixture.create_site("archive").await;
+  fixture.add_site_folder("archive", &first, HiddenPolicy::Include).await;
+  fixture.add_site_folder("archive", &second, HiddenPolicy::Include).await;
 
-  let first = fixture.repo.scan_folder(&folder.id).await.unwrap();
-  assert_eq!(first.files_seen, 3);
-  assert_eq!(first.folder_name, folder.display_name);
-  assert_eq!(first.files_hashed, 2);
-  assert_eq!(first.duplicate_groups, 1);
-  assert_eq!(first.duplicate_files, 2);
+  let summary = fixture.repo.scan_site("archive").await.unwrap();
+  assert_eq!(summary.site_name, "archive");
+  assert_eq!(summary.site_folders, 2);
+  assert_eq!(summary.files_seen, 3);
+  assert_eq!(summary.files_hashed, 3);
+  assert_eq!(summary.duplicate_groups, 1);
+  assert_eq!(summary.duplicate_files, 2);
 
-  let second = fixture.repo.scan_folder("docs").await.unwrap();
-  assert_eq!(second.files_seen, 3);
-  assert_eq!(second.files_hashed, 0);
-  assert_eq!(second.files_reused, 2);
-
-  let duplicates = fixture.repo.find_duplicates(Some("docs")).await.unwrap();
+  let duplicates = fixture.repo.find_duplicates(Some("archive")).await.unwrap();
   assert_eq!(duplicates.len(), 1);
   assert_eq!(duplicates[0].files.len(), 2);
 }
 
 #[tokio::test]
-async fn scan_respects_skip_hidden_policy() {
+async fn scan_site_reuses_hashes_for_unchanged_files() {
   let fixture = Fixture::new().await;
-  fs::write(fixture.root.path().join("visible.txt"), "same").unwrap();
-  fs::write(fixture.root.path().join(".hidden.txt"), "same").unwrap();
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("a.txt"), "same").unwrap();
+  fs::write(docs.join("b.txt"), "same").unwrap();
 
-  fixture.add_folder("docs", HiddenPolicy::Skip).await;
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
 
-  let summary = fixture.repo.scan_folder("docs").await.unwrap();
+  let first = fixture.repo.scan_site("docs").await.unwrap();
+  let second = fixture.repo.scan_site("docs").await.unwrap();
+
+  assert_eq!(first.files_hashed, 2);
+  assert_eq!(second.files_hashed, 0);
+  assert_eq!(second.files_reused, 2);
+}
+
+#[tokio::test]
+async fn scan_respects_hidden_policy_per_site_folder() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("visible.txt"), "same").unwrap();
+  fs::write(docs.join(".hidden.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Skip).await;
+
+  let summary = fixture.repo.scan_site("docs").await.unwrap();
   assert_eq!(summary.files_seen, 1);
-  assert_eq!(summary.duplicate_groups, 0);
 }
 
 #[tokio::test]
-async fn trash_duplicate_group_dry_run_keeps_files_on_disk() {
+async fn missing_reports_content_present_in_one_site_and_absent_in_another() {
   let fixture = Fixture::new().await;
-  let kept_path = fixture.root.path().join("keep.txt");
-  let trashed_path = fixture.root.path().join("trash.txt");
-  fs::write(&kept_path, "same").unwrap();
-  fs::write(&trashed_path, "same").unwrap();
+  let source = fixture.mkdir("source");
+  let target = fixture.mkdir("target");
+  fs::write(source.join("shared.txt"), "shared").unwrap();
+  fs::write(source.join("missing.txt"), "missing").unwrap();
+  fs::write(target.join("shared-copy.txt"), "shared").unwrap();
 
-  fixture.add_folder("docs", HiddenPolicy::Include).await;
-  fixture.repo.scan_folder("docs").await.unwrap();
+  fixture.create_site("source").await;
+  fixture.create_site("target").await;
+  fixture.add_site_folder("source", &source, HiddenPolicy::Include).await;
+  fixture.add_site_folder("target", &target, HiddenPolicy::Include).await;
 
-  let duplicates = fixture.repo.find_duplicates(Some("docs")).await.unwrap();
-  let group = &duplicates[0];
-  let kept_path = fs::canonicalize(kept_path).unwrap();
-  let trashed_path = fs::canonicalize(trashed_path).unwrap();
-  let keep = group.files.iter().find(|file| file.path == kept_path).unwrap();
+  fixture.repo.scan_all().await.unwrap();
 
-  let plan = fixture
-    .repo
-    .trash_duplicate_group(&group.group_id, &keep.file_id, true)
-    .await
-    .unwrap();
-
-  assert!(plan.dry_run);
-  assert_eq!(plan.trashed_files.len(), 1);
-  assert!(Path::new(&kept_path).exists());
-  assert!(Path::new(&trashed_path).exists());
+  let missing = fixture.repo.find_missing("source", "target").await.unwrap();
+  assert_eq!(missing.len(), 1);
+  assert_eq!(missing[0].source_files.len(), 1);
+  assert!(missing[0].source_files[0].path.ends_with("missing.txt"));
 }
 
 #[tokio::test]
-async fn scan_hashes_cross_folder_size_collisions_for_global_duplicates() {
-  let first_root = tempfile::tempdir().unwrap();
-  let second_root = tempfile::tempdir().unwrap();
+async fn scan_deduplicates_overlapping_site_folders() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("root");
+  let nested = root.join("nested");
+  fs::create_dir(&nested).unwrap();
+  fs::write(nested.join("file.txt"), "same").unwrap();
+
+  fixture.create_site("archive").await;
+  fixture.add_site_folder("archive", &root, HiddenPolicy::Include).await;
+  fixture.add_site_folder("archive", &nested, HiddenPolicy::Include).await;
+
+  let summary = fixture.repo.scan_site("archive").await.unwrap();
+  assert_eq!(summary.files_seen, 1);
+}
+
+#[tokio::test]
+async fn repository_uses_the_configured_hash_algorithm() {
+  let root = tempfile::tempdir().unwrap();
   let cache = tempfile::tempdir().unwrap();
-  fs::write(first_root.path().join("one.txt"), "same").unwrap();
-  fs::write(second_root.path().join("two.txt"), "same").unwrap();
+  fs::write(root.path().join("a.txt"), "alpha").unwrap();
+  fs::write(root.path().join("b.txt"), "algae").unwrap();
+
   let repo = Repository::open(RepositoryOptions {
     cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(FirstByteHashAlgorithm)),
   })
   .await
   .unwrap();
 
+  repo.create_site("docs").await.unwrap();
   repo
-    .add_folder(AddFolderRequest {
-      path: first_root.path().to_path_buf(),
-      alias: Some("first".to_owned()),
-      hidden_policy: HiddenPolicy::Include,
-    })
-    .await
-    .unwrap();
-  repo
-    .add_folder(AddFolderRequest {
-      path: second_root.path().to_path_buf(),
-      alias: Some("second".to_owned()),
-      hidden_policy: HiddenPolicy::Include,
-    })
+    .add_site_folder(
+      "docs",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
     .await
     .unwrap();
 
-  repo.scan_folder("first").await.unwrap();
-  repo.scan_folder("second").await.unwrap();
-
-  let duplicates = repo.find_duplicates(None).await.unwrap();
+  repo.scan_site("docs").await.unwrap();
+  let duplicates = repo.find_duplicates(Some("docs")).await.unwrap();
+  assert_eq!(repo.hash_algorithm_name(), "first_byte");
   assert_eq!(duplicates.len(), 1);
-  assert_eq!(duplicates[0].files.len(), 2);
+  assert_eq!(duplicates[0].hash_algorithm, "first_byte");
 }
 
 #[tokio::test]
-async fn scan_invalidates_stale_hash_when_same_size_file_changes() {
-  let fixture = Fixture::new().await;
-  let first_path = fixture.root.path().join("a.txt");
-  let second_path = fixture.root.path().join("b.txt");
-  fs::write(&first_path, "same").unwrap();
-  fs::write(&second_path, "same").unwrap();
+async fn changing_hash_algorithm_invalidates_cached_hashes() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  fs::write(root.path().join("a.txt"), "alpha").unwrap();
+  fs::write(root.path().join("b.txt"), "algae").unwrap();
 
-  fixture.add_folder("docs", HiddenPolicy::Include).await;
-  fixture.repo.scan_folder("docs").await.unwrap();
-  assert_eq!(fixture.repo.find_duplicates(Some("docs")).await.unwrap().len(), 1);
-
-  std::thread::sleep(std::time::Duration::from_millis(5));
-  fs::write(&second_path, "diff").unwrap();
-
-  fixture.repo.scan_folder("docs").await.unwrap();
-  assert!(fixture.repo.find_duplicates(Some("docs")).await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn add_folder_uses_uuid_id_and_stable_display_name() {
-  let fixture = Fixture::new().await;
-  let named_dir = fixture.root.path().join("Project Files");
-  fs::create_dir(&named_dir).unwrap();
-  let folder = fixture
-    .repo
-    .add_folder(AddFolderRequest {
-      path: named_dir,
-      alias: Some("docs".to_owned()),
-      hidden_policy: HiddenPolicy::Include,
-    })
+  let blake_repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  blake_repo.create_site("docs").await.unwrap();
+  blake_repo
+    .add_site_folder(
+      "docs",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
     .await
     .unwrap();
+  blake_repo.scan_site("docs").await.unwrap();
+  assert!(blake_repo.find_duplicates(Some("docs")).await.unwrap().is_empty());
 
-  assert!(uuid::Uuid::parse_str(&folder.id).is_ok());
-  assert!(folder.display_name.starts_with("project-files-"));
-  assert_eq!(folder.display_name.len(), "project-files-".len() + 10);
+  let first_byte_repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(FirstByteHashAlgorithm)),
+  })
+  .await
+  .unwrap();
+  let summary = first_byte_repo.scan_site("docs").await.unwrap();
+  let duplicates = first_byte_repo.find_duplicates(Some("docs")).await.unwrap();
+
+  assert_eq!(summary.files_hashed, 2);
+  assert_eq!(summary.files_reused, 0);
+  assert_eq!(duplicates.len(), 1);
 }
 
 struct Fixture {
@@ -161,6 +187,7 @@ impl Fixture {
     let cache = tempfile::tempdir().unwrap();
     let repo = Repository::open(RepositoryOptions {
       cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
     })
     .await
     .unwrap();
@@ -171,15 +198,40 @@ impl Fixture {
     }
   }
 
-  async fn add_folder(&self, alias: &str, hidden_policy: HiddenPolicy) -> nafm_core::Folder {
+  fn mkdir(&self, name: &str) -> PathBuf {
+    let path = self.root.path().join(name);
+    fs::create_dir(&path).unwrap();
+    path
+  }
+
+  async fn create_site(&self, name: &str) {
+    self.repo.create_site(name).await.unwrap();
+  }
+
+  async fn add_site_folder(&self, site: &str, path: &Path, hidden_policy: HiddenPolicy) {
     self
       .repo
-      .add_folder(AddFolderRequest {
-        path: self.root.path().to_path_buf(),
-        alias: Some(alias.to_owned()),
-        hidden_policy,
-      })
+      .add_site_folder(
+        site,
+        AddSiteFolderRequest {
+          path: path.to_path_buf(),
+          hidden_policy,
+        },
+      )
       .await
-      .unwrap()
+      .unwrap();
+  }
+}
+
+struct FirstByteHashAlgorithm;
+
+impl HashAlgorithm for FirstByteHashAlgorithm {
+  fn name(&self) -> &'static str {
+    "first_byte"
+  }
+
+  fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
+    let bytes = fs::read(path)?;
+    Ok(bytes.first().copied().unwrap_or_default().to_string())
   }
 }
