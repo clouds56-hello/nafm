@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use nafm_core::DuplicateGroup;
 use serde::Serialize;
+use serde_json::Value;
 
 pub fn print_json_or<T, F>(json: bool, value: &T, human: F) -> Result<()>
 where
@@ -12,11 +13,67 @@ where
   F: FnOnce(),
 {
   if json {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    print!("{}", format_json_output(value)?);
   } else {
     human();
   }
   Ok(())
+}
+
+pub fn print_json_line<T>(value: &T) -> Result<()>
+where
+  T: Serialize,
+{
+  println!("{}", serde_json::to_string(value)?);
+  Ok(())
+}
+
+pub fn format_json_output<T>(value: &T) -> Result<String>
+where
+  T: Serialize,
+{
+  format_json_value(&serde_json::to_value(value)?)
+}
+
+pub fn format_json_error(error: &Error) -> Result<String> {
+  let causes = error
+    .chain()
+    .skip(1)
+    .map(|cause| cause.to_string())
+    .collect::<Vec<_>>();
+  if causes.is_empty() {
+    serde_json::to_string(&serde_json::json!({
+      "error": error.to_string(),
+    }))
+    .map(|line| format!("{line}\n"))
+    .map_err(Into::into)
+  } else {
+    serde_json::to_string(&serde_json::json!({
+      "error": error.to_string(),
+      "causes": causes,
+    }))
+    .map(|line| format!("{line}\n"))
+    .map_err(Into::into)
+  }
+}
+
+fn format_json_value(value: &Value) -> Result<String> {
+  match value {
+    Value::Array(values) => {
+      let lines = values
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+      if lines.is_empty() {
+        Ok(String::new())
+      } else {
+        Ok(format!("{}\n", lines.join("\n")))
+      }
+    }
+    _ => serde_json::to_string(value)
+      .map(|line| format!("{line}\n"))
+      .map_err(Into::into),
+  }
 }
 
 pub fn spinner(json: bool, message: &'static str) -> ProgressBar {
@@ -131,6 +188,31 @@ mod tests {
   use nafm_core::DuplicateFile;
 
   use super::*;
+
+  #[test]
+  fn formats_arrays_as_jsonl() {
+    let output = format_json_output(&vec![
+      serde_json::json!({ "id": 1 }),
+      serde_json::json!({ "id": 2 }),
+    ])
+    .unwrap();
+
+    assert_eq!(output, "{\"id\":1}\n{\"id\":2}\n");
+  }
+
+  #[test]
+  fn formats_objects_as_single_json_line() {
+    let output = format_json_output(&serde_json::json!({ "ok": true })).unwrap();
+
+    assert_eq!(output, "{\"ok\":true}\n");
+  }
+
+  #[test]
+  fn formats_empty_arrays_as_empty_output() {
+    let output = format_json_output(&Vec::<serde_json::Value>::new()).unwrap();
+
+    assert!(output.is_empty());
+  }
 
   #[test]
   fn formats_duplicates_grouped_by_folder() {

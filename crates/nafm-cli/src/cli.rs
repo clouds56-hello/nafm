@@ -82,3 +82,34 @@ pub enum HiddenArg {
   Include,
   Skip,
 }
+
+#[cfg(test)]
+mod tests {
+  use clap::Parser;
+
+  use super::{Cli, Command, SiteCommand};
+
+  #[test]
+  fn parses_json_before_subcommand() {
+    let cli = Cli::try_parse_from(["nafm", "--json", "site", "list"]).unwrap();
+
+    assert!(cli.json);
+    assert!(matches!(cli.command, Command::Site(SiteCommand::List)));
+  }
+
+  #[test]
+  fn parses_json_after_subcommand() {
+    let cli = Cli::try_parse_from(["nafm", "site", "list", "--json"]).unwrap();
+
+    assert!(cli.json);
+    assert!(matches!(cli.command, Command::Site(SiteCommand::List)));
+  }
+
+  #[test]
+  fn parses_json_between_nested_subcommands() {
+    let cli = Cli::try_parse_from(["nafm", "site", "--json", "list"]).unwrap();
+
+    assert!(cli.json);
+    assert!(matches!(cli.command, Command::Site(SiteCommand::List)));
+  }
+}

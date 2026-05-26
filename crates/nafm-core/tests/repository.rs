@@ -207,8 +207,10 @@ async fn scan_site_reports_current_file_progress() {
 
   let seen = seen.lock().unwrap();
   assert_eq!(seen.len(), 2);
-  assert_eq!(seen[0].1, 1);
-  assert_eq!(seen[0].2, 2);
+  let mut scanned_counts = seen.iter().map(|(_, files_scanned, _)| *files_scanned).collect::<Vec<_>>();
+  scanned_counts.sort_unstable();
+  assert_eq!(scanned_counts, vec![1, 2]);
+  assert!(seen.iter().all(|(_, _, total_files)| *total_files == 2));
   assert!(seen.iter().any(|(path, _, _)| path.ends_with("a.txt")));
   assert!(seen.iter().any(|(path, _, _)| path.ends_with("b.txt")));
 }

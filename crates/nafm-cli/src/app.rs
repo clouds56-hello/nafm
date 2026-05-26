@@ -3,17 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use clap::Parser;
 use nafm_core::{
   AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository, RepositoryOptions,
   WorkspaceManager,
 };
+use serde::Serialize;
 
 use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
-use crate::output::{format_duplicate_groups_by_folder, print_json_or, site_folder_label, spinner};
+use crate::output::{format_duplicate_groups_by_folder, print_json_line, print_json_or, site_folder_label, spinner};
 
-pub async fn run() -> Result<()> {
-  let cli = Cli::parse();
+pub async fn run_with_cli(cli: Cli) -> Result<()> {
   let workspace_manager = WorkspaceManager::from_default_root()?;
   workspace_manager.ensure_default_workspace(None).await?;
 
@@ -282,7 +281,10 @@ async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Res
 
       let payload = sites
         .iter()
-        .map(|site| (site, folders_by_site.get(&site.id).cloned().unwrap_or_default()))
+        .map(|site| SiteListEntry {
+          site: site.clone(),
+          folders: folders_by_site.get(&site.id).cloned().unwrap_or_default(),
+        })
         .collect::<Vec<_>>();
 
       print_json_or(json, &payload, || {
@@ -314,7 +316,9 @@ async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Res
 async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()> {
   let spinner = spinner(json, "scanning");
   let progress_callback = if json {
-    None
+    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
+      let _ = print_json_line(&ScanEvent::Progress(progress.clone()));
+    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
   } else {
     let spinner = spinner.clone();
     Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
@@ -334,22 +338,28 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
   };
   spinner.finish_and_clear();
 
-  print_json_or(json, &summaries, || {
-    if summaries.is_empty() {
-      println!("no sites registered");
-    }
+  if json {
     for summary in &summaries {
-      println!(
-        "site {}: {} folders, {} files, {} hashed, {} reused, {} duplicate groups",
-        summary.site_name,
-        summary.site_folders,
-        summary.files_seen,
-        summary.files_hashed,
-        summary.files_reused,
-        summary.duplicate_groups
-      );
+      print_json_line(&ScanEvent::Summary(summary.clone()))?;
     }
-  })?;
+  } else {
+    print_json_or(json, &summaries, || {
+      if summaries.is_empty() {
+        println!("no sites registered");
+      }
+      for summary in &summaries {
+        println!(
+          "site {}: {} folders, {} files, {} hashed, {} reused, {} duplicate groups",
+          summary.site_name,
+          summary.site_folders,
+          summary.files_seen,
+          summary.files_hashed,
+          summary.files_reused,
+          summary.duplicate_groups
+        );
+      }
+    })?;
+  }
   Ok(())
 }
 
@@ -429,6 +439,19 @@ fn parent_folder_counts_from_duplicates(groups: &[nafm_core::DuplicateGroup]) ->
     }
   }
   counts
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SiteListEntry {
+  site: nafm_core::Site,
+  folders: Vec<nafm_core::SiteFolder>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum ScanEvent {
+  Progress(nafm_core::ScanProgress),
+  Summary(nafm_core::ScanSummary),
 }
 
 #[cfg(test)]

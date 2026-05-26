@@ -46,7 +46,7 @@ pub struct ScanSummary {
   pub duplicate_files: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScanProgress {
   pub site_id: String,
   pub site_name: String,
