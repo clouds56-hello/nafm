@@ -5,7 +5,8 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use clap::Parser;
 use nafm_core::{
-  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, Repository, RepositoryOptions, WorkspaceManager,
+  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository, RepositoryOptions,
+  WorkspaceManager,
 };
 
 use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
@@ -39,27 +40,33 @@ async fn open_repository(
   explicit_workspace: Option<&str>,
   cache_path: Option<PathBuf>,
 ) -> Result<Repository> {
+  let cache_path = resolve_repository_cache_path(workspace_manager, explicit_workspace, cache_path)?;
+  Repository::open(RepositoryOptions {
+    cache_path,
+    hash_algorithm: None,
+  })
+  .await
+  .map_err(Into::into)
+}
+
+fn resolve_repository_cache_path(
+  workspace_manager: &WorkspaceManager,
+  explicit_workspace: Option<&str>,
+  cache_path: Option<PathBuf>,
+) -> Result<PathBuf> {
   match cache_path {
     Some(cache_path) => {
       if explicit_workspace.is_some() {
         bail!("--cache cannot be combined with --workspace");
       }
-      Repository::open(RepositoryOptions {
-        cache_path,
-        hash_algorithm: None,
-      })
-      .await
-      .map_err(Into::into)
+      Ok(cache_path)
     }
     None => {
       let workspace_name = workspace_manager.resolve_workspace_name(explicit_workspace)?;
-      let cache_path = workspace_manager.workspace_db_path(&workspace_name)?;
-      Repository::open(RepositoryOptions {
-        cache_path,
-        hash_algorithm: None,
-      })
-      .await
-      .map_err(Into::into)
+      if explicit_workspace.is_some() && !workspace_manager.workspace_exists(&workspace_name)? {
+        return Err(NafmError::WorkspaceNotFound(workspace_name).into());
+      }
+      workspace_manager.workspace_db_path(&workspace_name).map_err(Into::into)
     }
   }
 }
@@ -422,4 +429,49 @@ fn parent_folder_counts_from_duplicates(groups: &[nafm_core::DuplicateGroup]) ->
     }
   }
   counts
+}
+
+#[cfg(test)]
+mod tests {
+  use std::path::PathBuf;
+
+  use nafm_core::{DEFAULT_WORKSPACE_NAME, WorkspaceManager};
+
+  use super::resolve_repository_cache_path;
+
+  #[tokio::test]
+  async fn explicit_workspace_requires_existing_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = WorkspaceManager::new(temp.path().to_path_buf());
+    manager.ensure_default_workspace(None).await.unwrap();
+
+    let error = resolve_repository_cache_path(&manager, Some("missing"), None).unwrap_err();
+
+    assert_eq!(error.to_string(), "workspace not found: missing");
+  }
+
+  #[tokio::test]
+  async fn implicit_workspace_uses_default_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = WorkspaceManager::new(temp.path().to_path_buf());
+    manager.ensure_default_workspace(None).await.unwrap();
+
+    let cache_path = resolve_repository_cache_path(&manager, None, None).unwrap();
+
+    assert_eq!(
+      cache_path,
+      manager.workspace_db_path(DEFAULT_WORKSPACE_NAME).unwrap()
+    );
+  }
+
+  #[test]
+  fn cache_path_cannot_be_combined_with_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = WorkspaceManager::new(temp.path().to_path_buf());
+
+    let error =
+      resolve_repository_cache_path(&manager, Some("alpha"), Some(PathBuf::from("cache.sqlite3"))).unwrap_err();
+
+    assert_eq!(error.to_string(), "--cache cannot be combined with --workspace");
+  }
 }
