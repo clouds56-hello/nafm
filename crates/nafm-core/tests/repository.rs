@@ -216,6 +216,35 @@ async fn scan_site_reports_current_file_progress() {
 }
 
 #[tokio::test]
+async fn scan_site_progress_skips_cached_files() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("a.txt"), "alpha").unwrap();
+  fs::write(docs.join("b.txt"), "beta").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let seen_clone = seen.clone();
+  let summary = fixture
+    .repo
+    .scan_site_with_progress(
+      "docs",
+      Some(Arc::new(move |progress| {
+        seen_clone.lock().unwrap().push(progress.clone());
+      })),
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(summary.files_hashed, 0);
+  assert_eq!(summary.files_reused, 2);
+  assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn scan_site_hashes_files_in_parallel() {
   if std::thread::available_parallelism()
     .map(|parallelism| parallelism.get())

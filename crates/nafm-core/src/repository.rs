@@ -435,11 +435,6 @@ fn scan_site_blocking(
   progress_callback: Option<&ScanProgressCallback>,
 ) -> Result<ScanSummary> {
   let files = discover_site_files(site_folders)?;
-  let progress_context = Arc::new(ScanProgressContext {
-    site_id: site.id.clone(),
-    site_name: site.name.clone(),
-    total_files: files.len() as u64,
-  });
   let scan_time = Utc::now();
   let mut files_seen = 0;
   let mut files_hashed = 0;
@@ -466,7 +461,6 @@ fn scan_site_blocking(
     };
     if can_reuse {
       files_reused += 1;
-      report_scan_progress(progress_callback, &progress_context, &file.path, &processed_files);
       pending_records.push(PendingFileRecord {
         file,
         content_hash: existing.and_then(|record| record.content_hash),
@@ -481,6 +475,12 @@ fn scan_site_blocking(
       });
     }
   }
+
+  let progress_context = Arc::new(ScanProgressContext {
+    site_id: site.id.clone(),
+    site_name: site.name.clone(),
+    total_files: hash_targets.len() as u64,
+  });
 
   let hashed_records = hash_files_in_parallel(
     &hash_targets,
