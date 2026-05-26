@@ -53,6 +53,44 @@ async fn scan_site_reuses_hashes_for_unchanged_files() {
 }
 
 #[tokio::test]
+async fn scan_site_resumes_from_durable_scan_cache() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("a.txt"), "same").unwrap();
+  fs::write(docs.join("b.txt"), "same").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("docs").await.unwrap();
+
+  let conn = rusqlite::Connection::open(fixture.repo.db_path()).unwrap();
+  conn
+    .execute(
+      "insert into scan_cache_entries (
+        site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, cached_at
+      )
+      select site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, datetime('now')
+      from file_records
+      where site_id = (select id from sites where name = 'docs')
+      order by path
+      limit 1",
+      [],
+    )
+    .unwrap();
+  conn
+    .execute(
+      "delete from file_records where site_id = (select id from sites where name = 'docs')",
+      [],
+    )
+    .unwrap();
+
+  let summary = fixture.repo.scan_site("docs").await.unwrap();
+
+  assert_eq!(summary.files_hashed, 1);
+  assert_eq!(summary.files_reused, 1);
+}
+
+#[tokio::test]
 async fn scan_respects_hidden_policy_per_site_folder() {
   let fixture = Fixture::new().await;
   let docs = fixture.mkdir("docs");

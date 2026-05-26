@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -45,6 +46,11 @@ struct ExistingRecord {
   id: String,
   content_hash: Option<String>,
   hash_algorithm: String,
+}
+
+#[derive(Clone, Debug)]
+struct CachedScanRecord {
+  content_hash: String,
 }
 
 #[derive(Clone, Debug)]
@@ -248,6 +254,7 @@ impl Repository {
       let site_folders = list_site_folders(&conn, Some(&site.id))?;
       scan_site_blocking(
         &conn,
+        &db_path,
         &site,
         &site_folders,
         hash_algorithm.as_ref(),
@@ -392,10 +399,23 @@ impl Repository {
           last_seen_at text not null
         );
 
+        create table if not exists scan_cache_entries (
+          site_id text not null references sites(id) on delete cascade,
+          site_folder_id text not null references site_folders(id) on delete cascade,
+          path text not null,
+          size_bytes integer not null,
+          modified_unix_nanos integer not null,
+          hash_algorithm text not null,
+          content_hash text not null,
+          cached_at text not null,
+          primary key(site_id, path)
+        );
+
         create index if not exists idx_site_folders_site_id on site_folders(site_id);
         create index if not exists idx_file_records_site_id on file_records(site_id);
         create index if not exists idx_file_records_site_folder_id on file_records(site_folder_id);
         create index if not exists idx_file_records_hash on file_records(hash_algorithm, content_hash, size_bytes);
+        create index if not exists idx_scan_cache_entries_site_id on scan_cache_entries(site_id);
 
         create table if not exists stage_entries (
           file_id text primary key not null references file_records(id) on delete cascade,
@@ -429,6 +449,7 @@ impl Repository {
 
 fn scan_site_blocking(
   conn: &Connection,
+  db_path: &Path,
   site: &Site,
   site_folders: &[SiteFolder],
   hash_algorithm: &dyn HashAlgorithm,
@@ -465,6 +486,12 @@ fn scan_site_blocking(
         file,
         content_hash: existing.and_then(|record| record.content_hash),
       });
+    } else if let Some(cached_record) = cached_scan_record(conn, &site.id, &file, hash_algorithm.name())? {
+      files_reused += 1;
+      pending_records.push(PendingFileRecord {
+        file,
+        content_hash: Some(cached_record.content_hash),
+      });
     } else {
       files_hashed += 1;
       bytes_hashed += file.size_bytes;
@@ -483,6 +510,8 @@ fn scan_site_blocking(
   });
 
   let hashed_records = hash_files_in_parallel(
+    db_path,
+    site,
     &hash_targets,
     hash_algorithm,
     progress_callback,
@@ -493,22 +522,8 @@ fn scan_site_blocking(
     pending_records[index].content_hash = Some(content_hash);
   }
 
-  for pending_record in &pending_records {
-    upsert_file(
-      conn,
-      site,
-      &pending_record.file,
-      hash_algorithm.name(),
-      pending_record.content_hash.as_deref(),
-      scan_time,
-    )?;
-  }
-
-  let removed = conn.execute(
-    "delete from file_records where site_id = ?1 and last_seen_at <> ?2",
-    params![site.id, scan_time],
-  )?;
-  let duplicate_groups = find_duplicates(conn, Some(&site.id))?;
+  let (removed, duplicate_groups) =
+    replace_site_file_records_atomically(conn, site, &pending_records, hash_algorithm.name(), scan_time)?;
   let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
 
   Ok(ScanSummary {
@@ -518,7 +533,7 @@ fn scan_site_blocking(
     files_seen,
     files_hashed,
     files_reused,
-    files_removed: removed as u64,
+    files_removed: removed,
     bytes_hashed,
     duplicate_groups: duplicate_groups.len() as u64,
     duplicate_files,
@@ -526,6 +541,8 @@ fn scan_site_blocking(
 }
 
 fn hash_files_in_parallel(
+  db_path: &Path,
+  site: &Site,
   hash_targets: &[(usize, FileProbe)],
   hash_algorithm: &dyn HashAlgorithm,
   progress_callback: Option<&ScanProgressCallback>,
@@ -541,30 +558,52 @@ fn hash_files_in_parallel(
     .unwrap_or(1)
     .min(hash_targets.len());
   let chunk_size = hash_targets.len().div_ceil(worker_count);
-  let mut hashed_records = Vec::with_capacity(hash_targets.len());
+  let writer_db_path = db_path.to_path_buf();
+  let site_id = site.id.clone();
+  let hash_algorithm_name = hash_algorithm.name().to_owned();
 
-  std::thread::scope(|scope| -> Result<()> {
+  std::thread::scope(|scope| -> Result<Vec<(usize, String)>> {
+    let (sender, receiver) = mpsc::channel::<(usize, FileProbe, String)>();
+    let writer = scope.spawn(move || -> Result<Vec<(usize, String)>> {
+      let conn = Connection::open(writer_db_path)?;
+      let mut hashed_records = Vec::with_capacity(hash_targets.len());
+      for (index, file, content_hash) in receiver {
+        upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm_name, &content_hash)?;
+        hashed_records.push((index, content_hash));
+      }
+      Ok(hashed_records)
+    });
     let mut tasks = Vec::with_capacity(worker_count);
     for chunk in hash_targets.chunks(chunk_size) {
+      let sender = sender.clone();
       let progress_context = progress_context.clone();
-      tasks.push(scope.spawn(move || -> Result<Vec<(usize, String)>> {
-        let mut results = Vec::with_capacity(chunk.len());
+      tasks.push(scope.spawn(move || -> Result<()> {
         for (index, file) in chunk {
           let content_hash = hash_algorithm.hash_file(&file.path)?;
           report_scan_progress(progress_callback, &progress_context, &file.path, processed_files);
-          results.push((*index, content_hash));
+          sender
+            .send((*index, file.clone(), content_hash))
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
         }
-        Ok(results)
+        Ok(())
       }));
     }
+    drop(sender);
 
+    let mut first_error = None;
     for task in tasks {
-      hashed_records.extend(task.join().expect("hash worker thread should not panic")?);
+      if let Err(error) = task.join().expect("hash worker thread should not panic")
+        && first_error.is_none()
+      {
+        first_error = Some(error);
+      }
     }
-    Ok(())
-  })?;
-
-  Ok(hashed_records)
+    let hashed_records = writer.join().expect("scan cache writer thread should not panic")?;
+    if let Some(error) = first_error {
+      return Err(error);
+    }
+    Ok(hashed_records)
+  })
 }
 
 fn report_scan_progress(
@@ -651,6 +690,38 @@ fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingReco
     .map_err(Into::into)
 }
 
+fn cached_scan_record(
+  conn: &Connection,
+  site_id: &str,
+  file: &FileProbe,
+  hash_algorithm: &str,
+) -> Result<Option<CachedScanRecord>> {
+  conn
+    .query_row(
+      "select content_hash
+       from scan_cache_entries
+       where site_id = ?1
+         and path = ?2
+         and size_bytes = ?3
+         and modified_unix_nanos = ?4
+         and hash_algorithm = ?5",
+      params![
+        site_id,
+        file.path.to_string_lossy(),
+        file.size_bytes,
+        file.modified_unix_nanos,
+        hash_algorithm
+      ],
+      |row| {
+        Ok(CachedScanRecord {
+          content_hash: row.get(0)?,
+        })
+      },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 fn record_matches(
   conn: &Connection,
   id: &str,
@@ -703,6 +774,80 @@ fn upsert_file(
     ],
   )?;
   Ok(())
+}
+
+fn upsert_scan_cache_entry(
+  conn: &Connection,
+  site_id: &str,
+  file: &FileProbe,
+  hash_algorithm: &str,
+  content_hash: &str,
+) -> Result<()> {
+  conn.execute(
+    "insert into scan_cache_entries (
+      site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, cached_at
+    )
+    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    on conflict(site_id, path) do update set
+      site_folder_id = excluded.site_folder_id,
+      size_bytes = excluded.size_bytes,
+      modified_unix_nanos = excluded.modified_unix_nanos,
+      hash_algorithm = excluded.hash_algorithm,
+      content_hash = excluded.content_hash,
+      cached_at = excluded.cached_at",
+    params![
+      site_id,
+      file.site_folder_id,
+      file.path.to_string_lossy(),
+      file.size_bytes,
+      file.modified_unix_nanos,
+      hash_algorithm,
+      content_hash,
+      Utc::now(),
+    ],
+  )?;
+  Ok(())
+}
+
+fn replace_site_file_records_atomically(
+  conn: &Connection,
+  site: &Site,
+  pending_records: &[PendingFileRecord],
+  hash_algorithm: &str,
+  scan_time: DateTime<Utc>,
+) -> Result<(u64, Vec<DuplicateGroup>)> {
+  conn.execute_batch("begin immediate transaction")?;
+  let result = (|| -> Result<(u64, Vec<DuplicateGroup>)> {
+    for pending_record in pending_records {
+      upsert_file(
+        conn,
+        site,
+        &pending_record.file,
+        hash_algorithm,
+        pending_record.content_hash.as_deref(),
+        scan_time,
+      )?;
+    }
+
+    let removed = conn.execute(
+      "delete from file_records where site_id = ?1 and last_seen_at <> ?2",
+      params![site.id, scan_time],
+    )? as u64;
+    conn.execute("delete from scan_cache_entries where site_id = ?1", params![site.id])?;
+    let duplicate_groups = find_duplicates(conn, Some(&site.id))?;
+    Ok((removed, duplicate_groups))
+  })();
+
+  match result {
+    Ok(value) => {
+      conn.execute_batch("commit")?;
+      Ok(value)
+    }
+    Err(error) => {
+      let _ = conn.execute_batch("rollback");
+      Err(error)
+    }
+  }
 }
 
 fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<DuplicateGroup>> {
