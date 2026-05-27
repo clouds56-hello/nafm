@@ -84,10 +84,22 @@ async fn scan_site_resumes_from_durable_scan_cache() {
     )
     .unwrap();
 
-  let summary = fixture.repo.scan_site("docs").await.unwrap();
+  let seen = Arc::new(Mutex::new(Vec::new()));
+  let seen_clone = seen.clone();
+  let summary = fixture
+    .repo
+    .scan_site_with_progress(
+      "docs",
+      Some(Arc::new(move |progress| {
+        seen_clone.lock().unwrap().push((progress.files_scanned, progress.total_files));
+      })),
+    )
+    .await
+    .unwrap();
 
   assert_eq!(summary.files_hashed, 1);
   assert_eq!(summary.files_reused, 1);
+  assert_eq!(&*seen.lock().unwrap(), &[(1, 2)]);
 }
 
 #[tokio::test]

@@ -506,7 +506,7 @@ fn scan_site_blocking(
   let progress_context = Arc::new(ScanProgressContext {
     site_id: site.id.clone(),
     site_name: site.name.clone(),
-    total_files: hash_targets.len() as u64,
+    total_files: files_seen,
   });
 
   let hashed_records = hash_files_in_parallel(
