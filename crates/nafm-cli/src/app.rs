@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use nafm_core::{
   AddSiteFolderRequest, CredentialStore, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository,
-  RepositoryOptions, SavedSmbCredential, SmbLocation, WorkspaceManager, app_root_dir, verify_smb_connection,
+  RepositoryOptions, SavedSmbCredential, ScanEvent, SmbLocation, WorkspaceManager, app_root_dir, verify_smb_connection,
 };
 use serde::Serialize;
 use zeroize::Zeroizing;
@@ -401,38 +401,46 @@ fn print_site_entries(entries: &[SiteListEntry], indent: &str) {
 }
 
 async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()> {
-  let site_progress = if !json && selector == "all" {
+  let scan_all = selector == "all";
+  let site_progress = if !json && scan_all {
     Some(SiteScanProgress::new(&repo.list_sites().await?))
   } else {
     None
   };
   let spinner = spinner(json || site_progress.is_some(), "scanning");
-  let progress_callback = if json {
-    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
-      let _ = print_json_line(&ScanEvent::Progress(progress.clone()));
-    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
-  } else if let Some(site_progress) = &site_progress {
-    let site_progress = site_progress.clone();
-    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
-      site_progress.update(progress);
-    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
+  let scan_result = if scan_all {
+    let event_callback = if json {
+      Some(Arc::new(move |event: &ScanEvent| {
+        let _ = print_json_line(event);
+      }) as Arc<dyn Fn(&ScanEvent) + Send + Sync>)
+    } else {
+      let site_progress = site_progress.clone().expect("scan-all progress should exist");
+      Some(Arc::new(move |event: &ScanEvent| match event {
+        ScanEvent::Started(started) => site_progress.start(started),
+        ScanEvent::Progress(progress) => site_progress.update(progress),
+        ScanEvent::Summary(summary) => site_progress.finish_site(summary),
+      }) as Arc<dyn Fn(&ScanEvent) + Send + Sync>)
+    };
+    repo.scan_all_with_events(event_callback).await
   } else {
-    let spinner = spinner.clone();
-    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
-      spinner.set_message(format!(
-        "scanning {} {}/{} ({} hashed, {} reused) {}",
-        progress.site_name,
-        scan_progress_position(progress),
-        progress.total_files,
-        progress.files_scanned,
-        progress.files_reused,
-        progress.current_path.display()
-      ));
-    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
-  };
-  let scan_result = if selector == "all" {
-    repo.scan_all_with_progress(progress_callback).await
-  } else {
+    let progress_callback = if json {
+      Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
+        let _ = print_json_line(&ScanEvent::Progress(progress.clone()));
+      }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
+    } else {
+      let spinner = spinner.clone();
+      Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
+        spinner.set_message(format!(
+          "scanning {} {}/{} ({} hashed, {} reused) {}",
+          progress.site_name,
+          scan_progress_position(progress),
+          progress.total_files,
+          progress.files_scanned,
+          progress.files_reused,
+          progress.current_path.display()
+        ));
+      }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
+    };
     repo
       .scan_site_with_progress(selector, progress_callback)
       .await
@@ -451,13 +459,14 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
   };
   spinner.finish_and_clear();
   if let Some(site_progress) = &site_progress {
-    site_progress.finish(&summaries);
     site_progress.clear();
   }
 
   if json {
-    for summary in &summaries {
-      print_json_line(&ScanEvent::Summary(summary.clone()))?;
+    if !scan_all {
+      for summary in &summaries {
+        print_json_line(&ScanEvent::Summary(summary.clone()))?;
+      }
     }
   } else {
     print_json_or(json, &summaries, || {
@@ -572,13 +581,6 @@ struct StatusOutput {
   database_path: PathBuf,
   sites: Vec<SiteListEntry>,
   connections: Vec<SavedSmbCredential>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-enum ScanEvent {
-  Progress(nafm_core::ScanProgress),
-  Summary(nafm_core::ScanSummary),
 }
 
 #[cfg(test)]

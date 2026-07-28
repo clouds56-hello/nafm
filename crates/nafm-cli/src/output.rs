@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Error, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use nafm_core::{DuplicateGroup, ScanProgress, ScanSummary, Site};
+use nafm_core::{DuplicateGroup, ScanProgress, ScanStarted, ScanSummary, Site};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -127,15 +127,20 @@ impl SiteScanProgress {
     ));
   }
 
-  pub fn finish(&self, summaries: &[ScanSummary]) {
-    for summary in summaries {
-      let Some(bar) = self.bars_by_site.get(&summary.site_id) else {
-        continue;
-      };
-      bar.set_length(summary.files_seen);
-      bar.set_position(summary.files_seen);
-      bar.finish_with_message(scan_summary_message(summary));
-    }
+  pub fn start(&self, started: &ScanStarted) {
+    let Some(bar) = self.bars_by_site.get(&started.site_id) else {
+      return;
+    };
+    bar.set_message("scanning");
+  }
+
+  pub fn finish_site(&self, summary: &ScanSummary) {
+    let Some(bar) = self.bars_by_site.get(&summary.site_id) else {
+      return;
+    };
+    bar.set_length(summary.files_seen);
+    bar.set_position(summary.files_seen);
+    bar.finish_with_message(scan_summary_message(summary));
   }
 
   pub fn abandon(&self) {

@@ -15,12 +15,13 @@ use crate::credentials::{CredentialStore, SmbLocation};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
-  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanProgress, ScanSummary,
-  Site, SiteFolder, SiteFolderKind, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageWarning, StageWarningReason,
+  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
+  ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, StageAddReport, StageCommitDryRun, StageHistoryReport,
+  StageRemoveReport, StageResetReport, StageWarning, StageWarningReason,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
+type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -247,18 +248,43 @@ impl Repository {
     &self,
     progress_callback: Option<ScanProgressCallback>,
   ) -> Result<Vec<ScanSummary>> {
+    let event_callback = progress_callback.map(|progress_callback| {
+      Arc::new(move |event: &ScanEvent| {
+        if let ScanEvent::Progress(progress) = event {
+          progress_callback(progress);
+        }
+      }) as ScanEventCallback
+    });
+    self.scan_all_with_events(event_callback).await
+  }
+
+  pub async fn scan_all_with_events(&self, event_callback: Option<ScanEventCallback>) -> Result<Vec<ScanSummary>> {
     let sites = self.list_sites().await?;
     let mut tasks = JoinSet::new();
     for (index, site) in sites.into_iter().enumerate() {
+      if let Some(event_callback) = &event_callback {
+        event_callback(&ScanEvent::Started(ScanStarted {
+          site_id: site.id.clone(),
+          site_name: site.name.clone(),
+        }));
+      }
       let repo = self.clone();
-      let progress_callback = progress_callback.clone();
+      let progress_callback = event_callback.clone().map(|event_callback| {
+        Arc::new(move |progress: &ScanProgress| {
+          event_callback(&ScanEvent::Progress(progress.clone()));
+        }) as ScanProgressCallback
+      });
       tasks.spawn(async move { (index, repo.scan_site_with_progress(&site.id, progress_callback).await) });
     }
 
     let mut summaries = vec![None; tasks.len()];
     while let Some(result) = tasks.join_next().await {
       let (index, summary) = result?;
-      summaries[index] = Some(summary?);
+      let summary = summary?;
+      if let Some(event_callback) = &event_callback {
+        event_callback(&ScanEvent::Summary(summary.clone()));
+      }
+      summaries[index] = Some(summary);
     }
 
     Ok(

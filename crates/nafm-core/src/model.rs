@@ -65,6 +65,20 @@ pub struct ScanProgress {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ScanStarted {
+  pub site_id: String,
+  pub site_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ScanEvent {
+  Started(ScanStarted),
+  Progress(ScanProgress),
+  Summary(ScanSummary),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DuplicateFile {
   pub file_id: String,
   pub site_id: String,

@@ -67,4 +67,5 @@ cargo run -p nafm-cli -- missing laptop --against backup
 ```
 
 In human-readable mode, `scan all` displays one independently updated progress
-line per site. JSON mode continues to emit one progress event per line.
+line per site and marks each site complete immediately. JSON mode emits
+`started`, `progress`, and `summary` events as JSON Lines.

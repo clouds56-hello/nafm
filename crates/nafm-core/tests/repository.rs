@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nafm_core::{
   AddSiteFolderRequest, ContentHasher, CredentialStore, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions,
-  SiteFolderKind, StageWarningReason,
+  ScanEvent, SiteFolderKind, StageWarningReason,
 };
 use tempfile::TempDir;
 
@@ -506,6 +506,90 @@ async fn scan_site_progress_skips_cached_files() {
 }
 
 #[tokio::test]
+async fn scan_all_emits_each_site_summary_as_it_completes() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  let cached = root.path().join("cached");
+  let slow = root.path().join("slow");
+  fs::create_dir(&cached).unwrap();
+  fs::create_dir(&slow).unwrap();
+  fs::write(cached.join("a.txt"), "cached").unwrap();
+  fs::write(slow.join("b.txt"), "slow").unwrap();
+
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(SlowHashAlgorithm {
+      current: Arc::new(AtomicUsize::new(0)),
+      max: Arc::new(AtomicUsize::new(0)),
+      delay: Duration::from_millis(250),
+    })),
+  })
+  .await
+  .unwrap();
+  repo.create_site("cached").await.unwrap();
+  repo
+    .add_site_folder(
+      "cached",
+      AddSiteFolderRequest {
+        path: cached,
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  repo.scan_site("cached").await.unwrap();
+
+  repo.create_site("slow").await.unwrap();
+  repo
+    .add_site_folder(
+      "slow",
+      AddSiteFolderRequest {
+        path: slow,
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let events_clone = events.clone();
+  repo
+    .scan_all_with_events(Some(Arc::new(move |event| {
+      let event = match event {
+        ScanEvent::Started(started) => format!("started:{}", started.site_name),
+        ScanEvent::Progress(progress) => format!("progress:{}", progress.site_name),
+        ScanEvent::Summary(summary) => format!("summary:{}", summary.site_name),
+      };
+      events_clone.lock().unwrap().push(event);
+    })))
+    .await
+    .unwrap();
+
+  let events = events.lock().unwrap();
+  assert!(events.iter().any(|event| event == "started:cached"));
+  assert!(events.iter().any(|event| event == "started:slow"));
+  let cached_summary = events
+    .iter()
+    .position(|event| event == "summary:cached")
+    .expect("cached site should emit a summary");
+  let slow_progress = events
+    .iter()
+    .position(|event| event == "progress:slow")
+    .expect("slow site should emit progress");
+  assert!(
+    cached_summary < slow_progress,
+    "cached site summary should arrive before the slow site finishes hashing: {events:?}"
+  );
+  assert_eq!(
+    events
+      .iter()
+      .filter_map(|event| event.strip_prefix("summary:"))
+      .collect::<Vec<_>>(),
+    ["cached", "slow"]
+  );
+}
+
+#[tokio::test]
 async fn scan_site_hashes_files_in_parallel() {
   if std::thread::available_parallelism()
     .map(|parallelism| parallelism.get())
@@ -532,6 +616,7 @@ async fn scan_site_hashes_files_in_parallel() {
     hash_algorithm: Some(Arc::new(SlowHashAlgorithm {
       current: current.clone(),
       max: max.clone(),
+      delay: Duration::from_millis(25),
     })),
   })
   .await
@@ -1398,6 +1483,7 @@ impl ContentHasher for FirstByteContentHasher {
 struct SlowHashAlgorithm {
   current: Arc<AtomicUsize>,
   max: Arc<AtomicUsize>,
+  delay: Duration,
 }
 
 impl HashAlgorithm for SlowHashAlgorithm {
@@ -1422,7 +1508,7 @@ impl HashAlgorithm for SlowHashAlgorithm {
       }
     }
 
-    std::thread::sleep(Duration::from_millis(25));
+    std::thread::sleep(self.delay);
     let bytes = fs::read(path)?;
     self.current.fetch_sub(1, Ordering::SeqCst);
     Ok(bytes.len().to_string())
