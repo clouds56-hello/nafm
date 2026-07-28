@@ -4,19 +4,24 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use nafm_core::{
-  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository, RepositoryOptions,
-  WorkspaceManager,
+  AddSiteFolderRequest, CredentialStore, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository,
+  RepositoryOptions, SavedSmbCredential, SmbLocation, WorkspaceManager, app_root_dir, verify_smb_connection,
 };
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
-use crate::output::{format_duplicate_groups_by_folder, print_json_line, print_json_or, site_folder_label, spinner};
+use crate::output::{
+  SiteScanProgress, format_duplicate_groups_by_folder, print_json_line, print_json_or, site_folder_label, spinner,
+};
 
 pub async fn run_with_cli(cli: Cli) -> Result<()> {
   let workspace_manager = WorkspaceManager::from_default_root()?;
   workspace_manager.ensure_default_workspace(None).await?;
 
   match cli.command {
+    Command::Connect { url, username } => handle_connect(&url, &username, cli.json).await?,
+    Command::Status => handle_status(&workspace_manager, cli.workspace.as_deref(), cli.cache, cli.json).await?,
     Command::Workspace(command) => handle_workspace(&workspace_manager, command, cli.json).await?,
     command => {
       let repo = open_repository(&workspace_manager, cli.workspace.as_deref(), cli.cache).await?;
@@ -26,11 +31,85 @@ pub async fn run_with_cli(cli: Cli) -> Result<()> {
         Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
         Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
         Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
+        Command::Connect { .. } => unreachable!("connect command handled separately"),
+        Command::Status => unreachable!("status command handled separately"),
         Command::Workspace(_) => unreachable!("workspace command handled separately"),
       }
     }
   }
 
+  Ok(())
+}
+
+async fn handle_status(
+  workspace_manager: &WorkspaceManager,
+  explicit_workspace: Option<&str>,
+  cache_path: Option<PathBuf>,
+  json: bool,
+) -> Result<()> {
+  let current_workspace = workspace_manager.current_workspace_name()?;
+  let selected_workspace = if cache_path.is_some() {
+    None
+  } else {
+    Some(workspace_manager.resolve_workspace_name(explicit_workspace)?)
+  };
+  let repo = open_repository(workspace_manager, explicit_workspace, cache_path).await?;
+  let status = StatusOutput {
+    app_root: app_root_dir()?,
+    current_workspace,
+    selected_workspace,
+    database_path: repo.db_path().to_path_buf(),
+    sites: site_list_entries(&repo).await?,
+    connections: CredentialStore::from_default_root()?.list_smb_credentials()?,
+  };
+
+  print_json_or(json, &status, || {
+    println!("app root: {}", status.app_root.display());
+    println!("current workspace: {}", status.current_workspace);
+    match &status.selected_workspace {
+      Some(selected_workspace) if selected_workspace != &status.current_workspace => {
+        println!("selected workspace: {selected_workspace}");
+      }
+      None => println!("selected workspace: custom database"),
+      Some(_) => {}
+    }
+    println!("database: {}", status.database_path.display());
+    println!("sites ({}):", status.sites.len());
+    if status.sites.is_empty() {
+      println!("  none");
+    } else {
+      print_site_entries(&status.sites, "  ");
+    }
+    if status.connections.is_empty() {
+      println!("saved connections: none");
+    } else {
+      println!("saved connections ({}):", status.connections.len());
+      for connection in &status.connections {
+        println!("  {}  username={}", connection.url, connection.username);
+      }
+    }
+  })?;
+  Ok(())
+}
+
+async fn handle_connect(url: &str, username: &str, json: bool) -> Result<()> {
+  let location = SmbLocation::parse(url)?;
+  let password = tokio::task::spawn_blocking(|| rpassword::prompt_password("SMB password: ")).await??;
+  let password = Zeroizing::new(password);
+
+  let spinner = spinner(json, "verifying SMB credentials");
+  let verification = verify_smb_connection(&location, username, password.as_str()).await;
+  spinner.finish_and_clear();
+  verification?;
+
+  let saved =
+    CredentialStore::from_default_root()?.save_smb_credential(&location.normalized_url, username, password.as_str())?;
+  print_json_or(json, &saved, || {
+    println!(
+      "connected and saved credentials for {} as {}",
+      saved.url, saved.username
+    );
+  })?;
   Ok(())
 }
 
@@ -269,43 +348,12 @@ async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Res
       })?;
     }
     SiteCommand::List => {
-      let sites = repo.list_sites().await?;
-      let site_folders = repo.list_site_folders(None).await?;
-      let mut folders_by_site = BTreeMap::new();
-      for site_folder in site_folders {
-        folders_by_site
-          .entry(site_folder.site_id.clone())
-          .or_insert_with(Vec::new)
-          .push(site_folder);
-      }
-
-      let payload = sites
-        .iter()
-        .map(|site| SiteListEntry {
-          site: site.clone(),
-          folders: folders_by_site.get(&site.id).cloned().unwrap_or_default(),
-        })
-        .collect::<Vec<_>>();
-
+      let payload = site_list_entries(repo).await?;
       print_json_or(json, &payload, || {
-        if sites.is_empty() {
+        if payload.is_empty() {
           println!("no sites registered");
         } else {
-          for site in &sites {
-            println!("{}  id={}", site.name, site.id);
-            match folders_by_site.get(&site.id) {
-              Some(site_folders) => {
-                for site_folder in site_folders {
-                  println!(
-                    "  {}  hidden={:?}",
-                    site_folder.path.display(),
-                    site_folder.hidden_policy
-                  );
-                }
-              }
-              None => println!("  no folders"),
-            }
-          }
+          print_site_entries(&payload, "");
         }
       })?;
     }
@@ -313,11 +361,59 @@ async fn handle_site(repo: &Repository, command: SiteCommand, json: bool) -> Res
   Ok(())
 }
 
+async fn site_list_entries(repo: &Repository) -> Result<Vec<SiteListEntry>> {
+  let sites = repo.list_sites().await?;
+  let mut folders_by_site = BTreeMap::new();
+  for site_folder in repo.list_site_folders(None).await? {
+    folders_by_site
+      .entry(site_folder.site_id.clone())
+      .or_insert_with(Vec::new)
+      .push(site_folder);
+  }
+  Ok(
+    sites
+      .into_iter()
+      .map(|site| {
+        let folders = folders_by_site.remove(&site.id).unwrap_or_default();
+        SiteListEntry { site, folders }
+      })
+      .collect(),
+  )
+}
+
+fn print_site_entries(entries: &[SiteListEntry], indent: &str) {
+  for entry in entries {
+    println!("{indent}{}  id={}", entry.site.name, entry.site.id);
+    if entry.folders.is_empty() {
+      println!("{indent}  no folders");
+    } else {
+      for site_folder in &entry.folders {
+        println!(
+          "{indent}  {}  kind={:?}  hidden={:?}",
+          site_folder.path.display(),
+          site_folder.kind,
+          site_folder.hidden_policy
+        );
+      }
+    }
+  }
+}
+
 async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()> {
-  let spinner = spinner(json, "scanning");
+  let site_progress = if !json && selector == "all" {
+    Some(SiteScanProgress::new(&repo.list_sites().await?))
+  } else {
+    None
+  };
+  let spinner = spinner(json || site_progress.is_some(), "scanning");
   let progress_callback = if json {
     Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
       let _ = print_json_line(&ScanEvent::Progress(progress.clone()));
+    }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
+  } else if let Some(site_progress) = &site_progress {
+    let site_progress = site_progress.clone();
+    Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
+      site_progress.update(progress);
     }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
   } else {
     let spinner = spinner.clone();
@@ -331,12 +427,30 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
       ));
     }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
   };
-  let summaries = if selector == "all" {
-    repo.scan_all_with_progress(progress_callback).await?
+  let scan_result = if selector == "all" {
+    repo.scan_all_with_progress(progress_callback).await
   } else {
-    vec![repo.scan_site_with_progress(selector, progress_callback).await?]
+    repo
+      .scan_site_with_progress(selector, progress_callback)
+      .await
+      .map(|summary| vec![summary])
+  };
+  let summaries = match scan_result {
+    Ok(summaries) => summaries,
+    Err(error) => {
+      spinner.finish_and_clear();
+      if let Some(site_progress) = &site_progress {
+        site_progress.abandon();
+        site_progress.clear();
+      }
+      return Err(error.into());
+    }
   };
   spinner.finish_and_clear();
+  if let Some(site_progress) = &site_progress {
+    site_progress.finish(&summaries);
+    site_progress.clear();
+  }
 
   if json {
     for summary in &summaries {
@@ -448,6 +562,16 @@ struct SiteListEntry {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct StatusOutput {
+  app_root: PathBuf,
+  current_workspace: String,
+  selected_workspace: Option<String>,
+  database_path: PathBuf,
+  sites: Vec<SiteListEntry>,
+  connections: Vec<SavedSmbCredential>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum ScanEvent {
   Progress(nafm_core::ScanProgress),
@@ -481,10 +605,7 @@ mod tests {
 
     let cache_path = resolve_repository_cache_path(&manager, None, None).unwrap();
 
-    assert_eq!(
-      cache_path,
-      manager.workspace_db_path(DEFAULT_WORKSPACE_NAME).unwrap()
-    );
+    assert_eq!(cache_path, manager.workspace_db_path(DEFAULT_WORKSPACE_NAME).unwrap());
   }
 
   #[test]

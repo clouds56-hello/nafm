@@ -17,17 +17,17 @@ async fn main() -> ExitCode {
   let cli = match Cli::try_parse_from(&args) {
     Ok(cli) => cli,
     Err(error) => {
-      if wants_json {
+      let exit_code = error.exit_code();
+      if wants_json && exit_code != 0 {
         eprint!(
           "{}",
-          format_json_error(&anyhow::Error::msg(error.to_string())).unwrap_or_else(|_| {
-            "{\"error\":\"failed to render error\"}\n".to_owned()
-          })
+          format_json_error(&anyhow::Error::msg(error.to_string()))
+            .unwrap_or_else(|_| { "{\"error\":\"failed to render error\"}\n".to_owned() })
         );
       } else {
         error.print().ok();
       }
-      return ExitCode::from(2);
+      return ExitCode::from(u8::try_from(exit_code).unwrap_or(2));
     }
   };
 

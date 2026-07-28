@@ -20,6 +20,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+  /// Verify and save credentials for an SMB share.
+  Connect {
+    #[arg(value_name = "SMB_URL")]
+    url: String,
+    /// Username used to authenticate with the SMB server.
+    #[arg(long)]
+    username: String,
+  },
+  /// Show the current workspace, sites, and saved connections.
+  Status,
   #[command(subcommand)]
   Workspace(WorkspaceCommand),
   #[command(subcommand)]
@@ -88,6 +98,24 @@ mod tests {
   use clap::Parser;
 
   use super::{Cli, Command, SiteCommand};
+
+  #[test]
+  fn parses_smb_connect_command() {
+    let cli = Cli::try_parse_from(["nafm", "connect", "smb://omv.lan/Media", "--username", "alice"]).unwrap();
+
+    assert!(matches!(
+      cli.command,
+      Command::Connect { url, username }
+        if url == "smb://omv.lan/Media" && username == "alice"
+    ));
+  }
+
+  #[test]
+  fn parses_status_command() {
+    let cli = Cli::try_parse_from(["nafm", "status"]).unwrap();
+
+    assert!(matches!(cli.command, Command::Status));
+  }
 
   #[test]
   fn parses_json_before_subcommand() {

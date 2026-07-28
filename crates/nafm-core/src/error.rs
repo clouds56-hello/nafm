@@ -26,8 +26,26 @@ pub enum NafmError {
   CachePathHasNoParent(PathBuf),
   #[error("unable to resolve app data directory")]
   AppDataDirectoryUnavailable,
+  #[error("invalid SMB URL: {0}")]
+  InvalidSmbUrl(String),
+  #[error("SMB username cannot be empty")]
+  EmptySmbUsername,
+  #[error("SMB password cannot be empty")]
+  EmptySmbPassword,
+  #[error("no saved credentials for SMB location: {0}")]
+  SmbCredentialNotFound(String),
+  #[error("SMB file changed while it was being scanned: {0}")]
+  SmbFileChanged(PathBuf),
+  #[error("unsupported site location scheme: {0}")]
+  UnsupportedLocationScheme(String),
+  #[error("credentials path is not a regular file or directory: {0}")]
+  InvalidCredentialsPath(PathBuf),
+  #[error("unsupported credentials schema version: {0}")]
+  UnsupportedCredentialsSchema(u32),
   #[error("database error: {0}")]
   Database(#[from] rusqlite::Error),
+  #[error("SMB error: {0}")]
+  Smb(#[from] smb2::Error),
   #[error("io error: {0}")]
   Io(#[from] std::io::Error),
   #[error("json error: {0}")]

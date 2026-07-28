@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nafm_core::{AddSiteFolderRequest, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions, StageWarningReason};
+use nafm_core::{
+  AddSiteFolderRequest, ContentHasher, CredentialStore, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions,
+  SiteFolderKind, StageWarningReason,
+};
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -32,6 +35,172 @@ async fn scan_site_detects_duplicates_across_site_folders() {
   let duplicates = fixture.repo.find_duplicates(Some("archive")).await.unwrap();
   assert_eq!(duplicates.len(), 1);
   assert_eq!(duplicates[0].files.len(), 2);
+}
+
+#[tokio::test]
+async fn adds_smb_site_folder_with_saved_credentials() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://OMV.lan/Media/", "alice", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  repo.create_site("omv").await.unwrap();
+
+  let folder = repo
+    .add_site_folder(
+      "omv",
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://omv.lan/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(folder.kind, SiteFolderKind::Smb);
+  assert_eq!(folder.path, PathBuf::from("smb://omv.lan/Media"));
+  assert_eq!(
+    repo.list_site_folders(Some("omv")).await.unwrap()[0].kind,
+    SiteFolderKind::Smb
+  );
+}
+
+#[tokio::test]
+async fn adding_smb_site_folder_requires_saved_credentials() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    CredentialStore::new(credentials_root.path().join("nafm")),
+  )
+  .await
+  .unwrap();
+  repo.create_site("omv").await.unwrap();
+
+  let error = repo
+    .add_site_folder(
+      "omv",
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://omv.lan/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap_err();
+
+  assert_eq!(
+    error.to_string(),
+    "no saved credentials for SMB location: smb://omv.lan/Media"
+  );
+}
+
+#[tokio::test]
+async fn migrates_existing_site_folders_to_local_kind() {
+  let cache = tempfile::tempdir().unwrap();
+  let db_path = cache.path().join("nafm.sqlite3");
+  let conn = rusqlite::Connection::open(&db_path).unwrap();
+  conn
+    .execute_batch(
+      "create table sites (
+        id text primary key not null,
+        name text not null unique,
+        added_at text not null
+      );
+      create table site_folders (
+        id text primary key not null,
+        site_id text not null references sites(id) on delete cascade,
+        path text not null unique,
+        hidden_policy text not null,
+        added_at text not null
+      );
+      insert into sites values ('site-1', 'local', '2026-01-01T00:00:00Z');
+      insert into site_folders values ('folder-1', 'site-1', '/tmp/local', 'include', '2026-01-01T00:00:00Z');",
+    )
+    .unwrap();
+  drop(conn);
+
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: db_path,
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+
+  let folders = repo.list_site_folders(Some("local")).await.unwrap();
+  assert_eq!(folders.len(), 1);
+  assert_eq!(folders[0].kind, SiteFolderKind::Local);
+}
+
+#[tokio::test]
+async fn stages_tracked_smb_files_without_local_path_canonicalization() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://omv.lan/Media", "alice", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  let site = repo.create_site("omv").await.unwrap();
+  let folder = repo
+    .add_site_folder(
+      "omv",
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://omv.lan/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
+  for (id, path) in [
+    ("file-1", "smb://omv.lan/Media/a.mp4"),
+    ("file-2", "smb://omv.lan/Media/b.mp4"),
+  ] {
+    conn
+      .execute(
+        "insert into file_records (
+          id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos,
+          hash_algorithm, content_hash, last_seen_at
+        ) values (?1, ?2, ?3, ?4, 4, 0, 'blake3', 'same-hash', '2026-01-01T00:00:00Z')",
+        rusqlite::params![id, &site.id, &folder.id, path],
+      )
+      .unwrap();
+  }
+  drop(conn);
+
+  let added = repo
+    .stage_add_path(Path::new("smb://omv.lan/Media/a.mp4"))
+    .await
+    .unwrap();
+  assert_eq!(added.staged_files.len(), 1);
+  assert_eq!(added.staged_files[0].path, PathBuf::from("smb://omv.lan/Media/a.mp4"));
+
+  let removed = repo
+    .stage_remove_path(Path::new("smb://omv.lan/Media/a.mp4"))
+    .await
+    .unwrap();
+  assert_eq!(removed.removed_files.len(), 1);
 }
 
 #[tokio::test]
@@ -91,7 +260,10 @@ async fn scan_site_resumes_from_durable_scan_cache() {
     .scan_site_with_progress(
       "docs",
       Some(Arc::new(move |progress| {
-        seen_clone.lock().unwrap().push((progress.files_scanned, progress.total_files));
+        seen_clone
+          .lock()
+          .unwrap()
+          .push((progress.files_scanned, progress.total_files));
       })),
     )
     .await
@@ -257,7 +429,10 @@ async fn scan_site_reports_current_file_progress() {
 
   let seen = seen.lock().unwrap();
   assert_eq!(seen.len(), 2);
-  let mut scanned_counts = seen.iter().map(|(_, files_scanned, _)| *files_scanned).collect::<Vec<_>>();
+  let mut scanned_counts = seen
+    .iter()
+    .map(|(_, files_scanned, _)| *files_scanned)
+    .collect::<Vec<_>>();
   scanned_counts.sort_unstable();
   assert_eq!(scanned_counts, vec![1, 2]);
   assert!(seen.iter().all(|(_, _, total_files)| *total_files == 2));
@@ -1165,9 +1340,22 @@ impl HashAlgorithm for FirstByteHashAlgorithm {
     "first_byte"
   }
 
-  fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
-    let bytes = fs::read(path)?;
-    Ok(bytes.first().copied().unwrap_or_default().to_string())
+  fn new_hasher(&self) -> Box<dyn ContentHasher> {
+    Box::new(FirstByteContentHasher(None))
+  }
+}
+
+struct FirstByteContentHasher(Option<u8>);
+
+impl ContentHasher for FirstByteContentHasher {
+  fn update(&mut self, bytes: &[u8]) {
+    if self.0.is_none() {
+      self.0 = bytes.first().copied();
+    }
+  }
+
+  fn finalize(self: Box<Self>) -> String {
+    self.0.unwrap_or_default().to_string()
   }
 }
 
@@ -1179,6 +1367,10 @@ struct SlowHashAlgorithm {
 impl HashAlgorithm for SlowHashAlgorithm {
   fn name(&self) -> &'static str {
     "slow_hash"
+  }
+
+  fn new_hasher(&self) -> Box<dyn ContentHasher> {
+    Box::new(ByteCountContentHasher(0))
   }
 
   fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
@@ -1198,5 +1390,17 @@ impl HashAlgorithm for SlowHashAlgorithm {
     let bytes = fs::read(path)?;
     self.current.fetch_sub(1, Ordering::SeqCst);
     Ok(bytes.len().to_string())
+  }
+}
+
+struct ByteCountContentHasher(u64);
+
+impl ContentHasher for ByteCountContentHasher {
+  fn update(&mut self, bytes: &[u8]) {
+    self.0 += bytes.len() as u64;
+  }
+
+  fn finalize(self: Box<Self>) -> String {
+    self.0.to_string()
   }
 }

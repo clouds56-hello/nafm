@@ -10,12 +10,15 @@ rust-version.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 directories.workspace = true
+percent-encoding.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smb2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 trash.workspace = true
+url.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 

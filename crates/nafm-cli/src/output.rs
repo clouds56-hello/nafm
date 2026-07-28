@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Error, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use nafm_core::DuplicateGroup;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use nafm_core::{DuplicateGroup, ScanProgress, ScanSummary, Site};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -36,11 +37,7 @@ where
 }
 
 pub fn format_json_error(error: &Error) -> Result<String> {
-  let causes = error
-    .chain()
-    .skip(1)
-    .map(|cause| cause.to_string())
-    .collect::<Vec<_>>();
+  let causes = error.chain().skip(1).map(|cause| cause.to_string()).collect::<Vec<_>>();
   if causes.is_empty() {
     serde_json::to_string(&serde_json::json!({
       "error": error.to_string(),
@@ -86,6 +83,72 @@ pub fn spinner(json: bool, message: &'static str) -> ProgressBar {
     .set_style(ProgressStyle::with_template("{spinner} {msg}").unwrap_or_else(|_| ProgressStyle::default_spinner()));
   spinner.enable_steady_tick(std::time::Duration::from_millis(120));
   spinner
+}
+
+#[derive(Clone)]
+pub struct SiteScanProgress {
+  multi_progress: Arc<MultiProgress>,
+  bars_by_site: Arc<BTreeMap<String, ProgressBar>>,
+}
+
+impl SiteScanProgress {
+  pub fn new(sites: &[Site]) -> Self {
+    let multi_progress = Arc::new(MultiProgress::new());
+    let style = ProgressStyle::with_template("{spinner} {prefix:20} hashed {pos}/{len} {msg}")
+      .unwrap_or_else(|_| ProgressStyle::default_spinner());
+    let bars_by_site = sites
+      .iter()
+      .map(|site| {
+        let bar = multi_progress.add(ProgressBar::new(0));
+        bar.set_style(style.clone());
+        bar.set_prefix(site.name.clone());
+        bar.set_message("waiting");
+        bar.enable_steady_tick(std::time::Duration::from_millis(120));
+        (site.id.clone(), bar)
+      })
+      .collect();
+    Self {
+      multi_progress,
+      bars_by_site: Arc::new(bars_by_site),
+    }
+  }
+
+  pub fn update(&self, progress: &ScanProgress) {
+    let Some(bar) = self.bars_by_site.get(&progress.site_id) else {
+      return;
+    };
+    bar.set_length(progress.total_files);
+    bar.set_position(progress.files_scanned);
+    bar.set_message(progress.current_path.display().to_string());
+  }
+
+  pub fn finish(&self, summaries: &[ScanSummary]) {
+    for summary in summaries {
+      let Some(bar) = self.bars_by_site.get(&summary.site_id) else {
+        continue;
+      };
+      bar.set_length(summary.files_seen);
+      bar.set_position(summary.files_seen);
+      bar.finish_with_message(scan_summary_message(summary));
+    }
+  }
+
+  pub fn abandon(&self) {
+    for bar in self.bars_by_site.values() {
+      bar.abandon_with_message("scan failed");
+    }
+  }
+
+  pub fn clear(&self) {
+    let _ = self.multi_progress.clear();
+  }
+}
+
+fn scan_summary_message(summary: &ScanSummary) -> String {
+  format!(
+    "done: {} files, {} hashed, {} reused",
+    summary.files_seen, summary.files_hashed, summary.files_reused
+  )
 }
 
 pub fn site_folder_label(site: &str, path: &Path) -> String {
@@ -191,11 +254,7 @@ mod tests {
 
   #[test]
   fn formats_arrays_as_jsonl() {
-    let output = format_json_output(&vec![
-      serde_json::json!({ "id": 1 }),
-      serde_json::json!({ "id": 2 }),
-    ])
-    .unwrap();
+    let output = format_json_output(&vec![serde_json::json!({ "id": 1 }), serde_json::json!({ "id": 2 })]).unwrap();
 
     assert_eq!(output, "{\"id\":1}\n{\"id\":2}\n");
   }
@@ -248,5 +307,23 @@ mod tests {
     assert!(output.contains("/archive/a (1/3):"));
     assert!(output.contains("[1] cat.jpg, duplicates with: /archive/b/cat-copy.jpg"));
     assert!(output.contains("/archive/b (1/5):"));
+  }
+
+  #[test]
+  fn formats_scan_summary_progress_message() {
+    let summary = nafm_core::ScanSummary {
+      site_id: "site-1".to_owned(),
+      site_name: "archive".to_owned(),
+      site_folders: 1,
+      files_seen: 8,
+      files_hashed: 3,
+      files_reused: 5,
+      files_removed: 0,
+      bytes_hashed: 12,
+      duplicate_groups: 0,
+      duplicate_files: 0,
+    };
+
+    assert_eq!(scan_summary_message(&summary), "done: 8 files, 3 hashed, 5 reused");
   }
 }

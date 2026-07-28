@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -11,12 +11,13 @@ use tokio::task::{self, JoinSet};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
+use crate::credentials::{CredentialStore, SmbLocation};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanProgress, ScanSummary,
-  Site, SiteFolder, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport,
-  StageWarning, StageWarningReason,
+  Site, SiteFolder, SiteFolderKind, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
+  StageResetReport, StageWarning, StageWarningReason,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -25,6 +26,7 @@ type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 pub struct Repository {
   db_path: PathBuf,
   hash_algorithm: Arc<dyn HashAlgorithm>,
+  credential_store: CredentialStore,
 }
 
 #[derive(Clone)]
@@ -39,6 +41,16 @@ struct FileProbe {
   path: PathBuf,
   size_bytes: u64,
   modified_unix_nanos: i64,
+  source: FileSource,
+}
+
+#[derive(Clone, Debug)]
+enum FileSource {
+  Local,
+  Smb {
+    credential_url: String,
+    remote_path: String,
+  },
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +78,15 @@ struct ScanProgressContext {
   total_files: u64,
 }
 
+struct ScanPreparation {
+  pending_records: Vec<PendingFileRecord>,
+  hash_targets: Vec<(usize, FileProbe)>,
+  files_seen: u64,
+  files_hashed: u64,
+  files_reused: u64,
+  bytes_hashed: u64,
+}
+
 #[derive(Clone, Debug)]
 struct StagedFileRecord {
   file: DuplicateFile,
@@ -90,9 +111,17 @@ impl StageMutationKind {
 
 impl Repository {
   pub async fn open(options: RepositoryOptions) -> Result<Self> {
+    Self::open_with_credential_store(options, CredentialStore::from_default_root()?).await
+  }
+
+  pub async fn open_with_credential_store(
+    options: RepositoryOptions,
+    credential_store: CredentialStore,
+  ) -> Result<Self> {
     let repo = Self {
       db_path: options.cache_path,
       hash_algorithm: options.hash_algorithm.unwrap_or_else(default_hash_algorithm),
+      credential_store,
     };
     repo.initialize().await?;
     Ok(repo)
@@ -132,25 +161,28 @@ impl Repository {
 
   pub async fn add_site_folder(&self, site_selector: &str, request: AddSiteFolderRequest) -> Result<SiteFolder> {
     let db_path = self.db_path.clone();
+    let credential_store = self.credential_store.clone();
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
-      let path = std::fs::canonicalize(&request.path)?;
+      let (kind, path) = resolve_site_folder_location(&request.path, &credential_store)?;
       let now = Utc::now();
       let site_folder = SiteFolder {
         id: Uuid::new_v4().to_string(),
         site_id: site.id,
+        kind,
         path,
         hidden_policy: request.hidden_policy,
         added_at: now,
       };
       conn.execute(
-        "insert into site_folders (id, site_id, path, hidden_policy, added_at)
-         values (?1, ?2, ?3, ?4, ?5)",
+        "insert into site_folders (id, site_id, kind, path, hidden_policy, added_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
           site_folder.id,
           site_folder.site_id,
+          site_folder_kind_to_db(site_folder.kind),
           site_folder.path.to_string_lossy(),
           hidden_policy_to_db(site_folder.hidden_policy),
           site_folder.added_at
@@ -247,11 +279,22 @@ impl Repository {
   ) -> Result<ScanSummary> {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
+    let lookup_db_path = db_path.clone();
+    let (site, site_folders) = task::spawn_blocking(move || {
+      let conn = Connection::open(&lookup_db_path)?;
+      let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
+      let site_folders = list_site_folders(&conn, Some(&site.id))?;
+      Ok::<_, NafmError>((site, site_folders))
+    })
+    .await??;
+
+    if site_folders.iter().any(|folder| folder.kind == SiteFolderKind::Smb) {
+      return self.scan_site_with_smb(&site, &site_folders, progress_callback).await;
+    }
+
     let hash_algorithm = self.hash_algorithm.clone();
     task::spawn_blocking(move || {
       let conn = Connection::open(&db_path)?;
-      let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
-      let site_folders = list_site_folders(&conn, Some(&site.id))?;
       scan_site_blocking(
         &conn,
         &db_path,
@@ -262,6 +305,147 @@ impl Repository {
       )
     })
     .await?
+  }
+
+  async fn scan_site_with_smb(
+    &self,
+    site: &Site,
+    site_folders: &[SiteFolder],
+    progress_callback: Option<ScanProgressCallback>,
+  ) -> Result<ScanSummary> {
+    let mut files_by_path = BTreeMap::new();
+    let local_folders = site_folders
+      .iter()
+      .filter(|folder| folder.kind == SiteFolderKind::Local)
+      .cloned()
+      .collect::<Vec<_>>();
+    if !local_folders.is_empty() {
+      for file in task::spawn_blocking(move || discover_site_files(&local_folders)).await?? {
+        files_by_path.insert(file.path.clone(), file);
+      }
+    }
+
+    let mut smb_folders = site_folders
+      .iter()
+      .filter(|folder| folder.kind == SiteFolderKind::Smb)
+      .cloned()
+      .collect::<Vec<_>>();
+    smb_folders.sort_by_key(|folder| std::cmp::Reverse(folder.path.components().count()));
+    for site_folder in &smb_folders {
+      for file in discover_smb_files(site_folder, &self.credential_store).await? {
+        files_by_path.entry(file.path.clone()).or_insert(file);
+      }
+    }
+
+    let db_path = self.db_path.clone();
+    let preparation_db_path = db_path.clone();
+    let preparation_site = site.clone();
+    let hash_algorithm_name = self.hash_algorithm.name().to_owned();
+    let mut preparation = task::spawn_blocking(move || {
+      let conn = Connection::open(preparation_db_path)?;
+      prepare_scan(
+        &conn,
+        &preparation_site,
+        files_by_path.into_values().collect(),
+        &hash_algorithm_name,
+      )
+    })
+    .await??;
+
+    let progress_context = Arc::new(ScanProgressContext {
+      site_id: site.id.clone(),
+      site_name: site.name.clone(),
+      total_files: preparation.files_seen,
+    });
+    let processed_files = Arc::new(AtomicU64::new(0));
+    let local_targets = preparation
+      .hash_targets
+      .iter()
+      .filter(|(_, file)| matches!(file.source, FileSource::Local))
+      .cloned()
+      .collect::<Vec<_>>();
+    if !local_targets.is_empty() {
+      let local_db_path = db_path.clone();
+      let local_site = site.clone();
+      let local_hash_algorithm = self.hash_algorithm.clone();
+      let local_progress_callback = progress_callback.clone();
+      let local_progress_context = progress_context.clone();
+      let local_processed_files = processed_files.clone();
+      let hashed_records = task::spawn_blocking(move || {
+        hash_files_in_parallel(
+          &local_db_path,
+          &local_site,
+          &local_targets,
+          local_hash_algorithm.as_ref(),
+          local_progress_callback.as_ref(),
+          &local_progress_context,
+          &local_processed_files,
+        )
+      })
+      .await??;
+      for (index, content_hash) in hashed_records {
+        preparation.pending_records[index].content_hash = Some(content_hash);
+      }
+    }
+
+    let mut remote_targets = BTreeMap::<String, Vec<(usize, FileProbe)>>::new();
+    for (index, file) in &preparation.hash_targets {
+      if let FileSource::Smb { credential_url, .. } = &file.source {
+        remote_targets
+          .entry(credential_url.clone())
+          .or_default()
+          .push((*index, file.clone()));
+      }
+    }
+    for (credential_url, targets) in remote_targets {
+      let credential = self
+        .credential_store
+        .load_smb_credential(&credential_url)?
+        .ok_or_else(|| NafmError::SmbCredentialNotFound(credential_url.clone()))?;
+      let location = SmbLocation::parse(&credential.url)?;
+      let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
+      let tree = client.connect_share(&location.share).await?;
+      for (index, file) in targets {
+        let FileSource::Smb { remote_path, .. } = &file.source else {
+          unreachable!("remote target should have an SMB source");
+        };
+        let content_hash = hash_smb_file(&client, &tree, remote_path, &file, self.hash_algorithm.as_ref()).await?;
+        cache_hashed_file(&db_path, &site.id, &file, self.hash_algorithm.name(), &content_hash).await?;
+        report_scan_progress(
+          progress_callback.as_ref(),
+          &progress_context,
+          &file.path,
+          &processed_files,
+        );
+        preparation.pending_records[index].content_hash = Some(content_hash);
+      }
+      let _ = client.disconnect_share(&tree).await;
+    }
+
+    let finalize_db_path = db_path;
+    let finalize_site = site.clone();
+    let pending_records = preparation.pending_records;
+    let hash_algorithm_name = self.hash_algorithm.name().to_owned();
+    let scan_time = Utc::now();
+    let (removed, duplicate_groups) = task::spawn_blocking(move || {
+      let conn = Connection::open(finalize_db_path)?;
+      replace_site_file_records_atomically(&conn, &finalize_site, &pending_records, &hash_algorithm_name, scan_time)
+    })
+    .await??;
+    let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
+
+    Ok(ScanSummary {
+      site_id: site.id.clone(),
+      site_name: site.name.clone(),
+      site_folders: site_folders.len() as u64,
+      files_seen: preparation.files_seen,
+      files_hashed: preparation.files_hashed,
+      files_reused: preparation.files_reused,
+      files_removed: removed,
+      bytes_hashed: preparation.bytes_hashed,
+      duplicate_groups: duplicate_groups.len() as u64,
+      duplicate_files,
+    })
   }
 
   pub async fn find_duplicates(&self, site_selector: Option<&str>) -> Result<Vec<DuplicateGroup>> {
@@ -306,8 +490,8 @@ impl Repository {
     let path = path.to_path_buf();
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      let canonical_path = std::fs::canonicalize(&path)?;
-      stage_add_path(&conn, &canonical_path)
+      let (canonical_path, is_remote) = normalize_user_location(&path)?;
+      stage_add_path(&conn, &canonical_path, is_remote)
     })
     .await?
   }
@@ -326,8 +510,8 @@ impl Repository {
     let path = path.to_path_buf();
     task::spawn_blocking(move || {
       let conn = Connection::open(db_path)?;
-      let canonical_path = std::fs::canonicalize(&path)?;
-      stage_remove_path(&conn, &canonical_path)
+      let (canonical_path, is_remote) = normalize_user_location(&path)?;
+      stage_remove_path(&conn, &canonical_path, is_remote)
     })
     .await?
   }
@@ -382,6 +566,7 @@ impl Repository {
         create table if not exists site_folders (
           id text primary key not null,
           site_id text not null references sites(id) on delete cascade,
+          kind text not null default 'local',
           path text not null unique,
           hidden_policy text not null,
           added_at text not null
@@ -440,11 +625,177 @@ impl Repository {
         );
         ",
       )?;
+      ensure_site_folder_kind_column(&conn)?;
       initialize_stage_history(&conn)?;
       Ok(())
     })
     .await?
   }
+}
+
+fn ensure_site_folder_kind_column(conn: &Connection) -> Result<()> {
+  let mut stmt = conn.prepare("pragma table_info(site_folders)")?;
+  let columns = stmt
+    .query_map([], |row| row.get::<_, String>(1))?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+  if !columns.iter().any(|column| column == "kind") {
+    conn.execute(
+      "alter table site_folders add column kind text not null default 'local'",
+      [],
+    )?;
+  }
+  Ok(())
+}
+
+fn resolve_site_folder_location(path: &Path, credential_store: &CredentialStore) -> Result<(SiteFolderKind, PathBuf)> {
+  let value = path.to_string_lossy();
+  if value
+    .get(..6)
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("smb://"))
+  {
+    let location = SmbLocation::parse(&value)?;
+    if credential_store
+      .load_smb_credential(&location.normalized_url)?
+      .is_none()
+    {
+      return Err(NafmError::SmbCredentialNotFound(location.normalized_url));
+    }
+    return Ok((SiteFolderKind::Smb, PathBuf::from(location.normalized_url)));
+  }
+  if let Some((scheme, _)) = value.split_once("://") {
+    return Err(NafmError::UnsupportedLocationScheme(scheme.to_owned()));
+  }
+  Ok((SiteFolderKind::Local, std::fs::canonicalize(path)?))
+}
+
+fn normalize_user_location(path: &Path) -> Result<(PathBuf, bool)> {
+  let value = path.to_string_lossy();
+  if value
+    .get(..6)
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("smb://"))
+  {
+    let location = SmbLocation::parse(&value)?;
+    return Ok((PathBuf::from(location.normalized_url), true));
+  }
+  if let Some((scheme, _)) = value.split_once("://") {
+    return Err(NafmError::UnsupportedLocationScheme(scheme.to_owned()));
+  }
+  Ok((std::fs::canonicalize(path)?, false))
+}
+
+async fn discover_smb_files(site_folder: &SiteFolder, credential_store: &CredentialStore) -> Result<Vec<FileProbe>> {
+  let location_value = site_folder.path.to_string_lossy();
+  let credential = credential_store
+    .load_smb_credential(&location_value)?
+    .ok_or_else(|| NafmError::SmbCredentialNotFound(location_value.into_owned()))?;
+  let location = SmbLocation::parse(&credential.url)?;
+  let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
+  let mut tree = client.connect_share(&location.share).await?;
+  let mut files = Vec::new();
+  let mut directories = vec![(location.relative_path.clone(), Vec::<String>::new())];
+  let mut visited = BTreeSet::new();
+
+  while let Some((remote_directory, relative_segments)) = directories.pop() {
+    if !visited.insert(remote_directory.clone()) {
+      continue;
+    }
+    let mut entries = client.list_directory(&mut tree, &remote_directory).await?;
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    for entry in entries {
+      if entry.name == "." || entry.name == ".." {
+        continue;
+      }
+      if site_folder.hidden_policy == HiddenPolicy::Skip && entry.name.starts_with('.') {
+        continue;
+      }
+
+      let remote_path = join_smb_path(&remote_directory, &entry.name);
+      let mut child_segments = relative_segments.clone();
+      child_segments.push(entry.name);
+      if entry.is_directory {
+        directories.push((remote_path, child_segments));
+        continue;
+      }
+
+      let display_url = location.join_path_segments(&child_segments)?;
+      let modified_unix_nanos = match entry.modified.to_system_time() {
+        Some(time) => modified_unix_nanos(time)?,
+        None => 0,
+      };
+      files.push(FileProbe {
+        site_folder_id: site_folder.id.clone(),
+        path: PathBuf::from(display_url),
+        size_bytes: entry.size,
+        modified_unix_nanos,
+        source: FileSource::Smb {
+          credential_url: credential.url.clone(),
+          remote_path,
+        },
+      });
+    }
+  }
+
+  let _ = client.disconnect_share(&tree).await;
+  Ok(files)
+}
+
+fn join_smb_path(parent: &str, name: &str) -> String {
+  if parent.is_empty() {
+    name.to_owned()
+  } else {
+    format!("{}/{}", parent.trim_end_matches('/'), name)
+  }
+}
+
+async fn hash_smb_file(
+  client: &smb2::SmbClient,
+  tree: &smb2::Tree,
+  remote_path: &str,
+  file: &FileProbe,
+  hash_algorithm: &dyn HashAlgorithm,
+) -> Result<String> {
+  const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
+
+  let reader = client.open_file_reader(tree, remote_path).await?;
+  if reader.size() != file.size_bytes {
+    let _ = reader.close().await;
+    return Err(NafmError::SmbFileChanged(file.path.clone()));
+  }
+
+  let mut hasher = hash_algorithm.new_hasher();
+  let mut offset = 0;
+  while offset < file.size_bytes {
+    let bytes = reader.read_at(offset, CHUNK_SIZE.min(file.size_bytes - offset)).await?;
+    if bytes.is_empty() {
+      break;
+    }
+    offset += bytes.len() as u64;
+    hasher.update(&bytes);
+  }
+  reader.close().await?;
+  if offset != file.size_bytes {
+    return Err(NafmError::SmbFileChanged(file.path.clone()));
+  }
+  Ok(hasher.finalize())
+}
+
+async fn cache_hashed_file(
+  db_path: &Path,
+  site_id: &str,
+  file: &FileProbe,
+  hash_algorithm: &str,
+  content_hash: &str,
+) -> Result<()> {
+  let db_path = db_path.to_path_buf();
+  let site_id = site_id.to_owned();
+  let file = file.clone();
+  let hash_algorithm = hash_algorithm.to_owned();
+  let content_hash = content_hash.to_owned();
+  task::spawn_blocking(move || {
+    let conn = Connection::open(db_path)?;
+    upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm, &content_hash)
+  })
+  .await?
 }
 
 fn scan_site_blocking(
@@ -457,87 +808,103 @@ fn scan_site_blocking(
 ) -> Result<ScanSummary> {
   let files = discover_site_files(site_folders)?;
   let scan_time = Utc::now();
-  let mut files_seen = 0;
-  let mut files_hashed = 0;
-  let mut files_reused = 0;
-  let mut bytes_hashed = 0;
   let processed_files = AtomicU64::new(0);
-  let mut pending_records = Vec::with_capacity(files.len());
-  let mut hash_targets = Vec::new();
-
-  for file in files {
-    files_seen += 1;
-    let existing = existing_record(conn, &file.path)?;
-    let can_reuse = match existing.as_ref() {
-      Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm.name() => {
-        record_matches(
-          conn,
-          &record.id,
-          file.size_bytes,
-          file.modified_unix_nanos,
-          hash_algorithm.name(),
-        )?
-      }
-      _ => false,
-    };
-    if can_reuse {
-      files_reused += 1;
-      pending_records.push(PendingFileRecord {
-        file,
-        content_hash: existing.and_then(|record| record.content_hash),
-      });
-    } else if let Some(cached_record) = cached_scan_record(conn, &site.id, &file, hash_algorithm.name())? {
-      files_reused += 1;
-      pending_records.push(PendingFileRecord {
-        file,
-        content_hash: Some(cached_record.content_hash),
-      });
-    } else {
-      files_hashed += 1;
-      bytes_hashed += file.size_bytes;
-      hash_targets.push((pending_records.len(), file.clone()));
-      pending_records.push(PendingFileRecord {
-        file,
-        content_hash: None,
-      });
-    }
-  }
+  let mut preparation = prepare_scan(conn, site, files, hash_algorithm.name())?;
 
   let progress_context = Arc::new(ScanProgressContext {
     site_id: site.id.clone(),
     site_name: site.name.clone(),
-    total_files: files_seen,
+    total_files: preparation.files_seen,
   });
 
   let hashed_records = hash_files_in_parallel(
     db_path,
     site,
-    &hash_targets,
+    &preparation.hash_targets,
     hash_algorithm,
     progress_callback,
     &progress_context,
     &processed_files,
   )?;
   for (index, content_hash) in hashed_records {
-    pending_records[index].content_hash = Some(content_hash);
+    preparation.pending_records[index].content_hash = Some(content_hash);
   }
 
-  let (removed, duplicate_groups) =
-    replace_site_file_records_atomically(conn, site, &pending_records, hash_algorithm.name(), scan_time)?;
+  let (removed, duplicate_groups) = replace_site_file_records_atomically(
+    conn,
+    site,
+    &preparation.pending_records,
+    hash_algorithm.name(),
+    scan_time,
+  )?;
   let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
 
   Ok(ScanSummary {
     site_id: site.id.clone(),
     site_name: site.name.clone(),
     site_folders: site_folders.len() as u64,
-    files_seen,
-    files_hashed,
-    files_reused,
+    files_seen: preparation.files_seen,
+    files_hashed: preparation.files_hashed,
+    files_reused: preparation.files_reused,
     files_removed: removed,
-    bytes_hashed,
+    bytes_hashed: preparation.bytes_hashed,
     duplicate_groups: duplicate_groups.len() as u64,
     duplicate_files,
   })
+}
+
+fn prepare_scan(
+  conn: &Connection,
+  site: &Site,
+  files: Vec<FileProbe>,
+  hash_algorithm: &str,
+) -> Result<ScanPreparation> {
+  let mut preparation = ScanPreparation {
+    pending_records: Vec::with_capacity(files.len()),
+    hash_targets: Vec::new(),
+    files_seen: 0,
+    files_hashed: 0,
+    files_reused: 0,
+    bytes_hashed: 0,
+  };
+  for file in files {
+    preparation.files_seen += 1;
+    let existing = existing_record(conn, &file.path)?;
+    let can_reuse = match existing.as_ref() {
+      Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm => record_matches(
+        conn,
+        &record.id,
+        file.size_bytes,
+        file.modified_unix_nanos,
+        hash_algorithm,
+      )?,
+      _ => false,
+    };
+    if can_reuse {
+      preparation.files_reused += 1;
+      preparation.pending_records.push(PendingFileRecord {
+        file,
+        content_hash: existing.and_then(|record| record.content_hash),
+      });
+    } else if let Some(cached_record) = cached_scan_record(conn, &site.id, &file, hash_algorithm)? {
+      preparation.files_reused += 1;
+      preparation.pending_records.push(PendingFileRecord {
+        file,
+        content_hash: Some(cached_record.content_hash),
+      });
+    } else {
+      preparation.files_hashed += 1;
+      preparation.bytes_hashed += file.size_bytes;
+      preparation
+        .hash_targets
+        .push((preparation.pending_records.len(), file.clone()));
+      preparation.pending_records.push(PendingFileRecord {
+        file,
+        content_hash: None,
+      });
+    }
+  }
+  Ok(preparation)
 }
 
 fn hash_files_in_parallel(
@@ -630,6 +997,9 @@ fn discover_site_files(site_folders: &[SiteFolder]) -> Result<Vec<FileProbe>> {
   sorted_site_folders.sort_by_key(|site_folder| std::cmp::Reverse(site_folder.path.components().count()));
 
   for site_folder in &sorted_site_folders {
+    if site_folder.kind != SiteFolderKind::Local {
+      continue;
+    }
     let walker = WalkDir::new(&site_folder.path).follow_links(false).into_iter();
     for entry in walker.filter_entry(|entry| should_visit(entry, site_folder.hidden_policy)) {
       let entry = entry.map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -648,6 +1018,7 @@ fn discover_site_files(site_folders: &[SiteFolder]) -> Result<Vec<FileProbe>> {
           path,
           size_bytes: metadata.len(),
           modified_unix_nanos: modified_unix_nanos(metadata.modified()?)?,
+          source: FileSource::Local,
         },
       );
     }
@@ -990,7 +1361,7 @@ fn duplicate_file_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Duplicat
   })
 }
 
-fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddReport> {
+fn stage_add_path(conn: &Connection, canonical_path: &Path, is_remote: bool) -> Result<StageAddReport> {
   let duplicate_groups = find_duplicates(conn, None)?;
   let staged_files = list_staged_files(conn)?;
   let mut staged_file_ids = staged_files
@@ -1011,7 +1382,9 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
     }
   }
 
-  let requested_files = if canonical_path.is_dir() {
+  let is_directory = canonical_path.is_dir()
+    || (is_remote && !files_by_path.contains_key(canonical_path) && tracked_descendant_exists(conn, canonical_path)?);
+  let requested_files = if is_directory {
     files_by_path
       .values()
       .filter(|file| file.path.starts_with(canonical_path))
@@ -1032,7 +1405,7 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
     }
   };
 
-  if canonical_path.is_dir() && requested_files.is_empty() {
+  if is_directory && requested_files.is_empty() {
     return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
   }
 
@@ -1110,14 +1483,16 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path) -> Result<StageAddRe
   })
 }
 
-fn stage_remove_path(conn: &Connection, canonical_path: &Path) -> Result<StageRemoveReport> {
+fn stage_remove_path(conn: &Connection, canonical_path: &Path, is_remote: bool) -> Result<StageRemoveReport> {
   let staged_files = list_staged_files(conn)?;
   let staged_by_path = staged_files
     .iter()
     .map(|record| (record.file.path.clone(), record.file.clone()))
     .collect::<BTreeMap<_, _>>();
 
-  let removed_files = if canonical_path.is_dir() {
+  let is_directory = canonical_path.is_dir()
+    || (is_remote && !staged_by_path.contains_key(canonical_path) && tracked_descendant_exists(conn, canonical_path)?);
+  let removed_files = if is_directory {
     staged_by_path
       .values()
       .filter(|file| file.path.starts_with(canonical_path))
@@ -1131,7 +1506,7 @@ fn stage_remove_path(conn: &Connection, canonical_path: &Path) -> Result<StageRe
   };
 
   let mut warnings = Vec::new();
-  if canonical_path.is_file() && removed_files.is_empty() {
+  if !is_directory && removed_files.is_empty() {
     let warning_reason = if tracked_file_exists(conn, canonical_path)? {
       StageWarningReason::NotStaged
     } else {
@@ -1143,7 +1518,7 @@ fn stage_remove_path(conn: &Connection, canonical_path: &Path) -> Result<StageRe
     });
   }
 
-  if canonical_path.is_dir() && removed_files.is_empty() {
+  if is_directory && removed_files.is_empty() {
     if tracked_descendant_exists(conn, canonical_path)? {
       warnings.push(StageWarning {
         path: canonical_path.to_path_buf(),
@@ -1416,7 +1791,7 @@ fn list_sites(conn: &Connection) -> Result<Vec<Site>> {
 fn list_site_folders(conn: &Connection, site_id: Option<&str>) -> Result<Vec<SiteFolder>> {
   if let Some(site_id) = site_id {
     let mut stmt = conn.prepare(
-      "select id, site_id, path, hidden_policy, added_at
+      "select id, site_id, kind, path, hidden_policy, added_at
        from site_folders
        where site_id = ?1
        order by path",
@@ -1427,7 +1802,7 @@ fn list_site_folders(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Sit
       .map_err(Into::into)
   } else {
     let mut stmt = conn.prepare(
-      "select id, site_id, path, hidden_policy, added_at
+      "select id, site_id, kind, path, hidden_policy, added_at
        from site_folders
        order by path",
     )?;
@@ -1490,14 +1865,30 @@ fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
 }
 
 fn site_folder_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SiteFolder> {
-  let hidden_policy: String = row.get(3)?;
+  let kind: String = row.get(2)?;
+  let hidden_policy: String = row.get(4)?;
   Ok(SiteFolder {
     id: row.get(0)?,
     site_id: row.get(1)?,
-    path: PathBuf::from(row.get::<_, String>(2)?),
+    kind: site_folder_kind_from_db(&kind),
+    path: PathBuf::from(row.get::<_, String>(3)?),
     hidden_policy: hidden_policy_from_db(&hidden_policy),
-    added_at: row.get(4)?,
+    added_at: row.get(5)?,
   })
+}
+
+fn site_folder_kind_to_db(kind: SiteFolderKind) -> &'static str {
+  match kind {
+    SiteFolderKind::Local => "local",
+    SiteFolderKind::Smb => "smb",
+  }
+}
+
+fn site_folder_kind_from_db(value: &str) -> SiteFolderKind {
+  match value {
+    "smb" => SiteFolderKind::Smb,
+    _ => SiteFolderKind::Local,
+  }
 }
 
 fn hidden_policy_to_db(policy: HiddenPolicy) -> &'static str {

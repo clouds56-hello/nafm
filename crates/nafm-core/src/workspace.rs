@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{NafmError, Result};
@@ -155,8 +155,8 @@ impl WorkspaceManager {
 }
 
 pub fn app_root_dir() -> Result<PathBuf> {
-  let dirs = ProjectDirs::from("dev", "nafm", "nafm").ok_or(NafmError::AppDataDirectoryUnavailable)?;
-  Ok(dirs.data_dir().to_path_buf())
+  let dirs = BaseDirs::new().ok_or(NafmError::AppDataDirectoryUnavailable)?;
+  Ok(dirs.home_dir().join(".tokn").join("nafm"))
 }
 
 pub fn normalize_workspace_name(name: &str) -> Result<String> {

@@ -10,6 +10,13 @@ pub enum HiddenPolicy {
   Skip,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteFolderKind {
+  Local,
+  Smb,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Site {
   pub id: String,
@@ -21,6 +28,7 @@ pub struct Site {
 pub struct SiteFolder {
   pub id: String,
   pub site_id: String,
+  pub kind: SiteFolderKind,
   pub path: PathBuf,
   pub hidden_policy: HiddenPolicy,
   pub added_at: DateTime<Utc>,
