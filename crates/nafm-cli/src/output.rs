@@ -94,7 +94,7 @@ pub struct SiteScanProgress {
 impl SiteScanProgress {
   pub fn new(sites: &[Site]) -> Self {
     let multi_progress = Arc::new(MultiProgress::new());
-    let style = ProgressStyle::with_template("{spinner} {prefix:20} hashed {pos}/{len} {msg}")
+    let style = ProgressStyle::with_template("{spinner} {prefix:20} processed {pos}/{len} {msg}")
       .unwrap_or_else(|_| ProgressStyle::default_spinner());
     let bars_by_site = sites
       .iter()
@@ -118,8 +118,13 @@ impl SiteScanProgress {
       return;
     };
     bar.set_length(progress.total_files);
-    bar.set_position(progress.files_scanned);
-    bar.set_message(progress.current_path.display().to_string());
+    bar.set_position(scan_progress_position(progress));
+    bar.set_message(format!(
+      "{} hashed, {} reused | {}",
+      progress.files_scanned,
+      progress.files_reused,
+      progress.current_path.display()
+    ));
   }
 
   pub fn finish(&self, summaries: &[ScanSummary]) {
@@ -142,6 +147,13 @@ impl SiteScanProgress {
   pub fn clear(&self) {
     let _ = self.multi_progress.clear();
   }
+}
+
+pub fn scan_progress_position(progress: &ScanProgress) -> u64 {
+  progress
+    .files_scanned
+    .saturating_add(progress.files_reused)
+    .min(progress.total_files)
 }
 
 fn scan_summary_message(summary: &ScanSummary) -> String {
@@ -325,5 +337,19 @@ mod tests {
     };
 
     assert_eq!(scan_summary_message(&summary), "done: 8 files, 3 hashed, 5 reused");
+  }
+
+  #[test]
+  fn scan_progress_position_includes_reused_files() {
+    let progress = nafm_core::ScanProgress {
+      site_id: "site-1".to_owned(),
+      site_name: "archive".to_owned(),
+      current_path: PathBuf::from("/archive/new.mov"),
+      files_scanned: 1,
+      files_reused: 5,
+      total_files: 8,
+    };
+
+    assert_eq!(scan_progress_position(&progress), 6);
   }
 }

@@ -75,6 +75,7 @@ struct PendingFileRecord {
 struct ScanProgressContext {
   site_id: String,
   site_name: String,
+  files_reused: u64,
   total_files: u64,
 }
 
@@ -355,6 +356,7 @@ impl Repository {
     let progress_context = Arc::new(ScanProgressContext {
       site_id: site.id.clone(),
       site_name: site.name.clone(),
+      files_reused: preparation.files_reused,
       total_files: preparation.files_seen,
     });
     let processed_files = Arc::new(AtomicU64::new(0));
@@ -814,6 +816,7 @@ fn scan_site_blocking(
   let progress_context = Arc::new(ScanProgressContext {
     site_id: site.id.clone(),
     site_name: site.name.clone(),
+    files_reused: preparation.files_reused,
     total_files: preparation.files_seen,
   });
 
@@ -931,11 +934,13 @@ fn hash_files_in_parallel(
 
   std::thread::scope(|scope| -> Result<Vec<(usize, String)>> {
     let (sender, receiver) = mpsc::channel::<(usize, FileProbe, String)>();
+    let writer_progress_context = progress_context.clone();
     let writer = scope.spawn(move || -> Result<Vec<(usize, String)>> {
       let conn = Connection::open(writer_db_path)?;
       let mut hashed_records = Vec::with_capacity(hash_targets.len());
       for (index, file, content_hash) in receiver {
         upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm_name, &content_hash)?;
+        report_scan_progress(progress_callback, &writer_progress_context, &file.path, processed_files);
         hashed_records.push((index, content_hash));
       }
       Ok(hashed_records)
@@ -943,11 +948,9 @@ fn hash_files_in_parallel(
     let mut tasks = Vec::with_capacity(worker_count);
     for chunk in hash_targets.chunks(chunk_size) {
       let sender = sender.clone();
-      let progress_context = progress_context.clone();
       tasks.push(scope.spawn(move || -> Result<()> {
         for (index, file) in chunk {
           let content_hash = hash_algorithm.hash_file(&file.path)?;
-          report_scan_progress(progress_callback, &progress_context, &file.path, processed_files);
           sender
             .send((*index, file.clone(), content_hash))
             .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -987,6 +990,7 @@ fn report_scan_progress(
     site_name: progress_context.site_name.clone(),
     current_path: current_path.to_path_buf(),
     files_scanned: processed_files.fetch_add(1, Ordering::Relaxed) + 1,
+    files_reused: progress_context.files_reused,
     total_files: progress_context.total_files,
   });
 }

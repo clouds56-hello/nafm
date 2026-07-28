@@ -60,6 +60,7 @@ pub struct ScanProgress {
   pub site_name: String,
   pub current_path: PathBuf,
   pub files_scanned: u64,
+  pub files_reused: u64,
   pub total_files: u64,
 }
 

@@ -263,7 +263,7 @@ async fn scan_site_resumes_from_durable_scan_cache() {
         seen_clone
           .lock()
           .unwrap()
-          .push((progress.files_scanned, progress.total_files));
+          .push((progress.files_scanned, progress.files_reused, progress.total_files));
       })),
     )
     .await
@@ -271,7 +271,43 @@ async fn scan_site_resumes_from_durable_scan_cache() {
 
   assert_eq!(summary.files_hashed, 1);
   assert_eq!(summary.files_reused, 1);
-  assert_eq!(&*seen.lock().unwrap(), &[(1, 2)]);
+  assert_eq!(&*seen.lock().unwrap(), &[(1, 1, 2)]);
+}
+
+#[tokio::test]
+async fn scan_site_caches_hash_before_reporting_progress() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("a.txt"), "alpha").unwrap();
+
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+
+  let db_path = fixture.repo.db_path().to_path_buf();
+  let cache_was_visible = Arc::new(Mutex::new(Vec::new()));
+  let cache_was_visible_clone = cache_was_visible.clone();
+  fixture
+    .repo
+    .scan_site_with_progress(
+      "docs",
+      Some(Arc::new(move |progress| {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let is_cached = conn
+          .query_row(
+            "select exists(
+              select 1 from scan_cache_entries where site_id = ?1 and path = ?2
+            )",
+            rusqlite::params![progress.site_id, progress.current_path.to_string_lossy()],
+            |row| row.get::<_, bool>(0),
+          )
+          .unwrap();
+        cache_was_visible_clone.lock().unwrap().push(is_cached);
+      })),
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(&*cache_was_visible.lock().unwrap(), &[true]);
 }
 
 #[tokio::test]
