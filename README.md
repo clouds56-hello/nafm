@@ -17,7 +17,7 @@ NAFM stores its configuration, credentials, and workspace databases under
 Save credentials for an SMB share with:
 
 ```sh
-cargo run -p nafm-cli -- connect smb://omv.lan/Media --username alice
+cargo run -p nafm-cli -- connect smb://nas.example.test/Media --username alice
 ```
 
 NAFM prompts for the password without echoing it, verifies that the server and
@@ -29,13 +29,13 @@ Register and scan the connected share as a site:
 
 ```sh
 cargo run -p nafm-cli -- site create omv
-cargo run -p nafm-cli -- site add omv smb://omv.lan/Media
+cargo run -p nafm-cli -- site add omv smb://nas.example.test/Media
 cargo run -p nafm-cli -- scan omv
 ```
 
 SMB files are streamed into the configured content hasher and are not copied
 into NAFM's data directory. A credential saved for a share also authorizes
-site folders beneath that share, such as `smb://omv.lan/Media/Family Videos`.
+site folders beneath that share, such as `smb://nas.example.test/Media/Family Videos`.
 
 ## Status
 
