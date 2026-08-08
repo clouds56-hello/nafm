@@ -56,18 +56,32 @@ impl CredentialStore {
 
   pub fn load_smb_credential(&self, url: &str) -> Result<Option<SmbCredential>> {
     let location = SmbLocation::parse(url)?;
-    Ok(
-      self
-        .load_document()?
-        .credentials
-        .into_iter()
-        .find(|credential| credential.url == location.normalized_url)
-        .map(|credential| SmbCredential {
-          url: credential.url,
-          username: credential.username,
-          password: credential.password,
-        }),
-    )
+    let matching_credential = self
+      .load_document()?
+      .credentials
+      .into_iter()
+      .map(|credential| {
+        let credential_location = SmbLocation::parse(&credential.url)?;
+        Ok::<_, NafmError>(
+          smb_location_is_ancestor(&credential_location, &location).then_some((
+            credential_location
+              .relative_path
+              .split('/')
+              .filter(|segment| !segment.is_empty())
+              .count(),
+            credential,
+          )),
+        )
+      })
+      .collect::<Result<Vec<_>>>()?
+      .into_iter()
+      .flatten()
+      .max_by_key(|(path_depth, _)| *path_depth);
+    Ok(matching_credential.map(|(_, credential)| SmbCredential {
+      url: credential.url,
+      username: credential.username,
+      password: credential.password,
+    }))
   }
 
   pub fn list_smb_credentials(&self) -> Result<Vec<SavedSmbCredential>> {
@@ -219,6 +233,24 @@ impl SmbLocation {
     }
     Ok(url.as_str().trim_end_matches('/').to_owned())
   }
+}
+
+fn smb_location_is_ancestor(candidate: &SmbLocation, requested: &SmbLocation) -> bool {
+  if candidate.server_address != requested.server_address || !candidate.share.eq_ignore_ascii_case(&requested.share) {
+    return false;
+  }
+
+  let candidate_segments = candidate
+    .relative_path
+    .split('/')
+    .filter(|segment| !segment.is_empty())
+    .collect::<Vec<_>>();
+  let requested_segments = requested
+    .relative_path
+    .split('/')
+    .filter(|segment| !segment.is_empty())
+    .collect::<Vec<_>>();
+  requested_segments.starts_with(&candidate_segments)
 }
 
 pub async fn verify_smb_connection(location: &SmbLocation, username: &str, password: &str) -> Result<()> {
@@ -396,6 +428,39 @@ mod tests {
 
     let contents = fs::read_to_string(store.path()).unwrap();
     assert!(!contents.contains("first"));
+  }
+
+  #[test]
+  fn loads_the_most_specific_credential_for_nested_locations() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(temp.path().join("nafm"));
+    store
+      .save_smb_credential("smb://nas.example.test/share", "root-user", "root-password")
+      .unwrap();
+    store
+      .save_smb_credential("smb://nas.example.test/share/Media", "media-user", "media-password")
+      .unwrap();
+
+    let nested = store
+      .load_smb_credential("smb://nas.example.test/share/Media/2026")
+      .unwrap()
+      .unwrap();
+    assert_eq!(nested.url, "smb://nas.example.test/share/Media");
+    assert_eq!(nested.username, "media-user");
+
+    let sibling = store
+      .load_smb_credential("smb://nas.example.test/share/Photos")
+      .unwrap()
+      .unwrap();
+    assert_eq!(sibling.url, "smb://nas.example.test/share");
+    assert_eq!(sibling.username, "root-user");
+
+    assert!(
+      store
+        .load_smb_credential("smb://nas.example.test/share-archive/Photos")
+        .unwrap()
+        .is_none()
+    );
   }
 
   #[test]

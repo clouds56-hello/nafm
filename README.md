@@ -34,7 +34,8 @@ cargo run -p nafm-cli -- scan omv
 ```
 
 SMB files are streamed into the configured content hasher and are not copied
-into NAFM's data directory.
+into NAFM's data directory. A credential saved for a share also authorizes
+site folders beneath that share, such as `smb://omv.lan/Media/Family Videos`.
 
 ## Status
 

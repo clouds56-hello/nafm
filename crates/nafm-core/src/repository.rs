@@ -713,10 +713,10 @@ fn normalize_user_location(path: &Path) -> Result<(PathBuf, bool)> {
 
 async fn discover_smb_files(site_folder: &SiteFolder, credential_store: &CredentialStore) -> Result<Vec<FileProbe>> {
   let location_value = site_folder.path.to_string_lossy();
+  let location = SmbLocation::parse(&location_value)?;
   let credential = credential_store
     .load_smb_credential(&location_value)?
     .ok_or_else(|| NafmError::SmbCredentialNotFound(location_value.into_owned()))?;
-  let location = SmbLocation::parse(&credential.url)?;
   let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
   let mut tree = client.connect_share(&location.share).await?;
   let mut files = Vec::new();

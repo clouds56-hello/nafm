@@ -76,6 +76,40 @@ async fn adds_smb_site_folder_with_saved_credentials() {
 }
 
 #[tokio::test]
+async fn adds_nested_smb_site_folder_with_share_credentials() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://nas.example.test/share", "alice", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  repo.create_site("omv").await.unwrap();
+
+  let folder = repo
+    .add_site_folder(
+      "omv",
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://nas.example.test/share/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  assert_eq!(folder.kind, SiteFolderKind::Smb);
+  assert_eq!(folder.path, PathBuf::from("smb://nas.example.test/share/Media"));
+}
+
+#[tokio::test]
 async fn adding_smb_site_folder_requires_saved_credentials() {
   let cache = tempfile::tempdir().unwrap();
   let credentials_root = tempfile::tempdir().unwrap();
