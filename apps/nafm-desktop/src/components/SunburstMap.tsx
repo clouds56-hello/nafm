@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatBytes, formatCount, formatHealth, healthColor } from "../lib/format";
+import { formatHealth, healthColor } from "../lib/format";
 import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
   root: StorageNode;
   metric: HealthMetric;
   selectedNodeId: string;
-  previewNode: StorageNode | null;
   onPreviewNode: (node: StorageNode | null) => void;
   onSelectNode: (node: StorageNode) => void;
 }
@@ -115,11 +114,12 @@ function drawScoreLabel(
   context.restore();
 }
 
-export function SunburstMap({ root, metric, selectedNodeId, previewNode, onPreviewNode, onSelectNode }: SunburstMapProps) {
+export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSelectNode }: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const hoveredNodeIdRef = useRef<string | null>(null);
   const [size, setSize] = useState(560);
   const [hovered, setHovered] = useState<ArcDatum | null>(null);
   const [currentRootId, setCurrentRootId] = useState(root.id);
@@ -131,11 +131,11 @@ export function SunburstMap({ root, metric, selectedNodeId, previewNode, onPrevi
   const maxDepth = arcs.reduce((maximum, arc) => Math.max(maximum, arc.depth), 1);
   const ringWidth = (size * 0.43 - innerRadius) / Math.max(1, Math.min(4, maxDepth));
   const previewArc = useCallback((next: ArcDatum | null) => {
-    setHovered((current) => {
-      if (current?.node.id === next?.node.id) return current;
-      onPreviewNode(next?.node ?? null);
-      return next;
-    });
+    const nextNodeId = next?.node.id ?? null;
+    if (hoveredNodeIdRef.current === nextNodeId) return;
+    hoveredNodeIdRef.current = nextNodeId;
+    setHovered(next);
+    onPreviewNode(next?.node ?? null);
   }, [onPreviewNode]);
 
   useEffect(() => {
@@ -323,14 +323,6 @@ export function SunburstMap({ root, metric, selectedNodeId, previewNode, onPrevi
         onBlur={() => previewArc(null)}
       />
       <canvas ref={hoverCanvasRef} className="sunburst-hover-canvas" aria-hidden="true" />
-      {previewNode && (
-        <div className="map-hover-card" aria-hidden="true">
-          <span>{previewNode.kind === "file" ? "FILE" : "FOLDER"}</span>
-          <strong title={previewNode.name}>{previewNode.name}</strong>
-          <small>{formatBytes(previewNode.total_bytes)} · {formatCount(previewNode.file_count)} files</small>
-          <b style={{ color: healthColor(previewNode[metric]) }}>{formatHealth(previewNode[metric])}</b>
-        </div>
-      )}
       <button
         className="map-center-control health-center"
         type="button"
@@ -351,11 +343,6 @@ export function SunburstMap({ root, metric, selectedNodeId, previewNode, onPrevi
         <div className="health-gradient" />
         <div><span>0 unhealthy</span><span>50</span><span>100 healthy</span></div>
       </div>
-      <p className="sr-only" aria-live="polite">
-        {hovered
-          ? `${hovered.node.name}, ${formatCount(hovered.node.file_count)} files, ${formatBytes(hovered.node.total_bytes)}, ${formatHealth(hovered.node[metric])} ${metricLabel}`
-          : ""}
-      </p>
     </div>
   );
 }

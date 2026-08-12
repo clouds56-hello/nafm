@@ -67,9 +67,15 @@ export function StorageExplorer({
   const [previewNode, setPreviewNode] = useState<StorageNode | null>(null);
   const score = tree.root[metric];
   const coverageWithoutTarget = metric === "coverage_health" && !target;
+  const inspectedNode = previewNode ?? node;
+  const previewing = previewNode !== null;
 
-  useEffect(() => setPreviewNode(null), [tree, node.id]);
+  useEffect(() => setPreviewNode(null), [metric, tree, node.id]);
   const preview = useCallback((next: StorageNode | null) => setPreviewNode(next), []);
+  const selectNode = useCallback((next: StorageNode) => {
+    setPreviewNode(null);
+    onSelectNode(next);
+  }, [onSelectNode]);
 
   return (
     <section className="explorer-section" aria-label="Storage health workspace">
@@ -106,7 +112,6 @@ export function StorageExplorer({
                 root={tree.root}
                 metric={metric}
                 selectedNodeId={node.id}
-                previewNode={previewNode}
                 onPreviewNode={preview}
                 onSelectNode={onSelectNode}
               />
@@ -120,7 +125,8 @@ export function StorageExplorer({
           )}
         </div>
         <InspectorPanel
-          node={node}
+          node={inspectedNode}
+          previewing={previewing}
           metric={metric}
           coverageTargetName={target?.name ?? null}
           staged={staged}
@@ -134,7 +140,7 @@ export function StorageExplorer({
           rangeStart={childrenRangeStart}
           rangeEnd={childrenRangeEnd}
           onBack={onBack}
-          onSelect={onSelectNode}
+          onSelect={selectNode}
           onRetry={onRetryChildren}
           onPrevious={onLoadPreviousChildren}
           onNext={onLoadNextChildren}

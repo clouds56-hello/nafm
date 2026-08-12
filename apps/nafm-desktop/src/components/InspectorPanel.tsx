@@ -11,6 +11,7 @@ import { CheckIcon, ChevronIcon, FileIcon, FolderIcon, LayersIcon, RefreshIcon }
 
 interface InspectorPanelProps {
   node: StorageNode;
+  previewing: boolean;
   metric: HealthMetric;
   coverageTargetName: string | null;
   staged: boolean;
@@ -75,6 +76,7 @@ function canOpen(node: StorageNode): boolean {
 
 export function InspectorPanel({
   node,
+  previewing,
   metric,
   coverageTargetName,
   staged,
@@ -99,19 +101,28 @@ export function InspectorPanel({
   const stageable = Boolean(node.path) && node.duplicate_bytes > 0 && node.kind !== "smaller_items";
   const totalChildren = page?.total_children ?? 0;
   const contentsName = page?.parent.name || "Contents";
+  const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   return (
-    <aside className="inspector-panel" aria-labelledby="inspector-title" aria-describedby="inspector-selection-status">
+    <aside
+      className={`inspector-panel ${previewing ? "is-previewing" : ""}`}
+      aria-labelledby="inspector-title"
+      aria-describedby="inspector-selection-status"
+    >
       <p id="inspector-selection-status" className="sr-only" aria-live="polite">
-        Selected {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files.
+        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files, {formatHealth(node[metric])} {metricLabel}.
       </p>
       <header className="inspector-selection">
-        <button className="compact-inspector-back" type="button" onClick={onBack} disabled={!canGoBack} aria-label="Return to previous folder">
-          <ChevronIcon />
-        </button>
+        {previewing ? (
+          <span className="inspector-preview-marker" aria-hidden="true" />
+        ) : (
+          <button className="compact-inspector-back" type="button" onClick={onBack} disabled={!canGoBack} aria-label="Return to previous folder">
+            <ChevronIcon />
+          </button>
+        )}
         <span className="inspector-item-icon"><DetailIcon /></span>
         <div className="inspector-identity">
-          <span className="eyebrow">SELECTED</span>
+          <span className="eyebrow">{previewing ? "HOVER PREVIEW" : "SELECTED"}</span>
           <h2 id="inspector-title" title={node.name}>
             {node.name || (node.path ? fileName(node.path) : "Site")}
           </h2>
@@ -141,7 +152,9 @@ export function InspectorPanel({
       <div className="inspector-facts">
         <span><small>Size</small><strong>{formatBytes(node.total_bytes)}</strong></span>
         <span><small>Files</small><strong>{formatCount(node.file_count)}</strong></span>
-        {metric === "space_health" ? (
+        {previewing ? (
+          <span className="inspector-readonly">Click or press Enter</span>
+        ) : metric === "space_health" ? (
           staged ? (
             <button className="inspector-stage is-staged" type="button" onClick={onUnstage} disabled={stagingBusy}>
               <CheckIcon /> {stagingBusy ? "Updating…" : "Staged"}
@@ -156,78 +169,88 @@ export function InspectorPanel({
         )}
       </div>
 
-      <section className="inspector-contents" aria-labelledby="contents-title">
-        <header>
+      {previewing ? (
+        <section className="inspector-preview-state" aria-label="Hover preview">
           <div>
-            <span className="eyebrow">{page?.parent.id === node.id ? "CONTENTS" : "IN FOLDER"}</span>
-            <h3 id="contents-title" title={contentsName}>{contentsName}</h3>
+            <span className="inspector-preview-pulse" aria-hidden="true" />
+            <strong>Previewing map item</strong>
           </div>
-          <small aria-live="polite">
-            {totalChildren > 0 ? `${rangeStart}–${rangeEnd} of ${totalChildren}` : ""}
-          </small>
-        </header>
-
-        <div className="inspector-list-heading" aria-hidden="true">
-          <span>Name</span><span>Size</span><span>{metric === "space_health" ? "Space" : "Coverage"}</span><span />
-        </div>
-
-        <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
-          {loading && !page ? (
-            <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Loading contents…</div>
-          ) : error && !page ? (
-            <div className="inspector-list-state is-error" role="alert">
-              <p>{error}</p>
-              <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
+          <p>Move across the map to compare items. Click or press Enter to open details and contents.</p>
+        </section>
+      ) : (
+        <section className="inspector-contents" aria-labelledby="contents-title">
+          <header>
+            <div>
+              <span className="eyebrow">{page?.parent.id === node.id ? "CONTENTS" : "IN FOLDER"}</span>
+              <h3 id="contents-title" title={contentsName}>{contentsName}</h3>
             </div>
-          ) : page?.children.length === 0 ? (
-            <div className="inspector-list-state">
-              {page.parent.kind === "file" ? <FileIcon /> : <FolderIcon />}
-              <p>{page.parent.kind === "file" ? "This file has no children." : "This selection has no direct children."}</p>
-            </div>
-          ) : (
-            <ul className="inspector-list">
-              {page?.children.map((child) => {
-                const score = child[metric];
-                const openable = canOpen(child);
-                const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
-                return (
-                  <li key={child.id}>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(child)}
-                      aria-current={child.id === node.id ? "true" : undefined}
-                      aria-label={`${openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
-                    >
-                      <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
-                      <span>{formatBytes(child.total_bytes)}</span>
-                      <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
-                      <ChevronIcon className={openable ? "" : "is-hidden"} />
-                    </button>
-                  </li>
-                );
-              })}
-              {Array.from({ length: Math.max(0, 6 - (page?.children.length ?? 0)) }, (_, index) => (
-                <li className="inspector-row-placeholder" key={`placeholder-${index}`} aria-hidden="true" />
-              ))}
-            </ul>
+            <small aria-live="polite">
+              {totalChildren > 0 ? `${rangeStart}–${rangeEnd} of ${totalChildren}` : ""}
+            </small>
+          </header>
+
+          <div className="inspector-list-heading" aria-hidden="true">
+            <span>Name</span><span>Size</span><span>{metric === "space_health" ? "Space" : "Coverage"}</span><span />
+          </div>
+
+          <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
+            {loading && !page ? (
+              <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Loading contents…</div>
+            ) : error && !page ? (
+              <div className="inspector-list-state is-error" role="alert">
+                <p>{error}</p>
+                <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
+              </div>
+            ) : page?.children.length === 0 ? (
+              <div className="inspector-list-state">
+                {page.parent.kind === "file" ? <FileIcon /> : <FolderIcon />}
+                <p>{page.parent.kind === "file" ? "This file has no children." : "This selection has no direct children."}</p>
+              </div>
+            ) : (
+              <ul className="inspector-list">
+                {page?.children.map((child) => {
+                  const score = child[metric];
+                  const openable = canOpen(child);
+                  const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
+                  return (
+                    <li key={child.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(child)}
+                        aria-current={child.id === node.id ? "true" : undefined}
+                        aria-label={`${openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
+                      >
+                        <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
+                        <span>{formatBytes(child.total_bytes)}</span>
+                        <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+                        <ChevronIcon className={openable ? "" : "is-hidden"} />
+                      </button>
+                    </li>
+                  );
+                })}
+                {Array.from({ length: Math.max(0, 6 - (page?.children.length ?? 0)) }, (_, index) => (
+                  <li className="inspector-row-placeholder" key={`placeholder-${index}`} aria-hidden="true" />
+                ))}
+              </ul>
+            )}
+            {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading page" />}
+          </div>
+
+          {error && page && (
+            <div className="inspector-inline-error" role="alert">{error} <button type="button" onClick={onRetry}>Try again</button></div>
           )}
-          {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading page" />}
-        </div>
 
-        {error && page && (
-          <div className="inspector-inline-error" role="alert">{error} <button type="button" onClick={onRetry}>Try again</button></div>
-        )}
-
-        <footer className="inspector-pagination">
-          <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
-            <ChevronIcon /> Previous
-          </button>
-          <span>{totalChildren > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
-          <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
-            Next <ChevronIcon />
-          </button>
-        </footer>
-      </section>
+          <footer className="inspector-pagination">
+            <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
+              <ChevronIcon /> Previous
+            </button>
+            <span>{totalChildren > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
+            <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
+              Next <ChevronIcon />
+            </button>
+          </footer>
+        </section>
+      )}
     </aside>
   );
 }
