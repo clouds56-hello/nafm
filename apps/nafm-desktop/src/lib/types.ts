@@ -100,6 +100,17 @@ export interface StorageTree {
   root: StorageNode;
 }
 
+export interface StorageLocation {
+  site_id: string;
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
+  breadcrumbs: StorageNode[];
+  root: StorageNode;
+}
+
 export interface StorageChildrenPage {
   site: {
     id: string;

@@ -4,12 +4,20 @@ import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
   root: StorageNode;
+  breadcrumbs: StorageNode[];
   metric: HealthMetric;
   selectedNodeId: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  canGoUp: boolean;
   onPreviewNode: (node: StorageNode) => void;
   onPreviewLeave: () => void;
   onPreviewCancel: () => void;
   onSelectNode: (node: StorageNode) => void;
+  onBack: () => void;
+  onForward: () => void;
+  onUp: () => void;
+  onNavigateBreadcrumb: (node: StorageNode) => void;
 }
 
 interface ArcDatum {
@@ -22,16 +30,6 @@ interface ArcDatum {
 const TAU = Math.PI * 2;
 const GAP = 0.018;
 const MAX_ARCS = 5_000;
-
-function findPath(root: StorageNode, targetId: string, trail: StorageNode[] = []): StorageNode[] | null {
-  const nextTrail = [...trail, root];
-  if (root.id === targetId) return nextTrail;
-  for (const child of root.children) {
-    const found = findPath(child, targetId, nextTrail);
-    if (found) return found;
-  }
-  return null;
-}
 
 function nodeWeight(node: StorageNode): number {
   return Math.max(node.total_bytes, 1);
@@ -118,25 +116,31 @@ function drawScoreLabel(
 
 export function SunburstMap({
   root,
+  breadcrumbs,
   metric,
   selectedNodeId,
+  canGoBack,
+  canGoForward,
+  canGoUp,
   onPreviewNode,
   onPreviewLeave,
   onPreviewCancel,
   onSelectNode,
+  onBack,
+  onForward,
+  onUp,
+  onNavigateBreadcrumb,
 }: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
+  const breadcrumbRef = useRef<HTMLOListElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const animationFrameRef = useRef<number | null>(null);
   const hoveredNodeIdRef = useRef<string | null>(null);
   const [size, setSize] = useState(560);
   const [hovered, setHovered] = useState<ArcDatum | null>(null);
-  const [currentRootId, setCurrentRootId] = useState(root.id);
-  const rootPath = useMemo(() => findPath(root, currentRootId) ?? [root], [currentRootId, root]);
-  const currentRoot = rootPath.at(-1) ?? root;
-  const parentRoot = rootPath.length > 1 ? rootPath.at(-2) ?? null : null;
-  const arcs = useMemo(() => layout(currentRoot), [currentRoot]);
+  const parentRoot = breadcrumbs.length > 1 ? breadcrumbs.at(-2) ?? null : null;
+  const arcs = useMemo(() => layout(root), [root]);
   const innerRadius = size * 0.17;
   const maxDepth = arcs.reduce((maximum, arc) => Math.max(maximum, arc.depth), 1);
   const ringWidth = (size * 0.43 - innerRadius) / Math.max(1, Math.min(4, maxDepth));
@@ -265,17 +269,13 @@ export function SunburstMap({
   }, [arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
-    setCurrentRootId(root.id);
     previewArc(null);
   }, [previewArc, root]);
 
   useEffect(() => {
-    const selectedPath = findPath(root, selectedNodeId);
-    const selected = selectedPath?.at(-1);
-    if (selected && selected.kind !== "file" && selected.kind !== "smaller_items" && selected.children.length > 0) {
-      setCurrentRootId(selected.id);
-    }
-  }, [root, selectedNodeId]);
+    const breadcrumb = breadcrumbRef.current;
+    if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
+  }, [root.id]);
 
   const getPointerArc = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -288,6 +288,7 @@ export function SunburstMap({
       previewArc(null, "immediate");
       return;
     }
+    if (event.altKey || event.metaKey || event.ctrlKey) return;
     if (arcs.length === 0) return;
     const current = Math.max(0, arcs.findIndex((arc) => arc.node.id === (hovered?.node.id ?? selectedNodeId)));
     if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
@@ -298,23 +299,62 @@ export function SunburstMap({
     } else if ((event.key === "Enter" || event.key === " ") && hovered) {
       event.preventDefault();
       onSelectNode(hovered.node);
-      if (hovered.node.children.length > 0) setCurrentRootId(hovered.node.id);
       previewArc(null, "immediate");
     }
   };
 
-  const score = currentRoot[metric];
+  const score = root[metric];
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   return (
     <div className="sunburst-frame" ref={frameRef}>
-      <div className="map-breadcrumb" aria-label="Current map location">
-        {rootPath.slice(-3).map((node, index, visible) => (
-          <span key={node.id}>
-            {index > 0 && <i>/</i>}{node.name || "Site"}{index === visible.length - 1 && <b />}
-          </span>
-        ))}
-      </div>
+      <nav className="map-navigation" aria-label="Folder navigation">
+        <div className="map-history-controls" aria-label="History">
+          <button
+            className="map-nav-button is-back"
+            type="button"
+            onClick={onBack}
+            disabled={!canGoBack}
+            aria-label="Back"
+            title="Back (Alt+Left)"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <button
+            className="map-nav-button is-forward"
+            type="button"
+            onClick={onForward}
+            disabled={!canGoForward}
+            aria-label="Forward"
+            title="Forward (Alt+Right)"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        </div>
+        <ol className="map-breadcrumb" ref={breadcrumbRef}>
+          {breadcrumbs.map((node, index) => {
+            const current = index === breadcrumbs.length - 1;
+            return (
+              <li key={node.id}>
+                {index > 0 && <i aria-hidden="true">/</i>}
+                <button
+                  type="button"
+                  onClick={current ? undefined : () => onNavigateBreadcrumb(node)}
+                  disabled={current}
+                  aria-current={current ? "page" : undefined}
+                  title={node.path ?? node.name}
+                >
+                  {node.name || "Site"}
+                  {current && <b aria-hidden="true" />}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
+      <p className="sr-only" aria-live="polite">
+        Opened {breadcrumbs.map((node) => node.name || "Site").join(" / ")}
+      </p>
       <canvas
         ref={canvasRef}
         className="sunburst-canvas"
@@ -330,7 +370,6 @@ export function SunburstMap({
           const arc = getPointerArc(event);
           if (arc) {
             onSelectNode(arc.node);
-            if (arc.node.children.length > 0) setCurrentRootId(arc.node.id);
             previewArc(null, "immediate");
           }
         }}
@@ -344,15 +383,15 @@ export function SunburstMap({
         onClick={() => {
           if (!parentRoot) return;
           previewArc(null, "immediate");
-          setCurrentRootId(parentRoot.id);
-          onSelectNode(parentRoot);
+          onUp();
         }}
-        disabled={!parentRoot}
-        aria-label={parentRoot ? `Return to ${parentRoot.name}` : `${currentRoot.name}, map root`}
+        disabled={!canGoUp || !parentRoot}
+        aria-label={parentRoot ? `Up to ${parentRoot.name}` : `${root.name}, map root`}
+        title={parentRoot ? `Up to ${parentRoot.name} (Alt+Up)` : undefined}
       >
-        <small>{parentRoot ? "← BACK" : metricLabel.toUpperCase()}</small>
+        <small>{parentRoot ? "↑ UP" : metricLabel.toUpperCase()}</small>
         <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
-        <span title={currentRoot.name}>{currentRoot.name}</span>
+        <span title={root.name}>{root.name}</span>
       </button>
       <div className="health-legend" aria-label="Health score color scale">
         <div className="health-gradient" />

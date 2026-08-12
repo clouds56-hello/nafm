@@ -85,6 +85,16 @@ pub struct StorageTree {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageLocation {
+  pub site: Site,
+  pub coverage_target: Option<Site>,
+  pub max_depth: u32,
+  pub max_children: u32,
+  pub breadcrumbs: Vec<StorageNode>,
+  pub root: StorageNode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageChildrenPage {
   pub site: Site,
   pub coverage_target: Option<Site>,

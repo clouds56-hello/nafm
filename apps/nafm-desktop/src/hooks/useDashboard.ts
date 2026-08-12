@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelScan,
   getStorageChildren,
+  getStorageLocation,
   getStorageTree,
   loadDashboard,
   onScanTaskEvent,
@@ -20,15 +21,28 @@ import type {
   SiteOverview,
   StorageNode,
   StorageChildrenPage,
+  StorageLocation,
   StorageTree,
 } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
 
+interface NavigationEntry {
+  node_id: string;
+  offset: number;
+}
+
+type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "An unexpected error occurred.";
+}
+
+function isUnavailableLocationError(message: string): boolean {
+  return message.startsWith("storage node not found:")
+    || message.startsWith("storage node is not navigable:");
 }
 
 function treeKey(siteId: string, targetSiteId: string | null): string {
@@ -67,9 +81,11 @@ export function useDashboard(expectedWorkspace: string | null) {
   const [trees, setTrees] = useState<Map<string, StorageTree>>(new Map());
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [location, setLocation] = useState<StorageLocation | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<StorageNode | null>(null);
-  const [selectionHistory, setSelectionHistory] = useState<StorageNode[]>([]);
+  const [backHistory, setBackHistory] = useState<NavigationEntry[]>([]);
+  const [forwardHistory, setForwardHistory] = useState<NavigationEntry[]>([]);
   const [childrenPage, setChildrenPage] = useState<StorageChildrenPage | null>(null);
   const [childrenLoading, setChildrenLoading] = useState(false);
   const [childrenError, setChildrenError] = useState<string | null>(null);
@@ -84,25 +100,35 @@ export function useDashboard(expectedWorkspace: string | null) {
   const targetSiteRef = useRef<string | null>(null);
   const treeRequestRef = useRef(0);
   const treeRequestByKeyRef = useRef<Map<string, number>>(new Map());
+  const locationRequestRef = useRef(0);
+  const locationRef = useRef<StorageLocation | null>(null);
+  const navigationInProgressRef = useRef(false);
   const childrenRequestRef = useRef(0);
   const childrenLoadingRef = useRef(false);
   const childrenRetryRef = useRef<{ node: StorageNode; offset: number } | null>(null);
   const selectedNodeRef = useRef<StorageNode | null>(null);
-  const selectionHistoryRef = useRef<StorageNode[]>([]);
+  const backHistoryRef = useRef<NavigationEntry[]>([]);
+  const forwardHistoryRef = useRef<NavigationEntry[]>([]);
   const childrenPageRef = useRef<StorageChildrenPage | null>(null);
   const workspaceNameRef = useRef(expectedWorkspace);
 
   useEffect(() => {
+    if (workspaceNameRef.current !== expectedWorkspace) {
+      locationRequestRef.current += 1;
+      childrenRequestRef.current += 1;
+      locationRef.current = null;
+      backHistoryRef.current = [];
+      forwardHistoryRef.current = [];
+      setLocation(null);
+      setBackHistory([]);
+      setForwardHistory([]);
+    }
     workspaceNameRef.current = expectedWorkspace;
   }, [expectedWorkspace]);
 
   useEffect(() => {
     selectedNodeRef.current = selectedNode;
   }, [selectedNode]);
-
-  useEffect(() => {
-    selectionHistoryRef.current = selectionHistory;
-  }, [selectionHistory]);
 
   useEffect(() => {
     childrenPageRef.current = childrenPage;
@@ -176,6 +202,108 @@ export function useDashboard(expectedWorkspace: string | null) {
     }
   }, []);
 
+  const loadFolderLocation = useCallback(async (
+    siteId: string,
+    targetSiteId: string | null,
+    entry: NavigationEntry,
+    historyAction: "push" | "back" | "forward" | "reset" | "preserve",
+    preserveSelection = false,
+  ): Promise<LocationLoadResult> => {
+    const requestId = locationRequestRef.current + 1;
+    locationRequestRef.current = requestId;
+    childrenRequestRef.current += 1;
+    const previousLocation = locationRef.current;
+    const previousPage = childrenPageRef.current;
+    const previousEntry = previousLocation ? {
+      node_id: previousLocation.root.id,
+      offset: previousPage?.parent.id === previousLocation.root.id ? previousPage.offset : 0,
+    } : null;
+    setChildrenLoading(true);
+    childrenLoadingRef.current = true;
+    setChildrenError(null);
+    childrenRetryRef.current = null;
+
+    try {
+      const [nextLocation, initialPage] = await Promise.all([
+        getStorageLocation(siteId, targetSiteId, entry.node_id),
+        getStorageChildren(siteId, targetSiteId, entry.node_id, entry.offset, CHILDREN_PAGE_SIZE),
+      ]);
+      if (locationRequestRef.current !== requestId) {
+        return "superseded";
+      }
+
+      let page = initialPage;
+      if (page.total_children > 0 && page.offset >= page.total_children) {
+        const lastOffset = Math.floor((page.total_children - 1) / CHILDREN_PAGE_SIZE)
+          * CHILDREN_PAGE_SIZE;
+        page = await getStorageChildren(
+          siteId,
+          targetSiteId,
+          entry.node_id,
+          lastOffset,
+          CHILDREN_PAGE_SIZE,
+        );
+        if (locationRequestRef.current !== requestId) {
+          return "superseded";
+        }
+      }
+
+      locationRef.current = nextLocation;
+      childrenPageRef.current = page;
+      setLocation(nextLocation);
+      setChildrenPage(page);
+
+      const currentSelection = selectedNodeRef.current;
+      const refreshedSelection = preserveSelection && currentSelection
+        ? findNode(nextLocation.root, currentSelection.id)
+          ?? page.children.find((child) => child.id === currentSelection.id)
+        : null;
+      const nextSelection = refreshedSelection ?? nextLocation.root;
+      selectedNodeRef.current = nextSelection;
+      setSelectedNodeId(nextSelection.id);
+      setSelectedNode(nextSelection);
+
+      if (historyAction === "reset") {
+        backHistoryRef.current = [];
+        forwardHistoryRef.current = [];
+      } else if (historyAction === "push" && previousEntry
+        && previousEntry.node_id !== nextLocation.root.id) {
+        backHistoryRef.current = [...backHistoryRef.current, previousEntry];
+        forwardHistoryRef.current = [];
+      } else if (historyAction === "back" && previousEntry) {
+        backHistoryRef.current = backHistoryRef.current.slice(0, -1);
+        forwardHistoryRef.current = [...forwardHistoryRef.current, previousEntry];
+      } else if (historyAction === "forward" && previousEntry) {
+        forwardHistoryRef.current = forwardHistoryRef.current.slice(0, -1);
+        backHistoryRef.current = [...backHistoryRef.current, previousEntry];
+      }
+      setBackHistory(backHistoryRef.current);
+      setForwardHistory(forwardHistoryRef.current);
+      return "loaded";
+    } catch (locationError) {
+      const message = errorMessage(locationError);
+      const unavailable = isUnavailableLocationError(message);
+      if (locationRequestRef.current === requestId) {
+        if (previousLocation && !(unavailable && (historyAction === "back" || historyAction === "forward"))) {
+          setNotice(message);
+          setChildrenError(null);
+        } else if (!previousLocation) {
+          setChildrenError(message);
+          setTreeError(message);
+        }
+      }
+      if (locationRequestRef.current !== requestId) {
+        return "superseded";
+      }
+      return unavailable ? "unavailable" : "failed";
+    } finally {
+      if (locationRequestRef.current === requestId) {
+        childrenLoadingRef.current = false;
+        setChildrenLoading(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     selectedSiteRef.current = activeSiteId;
   }, [activeSiteId]);
@@ -207,38 +335,33 @@ export function useDashboard(expectedWorkspace: string | null) {
       const isActiveRequest = selectedSiteRef.current === siteId && targetSiteRef.current === targetSiteId;
       setTrees((current) => new Map(current).set(requestKey, tree));
       if (isCurrentRequest && isActiveRequest) {
-        const currentSelection = selectedNodeRef.current;
+        const currentLocation = locationRef.current;
         const currentPage = childrenPageRef.current;
-        const inTreeSelection = currentSelection ? findNode(tree.root, currentSelection.id) : null;
-        const nextSelection = inTreeSelection ?? currentSelection ?? tree.root;
-        selectedNodeRef.current = nextSelection;
-        setSelectedNodeId(nextSelection.id);
-        setSelectedNode(nextSelection);
-        if (!currentSelection || nextSelection.id === tree.root.id) {
-          selectionHistoryRef.current = [];
-          setSelectionHistory([]);
-        } else {
-          const nextHistory = selectionHistoryRef.current.map(
-            (historyNode) => findNode(tree.root, historyNode.id) ?? historyNode,
-          );
-          selectionHistoryRef.current = nextHistory;
-          setSelectionHistory(nextHistory);
-        }
-        const folderSelection = nextSelection.kind !== "file" && nextSelection.kind !== "smaller_items"
-          ? nextSelection
-          : currentPage?.parent ?? selectionHistoryRef.current.at(-1) ?? tree.root;
-        const pageOffset = !resetChildrenPage && currentPage?.parent.id === folderSelection.id
+        const nodeId = !resetChildrenPage && currentLocation?.site_id === siteId
+          ? currentLocation.root.id
+          : tree.root.id;
+        const pageOffset = !resetChildrenPage && currentPage?.parent.id === nodeId
           ? currentPage.offset
           : 0;
-        void loadChildren(
+        const locationRequestId = locationRequestRef.current + 1;
+        let locationResult = await loadFolderLocation(
           siteId,
           targetSiteId,
-          folderSelection,
-          pageOffset,
-          true,
-          !resetChildrenPage,
+          { node_id: nodeId, offset: pageOffset },
+          currentLocation && !resetChildrenPage ? "preserve" : "reset",
+          Boolean(currentLocation && !resetChildrenPage),
         );
-        setTreeError(null);
+        if (locationResult === "unavailable" && locationRequestRef.current === locationRequestId
+          && nodeId !== tree.root.id
+          && selectedSiteRef.current === siteId && targetSiteRef.current === targetSiteId) {
+          locationResult = await loadFolderLocation(
+            siteId,
+            targetSiteId,
+            { node_id: tree.root.id, offset: 0 },
+            "reset",
+          );
+        }
+        if (locationResult === "loaded") setTreeError(null);
       }
     } catch (treeLoadError) {
       const message = errorMessage(treeLoadError);
@@ -247,7 +370,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     } finally {
       if (foreground && treeRequestRef.current === requestId) setTreeLoading(false);
     }
-  }, [loadChildren]);
+  }, [loadFolderLocation]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -383,39 +506,60 @@ export function useDashboard(expectedWorkspace: string | null) {
     setCoverageTargetSiteId(nextTarget);
     selectedSiteRef.current = siteId;
     targetSiteRef.current = nextTarget;
+    locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
     childrenRetryRef.current = null;
     setSelectedNodeId(null);
     setSelectedNode(null);
-    setSelectionHistory([]);
+    setLocation(null);
+    setBackHistory([]);
+    setForwardHistory([]);
     setChildrenPage(null);
     setChildrenError(null);
     setChildrenLoading(false);
     childrenLoadingRef.current = false;
     selectedNodeRef.current = null;
-    selectionHistoryRef.current = [];
+    locationRef.current = null;
+    backHistoryRef.current = [];
+    forwardHistoryRef.current = [];
     childrenPageRef.current = null;
     const cachedTree = trees.get(treeKey(siteId, nextTarget));
     if (cachedTree) {
       selectedNodeRef.current = cachedTree.root;
       setSelectedNodeId(cachedTree.root.id);
       setSelectedNode(cachedTree.root);
-      setTreeLoading(false);
+      setTreeLoading(true);
       setTreeError(null);
-      await loadChildren(siteId, nextTarget, cachedTree.root);
+      const locationResult = await loadFolderLocation(
+        siteId,
+        nextTarget,
+        { node_id: cachedTree.root.id, offset: 0 },
+        "reset",
+      );
+      if (selectedSiteRef.current === siteId && targetSiteRef.current === nextTarget) {
+        if (locationResult === "loaded") setTreeError(null);
+        setTreeLoading(false);
+      }
     } else {
       await refreshTree(siteId, nextTarget, true);
     }
-  }, [dashboard?.sites, loadChildren, refreshTree, trees]);
+  }, [dashboard?.sites, loadFolderLocation, refreshTree, trees]);
 
   const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
     const sourceSiteId = selectedSiteRef.current;
     if (!sourceSiteId || targetSiteId === sourceSiteId) return;
+    locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
     childrenRetryRef.current = null;
     setChildrenError(null);
     setChildrenLoading(false);
     childrenLoadingRef.current = false;
+    locationRef.current = null;
+    backHistoryRef.current = [];
+    forwardHistoryRef.current = [];
+    setLocation(null);
+    setBackHistory([]);
+    setForwardHistory([]);
     setCoverageTargetSiteId(targetSiteId);
     targetSiteRef.current = targetSiteId;
     await refreshTree(sourceSiteId, targetSiteId, true, true);
@@ -429,17 +573,22 @@ export function useDashboard(expectedWorkspace: string | null) {
     setCoverageTargetSiteId(previousSourceSiteId);
     selectedSiteRef.current = previousTargetSiteId;
     targetSiteRef.current = previousSourceSiteId;
+    locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
     childrenRetryRef.current = null;
     setSelectedNodeId(null);
     setSelectedNode(null);
-    setSelectionHistory([]);
+    setLocation(null);
+    setBackHistory([]);
+    setForwardHistory([]);
     setChildrenPage(null);
     setChildrenError(null);
     setChildrenLoading(false);
     childrenLoadingRef.current = false;
     selectedNodeRef.current = null;
-    selectionHistoryRef.current = [];
+    locationRef.current = null;
+    backHistoryRef.current = [];
+    forwardHistoryRef.current = [];
     childrenPageRef.current = null;
     await refreshTree(previousTargetSiteId, previousSourceSiteId, true);
   }, [refreshTree]);
@@ -477,46 +626,84 @@ export function useDashboard(expectedWorkspace: string | null) {
     ? trees.get(treeKey(activeSiteId, coverageTargetSiteId)) ?? null
     : null;
   const activeSelectedNode = activeTree
-    ? selectedNode ?? findNode(activeTree.root, selectedNodeId) ?? activeTree.root
+    ? selectedNode ?? findNode(location?.root ?? activeTree.root, selectedNodeId) ?? location?.root ?? activeTree.root
     : null;
 
   const selectNode = useCallback((node: StorageNode) => {
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     const openable = node.kind !== "file" && node.kind !== "smaller_items";
-    selectedNodeRef.current = node;
-    setSelectedNodeId(node.id);
-    setSelectedNode(node);
     if (openable) {
-      const currentFolder = childrenPageRef.current?.parent;
-      const currentHistory = selectionHistoryRef.current;
-      const nextHistory = currentFolder?.id === node.id
-        ? currentHistory
-        : currentHistory.at(-1)?.id === node.id
-          ? currentHistory.slice(0, -1)
-          : currentFolder
-            ? [...currentHistory, currentFolder]
-            : currentHistory;
-      selectionHistoryRef.current = nextHistory;
-      setSelectionHistory(nextHistory);
-      void loadChildren(siteId, targetSiteRef.current, node);
+      if (childrenLoadingRef.current || locationRef.current?.root.id === node.id) return;
+      void loadFolderLocation(
+        siteId,
+        targetSiteRef.current,
+        { node_id: node.id, offset: 0 },
+        "push",
+      );
+    } else {
+      selectedNodeRef.current = node;
+      setSelectedNodeId(node.id);
+      setSelectedNode(node);
     }
-  }, [loadChildren]);
+  }, [loadFolderLocation]);
+
+  const navigateHistory = useCallback(async (direction: "back" | "forward") => {
+    const siteId = selectedSiteRef.current;
+    if (!siteId || childrenLoadingRef.current || navigationInProgressRef.current) return;
+    navigationInProgressRef.current = true;
+    try {
+      while (selectedSiteRef.current === siteId) {
+        const history = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
+        const entry = history.at(-1);
+        if (!entry) return;
+        const result = await loadFolderLocation(siteId, targetSiteRef.current, entry, direction);
+        if (result !== "unavailable") return;
+
+        const currentHistory = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
+        if (currentHistory.at(-1)?.node_id !== entry.node_id) return;
+        const nextHistory = currentHistory.slice(0, -1);
+        if (direction === "back") {
+          backHistoryRef.current = nextHistory;
+          setBackHistory(nextHistory);
+        } else {
+          forwardHistoryRef.current = nextHistory;
+          setForwardHistory(nextHistory);
+        }
+        if (nextHistory.length === 0) {
+          setNotice("That folder is no longer available.");
+          return;
+        }
+      }
+    } finally {
+      navigationInProgressRef.current = false;
+    }
+  }, [loadFolderLocation]);
 
   const goBack = useCallback(() => {
+    void navigateHistory("back");
+  }, [navigateHistory]);
+
+  const goForward = useCallback(() => {
+    void navigateHistory("forward");
+  }, [navigateHistory]);
+
+  const navigateBreadcrumb = useCallback((node: StorageNode) => {
     const siteId = selectedSiteRef.current;
-    if (!siteId) return;
-    const history = selectionHistoryRef.current;
-    const parent = history.at(-1);
-    if (!parent) return;
-    const nextHistory = history.slice(0, -1);
-    selectionHistoryRef.current = nextHistory;
-    selectedNodeRef.current = parent;
-    setSelectionHistory(nextHistory);
-    setSelectedNodeId(parent.id);
-    setSelectedNode(parent);
-    void loadChildren(siteId, targetSiteRef.current, parent);
-  }, [loadChildren]);
+    if (!siteId || childrenLoadingRef.current || node.id === locationRef.current?.root.id) return;
+    void loadFolderLocation(
+      siteId,
+      targetSiteRef.current,
+      { node_id: node.id, offset: 0 },
+      "push",
+    );
+  }, [loadFolderLocation]);
+
+  const goUp = useCallback(() => {
+    const breadcrumbs = locationRef.current?.breadcrumbs ?? [];
+    const parent = breadcrumbs.at(-2);
+    if (parent) navigateBreadcrumb(parent);
+  }, [navigateBreadcrumb]);
 
   const retryChildren = useCallback(() => {
     const siteId = selectedSiteRef.current;
@@ -645,6 +832,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     coverageTargetSiteId,
     healthMetric,
     setHealthMetric,
+    location,
     selectedNode: activeSelectedNode,
     selectNode,
     childrenPage,
@@ -659,8 +847,13 @@ export function useDashboard(expectedWorkspace: string | null) {
     canLoadPrevious: Boolean(childrenPage && !childrenLoading && childrenPage.offset > 0),
     canLoadNext: Boolean(childrenPage && !childrenLoading
       && childrenPage.offset + childrenPage.limit < childrenPage.total_children),
-    canGoBack: selectionHistory.length > 0,
+    canGoBack: !childrenLoading && backHistory.length > 0,
+    canGoForward: !childrenLoading && forwardHistory.length > 0,
+    canGoUp: !childrenLoading && (location?.breadcrumbs.length ?? 0) > 1,
     goBack,
+    goForward,
+    goUp,
+    navigateBreadcrumb,
     retryChildren,
     loadPreviousChildren,
     loadNextChildren,
@@ -690,6 +883,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     activeSiteId,
     activeSelectedNode,
     activeTree,
+    backHistory.length,
     cancel,
     childrenError,
     childrenLoading,
@@ -701,6 +895,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     healthMetric,
     isSelectedStaged,
     loading,
+    location,
     notice,
     preview,
     previewLoading,
@@ -716,13 +911,16 @@ export function useDashboard(expectedWorkspace: string | null) {
     selectCoverageTarget,
     selectNode,
     selectSite,
-    selectionHistory.length,
+    forwardHistory.length,
     stageSelected,
     stagingBusy,
     swapCoverageSites,
     treeError,
     treeLoading,
     goBack,
+    goForward,
+    goUp,
+    navigateBreadcrumb,
     loadPreviousChildren,
     loadNextChildren,
   ]);

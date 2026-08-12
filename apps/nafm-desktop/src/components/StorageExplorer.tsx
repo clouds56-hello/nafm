@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatHealth, healthColor } from "../lib/format";
 import { getStorageChildren } from "../lib/tauri";
-import type { HealthMetric, SiteOverview, StorageChildrenPage, StorageNode, StorageTree } from "../lib/types";
+import type {
+  HealthMetric,
+  SiteOverview,
+  StorageChildrenPage,
+  StorageLocation,
+  StorageNode,
+  StorageTree,
+} from "../lib/types";
 import { HealthControls } from "./HealthControls";
 import { InspectorPanel } from "./InspectorPanel";
 import { SunburstMap } from "./SunburstMap";
@@ -11,6 +18,7 @@ interface StorageExplorerProps {
   source: SiteOverview;
   target: SiteOverview | null;
   tree: StorageTree;
+  location: StorageLocation;
   node: StorageNode;
   metric: HealthMetric;
   staged: boolean;
@@ -19,6 +27,8 @@ interface StorageExplorerProps {
   childrenLoading: boolean;
   childrenError: string | null;
   canGoBack: boolean;
+  canGoForward: boolean;
+  canGoUp: boolean;
   canLoadPrevious: boolean;
   canLoadNext: boolean;
   childrenRangeStart: number;
@@ -29,6 +39,9 @@ interface StorageExplorerProps {
   onScanTarget: () => void;
   onSelectNode: (node: StorageNode) => void;
   onBack: () => void;
+  onForward: () => void;
+  onUp: () => void;
+  onNavigateBreadcrumb: (node: StorageNode) => void;
   onRetryChildren: () => void;
   onLoadPreviousChildren: () => void;
   onLoadNextChildren: () => void;
@@ -66,6 +79,7 @@ export function StorageExplorer({
   source,
   target,
   tree,
+  location,
   node,
   metric,
   staged,
@@ -74,6 +88,8 @@ export function StorageExplorer({
   childrenLoading,
   childrenError,
   canGoBack,
+  canGoForward,
+  canGoUp,
   canLoadPrevious,
   canLoadNext,
   childrenRangeStart,
@@ -84,6 +100,9 @@ export function StorageExplorer({
   onScanTarget,
   onSelectNode,
   onBack,
+  onForward,
+  onUp,
+  onNavigateBreadcrumb,
   onRetryChildren,
   onLoadPreviousChildren,
   onLoadNextChildren,
@@ -197,6 +216,8 @@ export function StorageExplorer({
 
   useEffect(() => clearPreview(), [clearPreview, node.id]);
 
+  useEffect(() => clearPreview(), [clearPreview, location.root.id]);
+
   useEffect(() => () => {
     cancelPreviewRestore();
     previewGenerationRef.current += 1;
@@ -248,6 +269,56 @@ export function StorageExplorer({
     onSelectNode(next);
   }, [clearPreview, onSelectNode]);
 
+  const navigateBack = useCallback(() => {
+    clearPreview();
+    onBack();
+  }, [clearPreview, onBack]);
+
+  const navigateForward = useCallback(() => {
+    clearPreview();
+    onForward();
+  }, [clearPreview, onForward]);
+
+  const navigateUp = useCallback(() => {
+    clearPreview();
+    onUp();
+  }, [clearPreview, onUp]);
+
+  const navigateBreadcrumb = useCallback((next: StorageNode) => {
+    clearPreview();
+    onNavigateBreadcrumb(next);
+  }, [clearPreview, onNavigateBreadcrumb]);
+
+  useEffect(() => {
+    const handleNavigationShortcut = (event: KeyboardEvent) => {
+      const targetElement = event.target;
+      if (targetElement instanceof HTMLElement && (
+        targetElement.isContentEditable
+        || ["INPUT", "TEXTAREA", "SELECT"].includes(targetElement.tagName)
+      )) return;
+
+      const back = (event.altKey && event.key === "ArrowLeft")
+        || (event.metaKey && event.key === "[");
+      const forward = (event.altKey && event.key === "ArrowRight")
+        || (event.metaKey && event.key === "]");
+      const up = (event.altKey && event.key === "ArrowUp")
+        || (event.metaKey && event.key === "ArrowUp");
+      if (back && canGoBack) {
+        event.preventDefault();
+        navigateBack();
+      } else if (forward && canGoForward) {
+        event.preventDefault();
+        navigateForward();
+      } else if (up && canGoUp) {
+        event.preventDefault();
+        navigateUp();
+      }
+    };
+
+    window.addEventListener("keydown", handleNavigationShortcut);
+    return () => window.removeEventListener("keydown", handleNavigationShortcut);
+  }, [canGoBack, canGoForward, canGoUp, navigateBack, navigateForward, navigateUp]);
+
   return (
     <section className="explorer-section" aria-label="Storage health workspace">
       <div className="health-toolbar">
@@ -280,13 +351,21 @@ export function StorageExplorer({
           ) : (
             <>
               <SunburstMap
-                root={tree.root}
+                root={location.root}
+                breadcrumbs={location.breadcrumbs}
                 metric={metric}
                 selectedNodeId={node.id}
+                canGoBack={canGoBack}
+                canGoForward={canGoForward}
+                canGoUp={canGoUp}
                 onPreviewNode={preview}
                 onPreviewLeave={leavePreview}
                 onPreviewCancel={clearPreview}
                 onSelectNode={selectNode}
+                onBack={navigateBack}
+                onForward={navigateForward}
+                onUp={navigateUp}
+                onNavigateBreadcrumb={navigateBreadcrumb}
               />
               {metric === "coverage_health" && target && !target.last_scanned_at && (
                 <div className="coverage-freshness-note" role="status">
@@ -313,7 +392,7 @@ export function StorageExplorer({
           canLoadNext={previewing ? previewCanLoadNext : canLoadNext}
           rangeStart={inspectedRangeStart}
           rangeEnd={inspectedRangeEnd}
-          onBack={onBack}
+          onBack={navigateBack}
           onSelect={selectNode}
           onRetry={previewing ? retryPreview : onRetryChildren}
           onPrevious={previewing ? loadPreviousPreview : onLoadPreviousChildren}

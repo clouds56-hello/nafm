@@ -82,12 +82,13 @@ export function DashboardPage({
             <div className="map-loading"><div className="skeleton-map"><span /></div></div>
           ) : state.treeError ? (
             <MapError message={state.treeError} onRetry={() => void state.retryTree()} />
-          ) : state.activeSite && state.activeTree && state.selectedNode && (state.activeTree.root.file_count > 0 || state.activeTree.root.children.length > 0) ? (
+          ) : state.activeSite && state.activeTree && state.location && state.selectedNode && (state.activeTree.root.file_count > 0 || state.activeTree.root.children.length > 0) ? (
             <StorageExplorer
               sites={state.dashboard.sites}
               source={state.activeSite}
               target={state.coverageTargetSite}
               tree={state.activeTree}
+              location={state.location}
               node={state.selectedNode}
               metric={state.healthMetric}
               staged={state.isSelectedStaged}
@@ -96,6 +97,8 @@ export function DashboardPage({
               childrenLoading={state.childrenLoading}
               childrenError={state.childrenError}
               canGoBack={state.canGoBack}
+              canGoForward={state.canGoForward}
+              canGoUp={state.canGoUp}
               canLoadPrevious={state.canLoadPrevious}
               canLoadNext={state.canLoadNext}
               childrenRangeStart={state.childrenRangeStart}
@@ -106,6 +109,9 @@ export function DashboardPage({
               onScanTarget={() => state.coverageTargetSite && void state.scan(state.coverageTargetSite.id)}
               onSelectNode={state.selectNode}
               onBack={state.goBack}
+              onForward={state.goForward}
+              onUp={state.goUp}
+              onNavigateBreadcrumb={state.navigateBreadcrumb}
               onRetryChildren={state.retryChildren}
               onLoadPreviousChildren={state.loadPreviousChildren}
               onLoadNextChildren={state.loadNextChildren}

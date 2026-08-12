@@ -27,6 +27,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       commands::dashboard::load_dashboard,
       commands::dashboard::get_storage_tree,
+      commands::dashboard::get_storage_location,
       commands::dashboard::get_storage_children,
       commands::scan::start_scan,
       commands::scan::cancel_scan,

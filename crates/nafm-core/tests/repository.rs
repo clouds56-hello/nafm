@@ -323,6 +323,128 @@ async fn storage_tree_is_bounded_aggregated_and_stable() {
 }
 
 #[tokio::test]
+async fn storage_location_finds_deep_folders_and_resets_subtree_bounds() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("location-media");
+  let selected_path = media.join("year/day/camera");
+  fs::create_dir_all(&selected_path).unwrap();
+  fs::write(selected_path.join("first.bin"), b"12345678").unwrap();
+  fs::write(selected_path.join("second.bin"), b"1234").unwrap();
+  fixture.create_site("location-source").await;
+  fixture
+    .add_site_folder("location-source", &media, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("location-source").await.unwrap();
+
+  let complete = fixture.repo.storage_tree("location-source", 8, 20).await.unwrap();
+  let storage_root = &complete.root.children[0];
+  let year = child_named(storage_root, "year");
+  let day = child_named(year, "day");
+  let camera = child_named(day, "camera");
+  let camera_id = camera.id.clone();
+
+  let bounded = fixture.repo.storage_tree("location-source", 1, 20).await.unwrap();
+  assert!(find_node(&bounded.root, &camera_id).is_none());
+
+  let location = fixture
+    .repo
+    .storage_location("location-source", &camera_id, 1, 20)
+    .await
+    .unwrap();
+  assert_eq!(location.site.name, "location-source");
+  assert!(location.coverage_target.is_none());
+  assert_eq!(location.max_depth, 1);
+  assert_eq!(location.max_children, 20);
+  assert_eq!(
+    location
+      .breadcrumbs
+      .iter()
+      .map(|node| node.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["location-source", "location-media", "year", "day", "camera"]
+  );
+  assert!(location.breadcrumbs.iter().all(|node| node.children.is_empty()));
+  assert_storage_metrics_equal(location.breadcrumbs.last().unwrap(), &location.root);
+  assert_eq!(location.root.children.len(), 2);
+  assert!(
+    location
+      .root
+      .children
+      .iter()
+      .all(|child| child.kind == StorageNodeKind::File && child.children.is_empty())
+  );
+}
+
+#[tokio::test]
+async fn storage_location_preserves_coverage_and_rejects_non_folders() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("location-coverage-source");
+  let target = fixture.mkdir("location-coverage-target");
+  fs::create_dir(source.join("camera")).unwrap();
+  fs::write(source.join("camera/covered.bin"), b"shared").unwrap();
+  fs::write(source.join("camera/missing.bin"), b"missing").unwrap();
+  fs::write(target.join("shared.bin"), b"shared").unwrap();
+  fixture.create_site("location-coverage-source").await;
+  fixture.create_site("location-coverage-target").await;
+  fixture
+    .add_site_folder("location-coverage-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("location-coverage-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let tree = fixture
+    .repo
+    .storage_tree_with_coverage("location-coverage-source", "location-coverage-target", 5, 20)
+    .await
+    .unwrap();
+  let camera = child_named(&tree.root.children[0], "camera");
+  let file = child_named(camera, "covered.bin");
+  let location = fixture
+    .repo
+    .storage_location_with_coverage(
+      "location-coverage-source",
+      "location-coverage-target",
+      &camera.id,
+      2,
+      20,
+    )
+    .await
+    .unwrap();
+  assert_eq!(location.coverage_target.unwrap().name, "location-coverage-target");
+  assert_health(location.root.coverage_health, 6.0 * 100.0 / 13.0);
+  assert_storage_metrics_equal(location.breadcrumbs.last().unwrap(), &location.root);
+
+  let file_error = fixture
+    .repo
+    .storage_location("location-coverage-source", &file.id, 2, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    file_error,
+    NafmError::StorageNodeNotNavigable(node_id) if node_id == file.id
+  ));
+
+  let aggregate = fixture
+    .repo
+    .storage_tree("location-coverage-source", 3, 1)
+    .await
+    .unwrap();
+  let smaller_items = aggregate.root.children[0].children[0].children[0].clone();
+  assert_eq!(smaller_items.kind, StorageNodeKind::SmallerItems);
+  let aggregate_error = fixture
+    .repo
+    .storage_location("location-coverage-source", &smaller_items.id, 2, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    aggregate_error,
+    NafmError::StorageNodeNotNavigable(node_id) if node_id == smaller_items.id
+  ));
+}
+
+#[tokio::test]
 async fn storage_tree_preserves_smb_roots_and_paths() {
   let cache = tempfile::tempdir().unwrap();
   let credentials_root = tempfile::tempdir().unwrap();
@@ -383,6 +505,22 @@ async fn storage_tree_preserves_smb_roots_and_paths() {
   );
   assert_eq!(tree.root.duplicate_file_count, 2);
   assert_eq!(tree.root.duplicate_bytes, 8);
+
+  let camera = &root.children[0];
+  let location = repo.storage_location("network", &camera.id, 1, 10).await.unwrap();
+  assert_eq!(
+    location
+      .breadcrumbs
+      .iter()
+      .map(|node| node.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["network", "Media", "Camera"]
+  );
+  assert_eq!(
+    location.root.path,
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))
+  );
+  assert_eq!(location.root.children.len(), 2);
 }
 
 #[tokio::test]
@@ -2487,6 +2625,31 @@ fn child_named<'a>(node: &'a nafm_core::StorageNode, name: &str) -> &'a nafm_cor
     .iter()
     .find(|child| child.name == name)
     .unwrap_or_else(|| panic!("missing child {name:?} under {:?}", node.name))
+}
+
+fn find_node<'a>(node: &'a nafm_core::StorageNode, id: &str) -> Option<&'a nafm_core::StorageNode> {
+  if node.id == id {
+    return Some(node);
+  }
+  node.children.iter().find_map(|child| find_node(child, id))
+}
+
+fn assert_storage_metrics_equal(left: &nafm_core::StorageNode, right: &nafm_core::StorageNode) {
+  assert_eq!(left.id, right.id);
+  assert_eq!(left.kind, right.kind);
+  assert_eq!(left.total_bytes, right.total_bytes);
+  assert_eq!(left.file_count, right.file_count);
+  assert_eq!(left.duplicate_bytes, right.duplicate_bytes);
+  assert_eq!(left.duplicate_file_count, right.duplicate_file_count);
+  assert_eq!(left.space_health, right.space_health);
+  assert_eq!(
+    left.space_healthy_file_equivalents,
+    right.space_healthy_file_equivalents
+  );
+  assert_eq!(left.space_total_files, right.space_total_files);
+  assert_eq!(left.coverage_health, right.coverage_health);
+  assert_eq!(left.coverage_covered_files, right.coverage_covered_files);
+  assert_eq!(left.coverage_total_files, right.coverage_total_files);
 }
 
 fn assert_health(actual: Option<f64>, expected: f64) {

@@ -13,8 +13,9 @@ import type {
   ScanSelector,
   StageAddReport,
   StageRemoveReport,
-  StorageTree,
   StorageChildrenPage,
+  StorageLocation,
+  StorageTree,
 } from "./types";
 
 export function loadManagement(): Promise<ManagementSnapshot> {
@@ -96,6 +97,20 @@ export function getStorageTree(siteId: string, targetSiteId?: string | null): Pr
   return invoke<StorageTree>("get_storage_tree", {
     siteId,
     targetSiteId: targetSiteId ?? null,
+    maxDepth: 5,
+    maxChildren: 12,
+  });
+}
+
+export function getStorageLocation(
+  siteId: string,
+  targetSiteId: string | null,
+  nodeId: string,
+): Promise<StorageLocation> {
+  return invoke<StorageLocation>("get_storage_location", {
+    siteId,
+    targetSiteId,
+    nodeId,
     maxDepth: 5,
     maxChildren: 12,
   });

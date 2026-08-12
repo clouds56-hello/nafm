@@ -18,7 +18,7 @@ use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
   ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun,
   StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageNode, StorageNodeKind, StorageTree,
+  StorageLocation, StorageNode, StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -481,6 +481,46 @@ impl Repository {
       let target_site =
         find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
       storage_tree(&conn, site, Some(target_site), max_depth, max_children)
+    })
+    .await?
+  }
+
+  pub async fn storage_location(
+    &self,
+    site_selector: &str,
+    node_id: &str,
+    max_depth: u32,
+    max_children: u32,
+  ) -> Result<StorageLocation> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      storage_location(&conn, site, None, &node_id, max_depth, max_children)
+    })
+    .await?
+  }
+
+  pub async fn storage_location_with_coverage(
+    &self,
+    site_selector: &str,
+    target_site_selector: &str,
+    node_id: &str,
+    max_depth: u32,
+    max_children: u32,
+  ) -> Result<StorageLocation> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let target_site_selector = target_site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      let target_site =
+        find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+      storage_location(&conn, site, Some(target_site), &node_id, max_depth, max_children)
     })
     .await?
   }
@@ -2400,6 +2440,40 @@ fn storage_tree(
   })
 }
 
+fn storage_location(
+  conn: &Connection,
+  site: Site,
+  coverage_target: Option<Site>,
+  node_id: &str,
+  max_depth: u32,
+  max_children: u32,
+) -> Result<StorageLocation> {
+  if parse_smaller_items_node_id(node_id).is_some() {
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
+  }
+
+  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
+  let node_path =
+    find_storage_node_builder_path(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+  let selected = node_path.last().expect("a storage node path should contain its root");
+  if matches!(selected.kind, StorageNodeKind::File | StorageNodeKind::SmallerItems) {
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
+  }
+  let breadcrumbs = node_path
+    .iter()
+    .map(|node| storage_node_without_children(node))
+    .collect();
+
+  Ok(StorageLocation {
+    site,
+    coverage_target,
+    max_depth,
+    max_children,
+    breadcrumbs,
+    root: finish_storage_node((*selected).clone(), 0, max_depth, max_children),
+  })
+}
+
 fn build_storage_tree_root(
   conn: &Connection,
   site: &Site,
@@ -2535,6 +2609,22 @@ fn find_storage_node_builder<'a>(root: &'a StorageNodeBuilder, node_id: &str) ->
       return Some(node);
     }
     pending.extend(node.children.values());
+  }
+  None
+}
+
+fn find_storage_node_builder_path<'a>(
+  root: &'a StorageNodeBuilder,
+  node_id: &str,
+) -> Option<Vec<&'a StorageNodeBuilder>> {
+  if root.id == node_id {
+    return Some(vec![root]);
+  }
+  for child in root.children.values() {
+    if let Some(mut path) = find_storage_node_builder_path(child, node_id) {
+      path.insert(0, root);
+      return Some(path);
+    }
   }
   None
 }

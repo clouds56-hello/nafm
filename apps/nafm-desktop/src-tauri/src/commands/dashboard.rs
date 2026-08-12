@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use nafm_core::{Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageNode, StorageTree};
+use nafm_core::{
+  Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageLocation, StorageNode, StorageTree,
+};
 use serde::Serialize;
 use tauri::State;
 
@@ -48,6 +50,14 @@ enum ScanState {
 pub struct StorageTreeResponse {
   site_id: String,
   coverage_target: Option<Site>,
+  root: StorageNode,
+}
+
+#[derive(Serialize)]
+pub struct StorageLocationResponse {
+  site_id: String,
+  coverage_target: Option<Site>,
+  breadcrumbs: Vec<StorageNode>,
   root: StorageNode,
 }
 
@@ -136,6 +146,45 @@ pub async fn get_storage_tree(
   Ok(StorageTreeResponse {
     site_id: site.id,
     coverage_target,
+    root,
+  })
+}
+
+#[tauri::command]
+pub async fn get_storage_location(
+  state: State<'_, AppState>,
+  site_id: String,
+  target_site_id: Option<String>,
+  node_id: String,
+  max_depth: u32,
+  max_children: u32,
+) -> Result<StorageLocationResponse, String> {
+  let repository = state.repository().await;
+  let location = match target_site_id {
+    Some(target_site_id) => {
+      repository
+        .storage_location_with_coverage(&site_id, &target_site_id, &node_id, max_depth, max_children)
+        .await
+    }
+    None => {
+      repository
+        .storage_location(&site_id, &node_id, max_depth, max_children)
+        .await
+    }
+  }
+  .map_err(|error| error.to_string())?;
+  let StorageLocation {
+    site,
+    coverage_target,
+    breadcrumbs,
+    root,
+    ..
+  } = location;
+
+  Ok(StorageLocationResponse {
+    site_id: site.id,
+    coverage_target,
+    breadcrumbs,
     root,
   })
 }
