@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatBytes, formatCount, formatHealth } from "../lib/format";
+import { formatBytes, formatCount, formatHealth, healthColor } from "../lib/format";
 import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
@@ -54,21 +54,6 @@ function layout(root: StorageNode): ArcDatum[] {
   };
   walk(root, 1, -Math.PI / 2, TAU - Math.PI / 2);
   return arcs;
-}
-
-function healthColor(value: number | null): string {
-  if (value === null) return "#4b535c";
-  const clamped = Math.min(100, Math.max(0, value));
-  if (clamped <= 50) {
-    const amount = clamped / 50;
-    return mixColor([245, 112, 111], [240, 184, 91], amount);
-  }
-  return mixColor([240, 184, 91], [91, 219, 194], (clamped - 50) / 50);
-}
-
-function mixColor(from: [number, number, number], to: [number, number, number], amount: number): string {
-  const channels = from.map((channel, index) => Math.round(channel + (to[index] - channel) * amount));
-  return `rgb(${channels.join(" ")})`;
 }
 
 function drawArc(
@@ -268,6 +253,14 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
     previewArc(null);
   }, [previewArc, root.id]);
 
+  useEffect(() => {
+    const selectedPath = findPath(root, selectedNodeId);
+    const selected = selectedPath?.at(-1);
+    if (selected && selected.kind !== "file" && selected.kind !== "smaller_items" && selected.children.length > 0) {
+      setCurrentRootId(selected.id);
+    }
+  }, [root, selectedNodeId]);
+
   const getPointerArc = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return hitTest(arcs, event.clientX - rect.left, event.clientY - rect.top, size / 2, innerRadius, ringWidth);
@@ -342,7 +335,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
         aria-label={parentRoot ? `Return to ${parentRoot.name}` : `${currentRoot.name}, map root`}
       >
         <small>{parentRoot ? "← BACK" : metricLabel.toUpperCase()}</small>
-        <strong>{formatHealth(score)}{score === null ? "" : <em>/100</em>}</strong>
+        <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
         <span title={currentRoot.name}>{currentRoot.name}</span>
       </button>
       <div className="health-legend" aria-label="Health score color scale">

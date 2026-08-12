@@ -11,8 +11,8 @@ pub use hash::{Blake3HashAlgorithm, ContentHasher, HashAlgorithm, default_hash_a
 pub use model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
   ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun,
-  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageNode,
-  StorageNodeKind, StorageTree,
+  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
+  StorageNode, StorageNodeKind, StorageTree,
 };
 pub use repository::{Repository, RepositoryOptions};
 pub use workspace::{DEFAULT_WORKSPACE_NAME, WorkspaceInfo, WorkspaceManager, app_root_dir, normalize_workspace_name};

@@ -50,11 +50,19 @@ export function DashboardPage() {
             metric={state.healthMetric}
             staged={state.isSelectedStaged}
             stagingBusy={state.stagingBusy}
+            childrenPage={state.childrenPage}
+            childrenLoading={state.childrenLoading}
+            childrenLoadingMore={state.childrenLoadingMore}
+            childrenError={state.childrenError}
+            canGoBack={state.canGoBack}
             onMetricChange={state.setHealthMetric}
             onTargetChange={(siteId) => void state.selectCoverageTarget(siteId)}
             onSwap={() => void state.swapCoverageSites()}
             onScanTarget={() => state.coverageTargetSite && void state.scan(state.coverageTargetSite.id)}
             onSelectNode={state.selectNode}
+            onBack={state.goBack}
+            onRetryChildren={state.retryChildren}
+            onLoadMoreChildren={state.loadMoreChildren}
             onStage={() => void state.stageSelected()}
             onUnstage={() => state.selectedNode?.path && void state.removeStaged(state.selectedNode.path)}
           />

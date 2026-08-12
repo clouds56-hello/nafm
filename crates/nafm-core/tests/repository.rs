@@ -250,6 +250,51 @@ async fn storage_tree_reports_weighted_space_health_for_every_level() {
 }
 
 #[tokio::test]
+async fn storage_nodes_report_comparable_file_counts_without_changing_health_weighting() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("count-source");
+  let target = fixture.mkdir("count-target");
+  fs::create_dir(source.join("copies")).unwrap();
+  fs::write(source.join("copies/a.bin"), b"duplicate").unwrap();
+  fs::write(source.join("copies/b.bin"), b"duplicate").unwrap();
+  fs::write(source.join("unique.bin"), b"unique-content").unwrap();
+  fs::write(target.join("copy.bin"), b"duplicate").unwrap();
+
+  fixture.create_site("count-source").await;
+  fixture.create_site("count-target").await;
+  fixture
+    .add_site_folder("count-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("count-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let tree = fixture
+    .repo
+    .storage_tree_with_coverage("count-source", "count-target", 8, 32)
+    .await
+    .unwrap();
+  assert_health(tree.root.space_health, 2300.0 / 32.0);
+  assert_eq!(tree.root.space_healthy_file_equivalents, 2.0);
+  assert_eq!(tree.root.space_total_files, 3);
+  assert_eq!(tree.root.coverage_covered_files, 1);
+  assert_eq!(tree.root.coverage_total_files, 2);
+
+  let source_root = &tree.root.children[0];
+  let copies = child_named(source_root, "copies");
+  assert_eq!(copies.space_healthy_file_equivalents, 1.0);
+  assert_eq!(copies.space_total_files, 2);
+  assert_eq!(copies.coverage_covered_files, 1);
+  assert_eq!(copies.coverage_total_files, 1);
+  let copy = child_named(copies, "a.bin");
+  assert_eq!(copy.space_healthy_file_equivalents, 0.5);
+  assert_eq!(copy.space_total_files, 1);
+  assert_eq!(copy.coverage_covered_files, 1);
+  assert_eq!(copy.coverage_total_files, 1);
+}
+
+#[tokio::test]
 async fn coverage_health_is_directional_and_distinct_content_weighted() {
   let fixture = Fixture::new().await;
   let source = fixture.mkdir("coverage-source");
@@ -518,6 +563,113 @@ async fn storage_tree_keeps_health_correct_when_children_are_consolidated() {
   assert_eq!(consolidated.kind, StorageNodeKind::SmallerItems);
   assert_health(consolidated.space_health, 100.0);
   assert_health(consolidated.coverage_health, 0.0);
+}
+
+#[tokio::test]
+async fn storage_children_pages_direct_items_independently_of_map_bounds() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("children-source");
+  let target = fixture.mkdir("children-target");
+  for (directory, contents) in [
+    ("large", b"1234567890".as_slice()),
+    ("medium", b"123456".as_slice()),
+    ("small", b"123".as_slice()),
+    ("tiny", b"1".as_slice()),
+  ] {
+    fs::create_dir(source.join(directory)).unwrap();
+    fs::write(source.join(directory).join("clip.bin"), contents).unwrap();
+  }
+  fs::write(target.join("large.bin"), b"1234567890").unwrap();
+  fixture.create_site("children-source").await;
+  fixture.create_site("children-target").await;
+  fixture
+    .add_site_folder("children-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("children-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let bounded_tree = fixture
+    .repo
+    .storage_tree_with_coverage("children-source", "children-target", 4, 2)
+    .await
+    .unwrap();
+  let source_root = &bounded_tree.root.children[0];
+  assert_eq!(source_root.children.len(), 2);
+  let smaller_items = source_root
+    .children
+    .iter()
+    .find(|child| child.kind == StorageNodeKind::SmallerItems)
+    .unwrap();
+
+  let page = fixture
+    .repo
+    .storage_children_with_coverage("children-source", "children-target", &source_root.id, 1, 2)
+    .await
+    .unwrap();
+  assert_eq!(page.site.name, "children-source");
+  assert_eq!(page.coverage_target.unwrap().name, "children-target");
+  assert_eq!(page.parent.id, source_root.id);
+  assert!(page.parent.children.is_empty());
+  assert_eq!(page.total_children, 4);
+  assert_eq!(page.offset, 1);
+  assert_eq!(page.limit, 2);
+  assert_eq!(
+    page
+      .children
+      .iter()
+      .map(|child| child.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["medium", "small"]
+  );
+  assert!(page.children.iter().all(|child| child.children.is_empty()));
+  assert_health(page.children[0].coverage_health, 0.0);
+
+  let capped = fixture
+    .repo
+    .storage_children("children-source", &source_root.id, 0, u64::MAX)
+    .await
+    .unwrap();
+  assert_eq!(capped.limit, 200);
+  assert_eq!(capped.children.len(), 4);
+  assert!(capped.coverage_target.is_none());
+  assert_eq!(capped.parent.coverage_total_files, 0);
+
+  let file_id = page.children[0].id.clone();
+  let file_page = fixture
+    .repo
+    .storage_children("children-source", &file_id, 0, 20)
+    .await
+    .unwrap();
+  assert_eq!(file_page.parent.kind, StorageNodeKind::Directory);
+  assert_eq!(file_page.total_children, 1);
+  let leaf_page = fixture
+    .repo
+    .storage_children("children-source", &file_page.children[0].id, 0, 20)
+    .await
+    .unwrap();
+  assert_eq!(leaf_page.parent.kind, StorageNodeKind::File);
+  assert_eq!(leaf_page.total_children, 0);
+  assert!(leaf_page.children.is_empty());
+
+  let aggregate_page = fixture
+    .repo
+    .storage_children("children-source", &smaller_items.id, 0, 20)
+    .await
+    .unwrap();
+  assert_eq!(aggregate_page.parent.id, smaller_items.id);
+  assert_eq!(aggregate_page.parent.kind, StorageNodeKind::SmallerItems);
+  assert_eq!(aggregate_page.parent.total_bytes, smaller_items.total_bytes);
+  assert_eq!(aggregate_page.total_children, 0);
+  assert!(aggregate_page.children.is_empty());
+
+  let error = fixture
+    .repo
+    .storage_children("children-source", "storage:unknown", 0, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(error, NafmError::StorageNodeNotFound(node_id) if node_id == "storage:unknown"));
 }
 
 #[tokio::test]

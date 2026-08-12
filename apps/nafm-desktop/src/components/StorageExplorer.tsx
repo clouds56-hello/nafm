@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatHealth } from "../lib/format";
-import type { HealthMetric, SiteOverview, StorageNode, StorageTree } from "../lib/types";
+import { formatHealth, healthColor } from "../lib/format";
+import type { HealthMetric, SiteOverview, StorageChildrenPage, StorageNode, StorageTree } from "../lib/types";
+import { FolderInspector } from "./FolderInspector";
 import { HealthControls } from "./HealthControls";
 import { NodeDetails } from "./NodeDetails";
 import { SunburstMap } from "./SunburstMap";
@@ -14,11 +15,19 @@ interface StorageExplorerProps {
   metric: HealthMetric;
   staged: boolean;
   stagingBusy: boolean;
+  childrenPage: StorageChildrenPage | null;
+  childrenLoading: boolean;
+  childrenLoadingMore: boolean;
+  childrenError: string | null;
+  canGoBack: boolean;
   onMetricChange: (metric: HealthMetric) => void;
   onTargetChange: (siteId: string) => void;
   onSwap: () => void;
   onScanTarget: () => void;
   onSelectNode: (node: StorageNode) => void;
+  onBack: () => void;
+  onRetryChildren: () => void;
+  onLoadMoreChildren: () => void;
   onStage: () => void;
   onUnstage: () => void;
 }
@@ -32,11 +41,19 @@ export function StorageExplorer({
   metric,
   staged,
   stagingBusy,
+  childrenPage,
+  childrenLoading,
+  childrenLoadingMore,
+  childrenError,
+  canGoBack,
   onMetricChange,
   onTargetChange,
   onSwap,
   onScanTarget,
   onSelectNode,
+  onBack,
+  onRetryChildren,
+  onLoadMoreChildren,
   onStage,
   onUnstage,
 }: StorageExplorerProps) {
@@ -58,7 +75,7 @@ export function StorageExplorer({
         </div>
         <div className="map-total">
           <span>{metric === "space_health" ? source.name : `${source.name} → ${target?.name ?? "No target"}`}</span>
-          <strong>{formatHealth(score)}{score === null ? "" : "/100"}</strong>
+          <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
           <small>{metric === "space_health" ? "space health" : "coverage health"}</small>
         </div>
       </div>
@@ -109,6 +126,18 @@ export function StorageExplorer({
               onUnstage={onUnstage}
             />
           </div>
+          <FolderInspector
+            page={childrenPage}
+            metric={metric}
+            loading={childrenLoading}
+            loadingMore={childrenLoadingMore}
+            error={childrenError}
+            canGoBack={canGoBack}
+            onBack={onBack}
+            onSelect={onSelectNode}
+            onRetry={onRetryChildren}
+            onLoadMore={onLoadMoreChildren}
+          />
         </>
       )}
     </section>

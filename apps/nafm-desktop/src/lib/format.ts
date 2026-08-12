@@ -1,5 +1,6 @@
 const bytes = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 const integers = new Intl.NumberFormat();
+const fileEquivalents = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 
 export function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -36,4 +37,19 @@ export function percent(numerator: number, denominator: number): number {
 
 export function formatHealth(value: number | null): string {
   return value === null ? "—" : `${Math.round(Math.min(100, Math.max(0, value)))}`;
+}
+
+export function formatFileEquivalent(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return fileEquivalents.format(value);
+}
+
+export function healthColor(value: number | null): string {
+  if (value === null) return "#6b747c";
+  const clamped = Math.min(100, Math.max(0, value));
+  const [from, to, amount] = clamped <= 50
+    ? [[245, 112, 111], [240, 184, 91], clamped / 50]
+    : [[240, 184, 91], [91, 219, 194], (clamped - 50) / 50];
+  const channels = from.map((channel, index) => Math.round(channel + (to[index] - channel) * amount));
+  return `rgb(${channels.join(" ")})`;
 }

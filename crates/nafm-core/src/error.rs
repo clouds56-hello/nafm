@@ -16,6 +16,8 @@ pub enum NafmError {
   SiteNotFound(String),
   #[error("site folder not found: {0}")]
   SiteFolderNotFound(String),
+  #[error("storage node not found: {0}")]
+  StorageNodeNotFound(String),
   #[error("no tracked file or folder found at path: {0}")]
   TrackedPathNotFound(PathBuf),
   #[error("no stage history available for {0}")]

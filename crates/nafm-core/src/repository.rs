@@ -17,13 +17,15 @@ use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
   ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun,
-  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageNode,
-  StorageNodeKind, StorageTree,
+  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
+  StorageNode, StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
 type ScanCancellationCallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
+const MAX_STORAGE_CHILDREN_PAGE_SIZE: u64 = 200;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -107,6 +109,8 @@ struct StorageNodeBuilder {
   space_health_bytes: u128,
   zero_byte_space_health_sum: f64,
   zero_byte_space_health_count: u64,
+  space_healthy_file_equivalents: f64,
+  space_total_files: u64,
   coverage_groups: BTreeMap<StorageContentKey, bool>,
   children: BTreeMap<String, StorageNodeBuilder>,
 }
@@ -126,6 +130,8 @@ impl StorageNodeBuilder {
       space_health_bytes: 0,
       zero_byte_space_health_sum: 0.0,
       zero_byte_space_health_count: 0,
+      space_healthy_file_equivalents: 0.0,
+      space_total_files: 0,
       coverage_groups: BTreeMap::new(),
       children: BTreeMap::new(),
     }
@@ -142,6 +148,8 @@ impl StorageNodeBuilder {
     }
     if file.source_copy_count > 0 && file.content_key.is_some() {
       let file_health = 100.0 / file.source_copy_count as f64;
+      self.space_healthy_file_equivalents += 1.0 / file.source_copy_count as f64;
+      self.space_total_files = self.space_total_files.saturating_add(1);
       if file.size_bytes > 0 {
         self.space_health_weighted_bytes += file.size_bytes as f64 * file_health;
         self.space_health_bytes += u128::from(file.size_bytes);
@@ -188,6 +196,13 @@ impl StorageNodeBuilder {
       .map(|(content_key, _)| u128::from(content_key.size_bytes))
       .sum::<u128>();
     Some((covered_bytes as f64 * 100.0 / total_bytes as f64).clamp(0.0, 100.0))
+  }
+
+  fn coverage_file_counts(&self) -> (u64, u64) {
+    (
+      self.coverage_groups.values().filter(|covered| **covered).count() as u64,
+      self.coverage_groups.len() as u64,
+    )
   }
 }
 
@@ -398,6 +413,46 @@ impl Repository {
       let target_site =
         find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
       storage_tree(&conn, site, Some(target_site), max_depth, max_children)
+    })
+    .await?
+  }
+
+  pub async fn storage_children(
+    &self,
+    site_selector: &str,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+  ) -> Result<StorageChildrenPage> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      storage_children_page(&conn, site, None, &node_id, offset, limit)
+    })
+    .await?
+  }
+
+  pub async fn storage_children_with_coverage(
+    &self,
+    site_selector: &str,
+    target_site_selector: &str,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+  ) -> Result<StorageChildrenPage> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let target_site_selector = target_site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      let target_site =
+        find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+      storage_children_page(&conn, site, Some(target_site), &node_id, offset, limit)
     })
     .await?
   }
@@ -2246,8 +2301,24 @@ fn storage_tree(
   max_depth: u32,
   max_children: u32,
 ) -> Result<StorageTree> {
+  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
+
+  Ok(StorageTree {
+    site,
+    coverage_target,
+    max_depth,
+    max_children,
+    root: finish_storage_node(root, 0, max_depth, max_children),
+  })
+}
+
+fn build_storage_tree_root(
+  conn: &Connection,
+  site: &Site,
+  coverage_target: Option<&Site>,
+) -> Result<StorageNodeBuilder> {
   let folders = list_site_folders(conn, Some(&site.id))?;
-  let coverage_target_content_keys = match coverage_target.as_ref() {
+  let coverage_target_content_keys = match coverage_target {
     Some(target) if site_has_completed_scan(conn, &target.id)? => {
       let content_keys = storage_content_keys(conn, &target.id)?;
       if content_keys.is_empty() && site_has_tracked_files(conn, &target.id)? {
@@ -2303,13 +2374,93 @@ fn storage_tree(
     insert_storage_file(folder_node, folder, &segments, file)?;
   }
 
-  Ok(StorageTree {
+  Ok(root)
+}
+
+fn storage_children_page(
+  conn: &Connection,
+  site: Site,
+  coverage_target: Option<Site>,
+  node_id: &str,
+  offset: u64,
+  limit: u64,
+) -> Result<StorageChildrenPage> {
+  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
+  let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
+
+  if let Some((retained_count, parent_id)) = parse_smaller_items_node_id(node_id) {
+    let parent_builder =
+      find_storage_node_builder(&root, parent_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+    let mut child_builders = parent_builder.children.values().cloned().collect::<Vec<_>>();
+    sort_storage_node_builders(&mut child_builders);
+    if retained_count >= child_builders.len() {
+      return Err(NafmError::StorageNodeNotFound(node_id.to_owned()));
+    }
+    let parent = consolidate_storage_nodes(
+      parent_id,
+      retained_count,
+      child_builders.into_iter().skip(retained_count).collect(),
+    );
+    return Ok(StorageChildrenPage {
+      site,
+      coverage_target,
+      parent,
+      children: Vec::new(),
+      total_children: 0,
+      offset,
+      limit,
+    });
+  }
+
+  let parent_builder =
+    find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+  let mut child_builders = parent_builder.children.values().collect::<Vec<_>>();
+  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let total_children = child_builders.len() as u64;
+  let children = child_builders
+    .into_iter()
+    .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+    .take(limit as usize)
+    .map(storage_node_without_children)
+    .collect();
+
+  Ok(StorageChildrenPage {
     site,
     coverage_target,
-    max_depth,
-    max_children,
-    root: finish_storage_node(root, 0, max_depth, max_children),
+    parent: storage_node_without_children(parent_builder),
+    children,
+    total_children,
+    offset,
+    limit,
   })
+}
+
+fn parse_smaller_items_node_id(node_id: &str) -> Option<(usize, &str)> {
+  let (retained_count, parent_id) = node_id.strip_prefix("smaller_items:")?.split_once(':')?;
+  Some((retained_count.parse().ok()?, parent_id))
+}
+
+fn find_storage_node_builder<'a>(root: &'a StorageNodeBuilder, node_id: &str) -> Option<&'a StorageNodeBuilder> {
+  let mut pending = vec![root];
+  while let Some(node) = pending.pop() {
+    if node.id == node_id {
+      return Some(node);
+    }
+    pending.extend(node.children.values());
+  }
+  None
+}
+
+fn storage_node_builder_order(left: &StorageNodeBuilder, right: &StorageNodeBuilder) -> std::cmp::Ordering {
+  right
+    .total_bytes
+    .cmp(&left.total_bytes)
+    .then_with(|| left.name.cmp(&right.name))
+    .then_with(|| left.id.cmp(&right.id))
+}
+
+fn sort_storage_node_builders(nodes: &mut [StorageNodeBuilder]) {
+  nodes.sort_by(storage_node_builder_order);
 }
 
 fn storage_root_name(folder: &SiteFolder) -> String {
@@ -2413,14 +2564,9 @@ fn storage_child_path(folder: &SiteFolder, segments: &[String]) -> Result<PathBu
 fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, max_children: u32) -> StorageNode {
   let space_health = builder.space_health();
   let coverage_health = builder.coverage_health();
+  let (coverage_covered_files, coverage_total_files) = builder.coverage_file_counts();
   let mut child_builders = builder.children.into_values().collect::<Vec<_>>();
-  child_builders.sort_by(|left, right| {
-    right
-      .total_bytes
-      .cmp(&left.total_bytes)
-      .then_with(|| left.name.cmp(&right.name))
-      .then_with(|| left.id.cmp(&right.id))
-  });
+  sort_storage_node_builders(&mut child_builders);
 
   let children = if depth >= max_depth || max_children == 0 {
     Vec::new()
@@ -2436,7 +2582,7 @@ fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, 
       .into_iter()
       .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
       .collect::<Vec<_>>();
-    children.push(consolidate_storage_nodes(&builder.id, consolidated));
+    children.push(consolidate_storage_nodes(&builder.id, retained_count, consolidated));
     children
   };
 
@@ -2450,12 +2596,37 @@ fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, 
     duplicate_bytes: builder.duplicate_bytes,
     duplicate_file_count: builder.duplicate_file_count,
     space_health,
+    space_healthy_file_equivalents: builder.space_healthy_file_equivalents,
+    space_total_files: builder.space_total_files,
     coverage_health,
+    coverage_covered_files,
+    coverage_total_files,
     children,
   }
 }
 
-fn consolidate_storage_nodes(parent_id: &str, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
+fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
+  let (coverage_covered_files, coverage_total_files) = builder.coverage_file_counts();
+  StorageNode {
+    id: builder.id.clone(),
+    name: builder.name.clone(),
+    path: builder.path.clone(),
+    kind: builder.kind,
+    total_bytes: builder.total_bytes,
+    file_count: builder.file_count,
+    duplicate_bytes: builder.duplicate_bytes,
+    duplicate_file_count: builder.duplicate_file_count,
+    space_health: builder.space_health(),
+    space_healthy_file_equivalents: builder.space_healthy_file_equivalents,
+    space_total_files: builder.space_total_files,
+    coverage_health: builder.coverage_health(),
+    coverage_covered_files,
+    coverage_total_files,
+    children: Vec::new(),
+  }
+}
+
+fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
   let total_space_health_bytes = nodes.iter().map(|node| node.space_health_bytes).sum::<u128>();
   let zero_byte_space_health_count = nodes.iter().map(|node| node.zero_byte_space_health_count).sum::<u64>();
   let space_health = if total_space_health_bytes > 0 {
@@ -2497,7 +2668,7 @@ fn consolidate_storage_nodes(parent_id: &str, nodes: Vec<StorageNodeBuilder>) ->
     None
   };
   StorageNode {
-    id: format!("smaller_items:{parent_id}"),
+    id: format!("smaller_items:{retained_count}:{parent_id}"),
     name: "Smaller items".to_owned(),
     path: None,
     kind: StorageNodeKind::SmallerItems,
@@ -2506,7 +2677,11 @@ fn consolidate_storage_nodes(parent_id: &str, nodes: Vec<StorageNodeBuilder>) ->
     duplicate_bytes: nodes.iter().map(|node| node.duplicate_bytes).sum(),
     duplicate_file_count: nodes.iter().map(|node| node.duplicate_file_count).sum(),
     space_health,
+    space_healthy_file_equivalents: nodes.iter().map(|node| node.space_healthy_file_equivalents).sum(),
+    space_total_files: nodes.iter().map(|node| node.space_total_files).sum(),
     coverage_health,
+    coverage_covered_files: coverage_groups.values().filter(|covered| **covered).count() as u64,
+    coverage_total_files: coverage_groups.len() as u64,
     children: Vec::new(),
   }
 }

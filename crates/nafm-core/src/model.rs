@@ -67,7 +67,11 @@ pub struct StorageNode {
   pub duplicate_bytes: u64,
   pub duplicate_file_count: u64,
   pub space_health: Option<f64>,
+  pub space_healthy_file_equivalents: f64,
+  pub space_total_files: u64,
   pub coverage_health: Option<f64>,
+  pub coverage_covered_files: u64,
+  pub coverage_total_files: u64,
   pub children: Vec<StorageNode>,
 }
 
@@ -78,6 +82,17 @@ pub struct StorageTree {
   pub max_depth: u32,
   pub max_children: u32,
   pub root: StorageNode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageChildrenPage {
+  pub site: Site,
+  pub coverage_target: Option<Site>,
+  pub parent: StorageNode,
+  pub children: Vec<StorageNode>,
+  pub total_children: u64,
+  pub offset: u64,
+  pub limit: u64,
 }
 
 #[derive(Clone, Debug)]

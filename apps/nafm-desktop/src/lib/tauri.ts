@@ -10,6 +10,7 @@ import type {
   StageAddReport,
   StageRemoveReport,
   StorageTree,
+  StorageChildrenPage,
 } from "./types";
 
 export function loadDashboard(): Promise<Dashboard> {
@@ -22,6 +23,22 @@ export function getStorageTree(siteId: string, targetSiteId?: string | null): Pr
     targetSiteId: targetSiteId ?? null,
     maxDepth: 5,
     maxChildren: 12,
+  });
+}
+
+export function getStorageChildren(
+  siteId: string,
+  targetSiteId: string | null,
+  nodeId: string,
+  offset: number,
+  limit: number,
+): Promise<StorageChildrenPage> {
+  return invoke<StorageChildrenPage>("get_storage_children", {
+    siteId,
+    targetSiteId,
+    nodeId,
+    offset,
+    limit,
   });
 }
 

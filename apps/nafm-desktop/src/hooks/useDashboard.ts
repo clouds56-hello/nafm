@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelScan,
+  getStorageChildren,
   getStorageTree,
   loadDashboard,
   onScanTaskEvent,
@@ -18,6 +19,7 @@ import type {
   ScanTaskEvent,
   SiteOverview,
   StorageNode,
+  StorageChildrenPage,
   StorageTree,
 } from "../lib/types";
 
@@ -64,6 +66,12 @@ export function useDashboard() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNode, setSelectedNode] = useState<StorageNode | null>(null);
+  const [selectionHistory, setSelectionHistory] = useState<StorageNode[]>([]);
+  const [childrenPage, setChildrenPage] = useState<StorageChildrenPage | null>(null);
+  const [childrenLoading, setChildrenLoading] = useState(false);
+  const [childrenLoadingMore, setChildrenLoadingMore] = useState(false);
+  const [childrenError, setChildrenError] = useState<string | null>(null);
   const [progressBySite, setProgressBySite] = useState<Map<string, ScanProgressView>>(new Map());
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
@@ -74,6 +82,74 @@ export function useDashboard() {
   const selectedSiteRef = useRef<string | null>(null);
   const targetSiteRef = useRef<string | null>(null);
   const treeRequestRef = useRef(0);
+  const treeRequestByKeyRef = useRef<Map<string, number>>(new Map());
+  const childrenRequestRef = useRef(0);
+  const selectedNodeRef = useRef<StorageNode | null>(null);
+  const selectionHistoryRef = useRef<StorageNode[]>([]);
+  const childrenPageRef = useRef<StorageChildrenPage | null>(null);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
+
+  useEffect(() => {
+    selectionHistoryRef.current = selectionHistory;
+  }, [selectionHistory]);
+
+  useEffect(() => {
+    childrenPageRef.current = childrenPage;
+  }, [childrenPage]);
+
+  const loadChildren = useCallback(async (
+    siteId: string,
+    targetSiteId: string | null,
+    node: StorageNode,
+    offset = 0,
+    preserveSelection = false,
+  ) => {
+    const requestId = childrenRequestRef.current + 1;
+    childrenRequestRef.current = requestId;
+    const loadingMore = offset > 0;
+    if (loadingMore) setChildrenLoadingMore(true);
+    else {
+      setChildrenLoading(true);
+      childrenPageRef.current = null;
+      setChildrenPage(null);
+    }
+    setChildrenError(null);
+    try {
+      const page = await getStorageChildren(siteId, targetSiteId, node.id, offset, 50);
+      if (childrenRequestRef.current !== requestId) return;
+      const currentPage = childrenPageRef.current;
+      const nextPage = loadingMore && currentPage?.parent.id === page.parent.id ? {
+        ...page,
+        children: [...currentPage.children, ...page.children],
+        offset: 0,
+      } : page;
+      childrenPageRef.current = nextPage;
+      setChildrenPage(nextPage);
+
+      if (!loadingMore) {
+        const currentSelection = selectedNodeRef.current;
+        const refreshedSelection = currentSelection?.id === page.parent.id
+          ? page.parent
+          : page.children.find((child) => child.id === currentSelection?.id);
+        const nextSelection = preserveSelection
+          ? refreshedSelection ?? currentSelection ?? page.parent
+          : refreshedSelection ?? page.parent;
+        selectedNodeRef.current = nextSelection;
+        setSelectedNodeId(nextSelection.id);
+        setSelectedNode(nextSelection);
+      }
+    } catch (childrenLoadError) {
+      if (childrenRequestRef.current === requestId) setChildrenError(errorMessage(childrenLoadError));
+    } finally {
+      if (childrenRequestRef.current === requestId) {
+        setChildrenLoading(false);
+        setChildrenLoadingMore(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     selectedSiteRef.current = activeSiteId;
@@ -88,8 +164,10 @@ export function useDashboard() {
     targetSiteId: string | null,
     foreground = false,
   ) => {
+    const requestKey = treeKey(siteId, targetSiteId);
     const requestId = treeRequestRef.current + 1;
     treeRequestRef.current = requestId;
+    treeRequestByKeyRef.current.set(requestKey, requestId);
     if (foreground) {
       setTreeLoading(true);
       setTreeError(null);
@@ -98,11 +176,38 @@ export function useDashboard() {
     }
     try {
       const tree = await getStorageTree(siteId, targetSiteId);
-      setTrees((current) => new Map(current).set(treeKey(siteId, targetSiteId), tree));
-      if (treeRequestRef.current === requestId
-        && selectedSiteRef.current === siteId
-        && targetSiteRef.current === targetSiteId) {
-        setSelectedNodeId((current) => findNode(tree.root, current)?.id ?? tree.root.id);
+      if (treeRequestByKeyRef.current.get(requestKey) !== requestId) return;
+      const isCurrentRequest = treeRequestRef.current === requestId;
+      const isActiveRequest = selectedSiteRef.current === siteId && targetSiteRef.current === targetSiteId;
+      setTrees((current) => new Map(current).set(requestKey, tree));
+      if (isCurrentRequest && isActiveRequest) {
+        const currentSelection = selectedNodeRef.current;
+        const currentPage = childrenPageRef.current;
+        const inTreeSelection = currentSelection ? findNode(tree.root, currentSelection.id) : null;
+        const pageSelection = currentSelection && (
+          currentPage?.parent.id === currentSelection.id
+          || currentPage?.children.some((child) => child.id === currentSelection.id)
+        )
+          ? currentSelection
+          : null;
+        const nextSelection = inTreeSelection ?? pageSelection ?? tree.root;
+        selectedNodeRef.current = nextSelection;
+        setSelectedNodeId(nextSelection.id);
+        setSelectedNode(nextSelection);
+        if (!currentSelection || nextSelection.id === tree.root.id) {
+          selectionHistoryRef.current = [];
+          setSelectionHistory([]);
+        } else {
+          const nextHistory = selectionHistoryRef.current.map(
+            (historyNode) => findNode(tree.root, historyNode.id) ?? historyNode,
+          );
+          selectionHistoryRef.current = nextHistory;
+          setSelectionHistory(nextHistory);
+        }
+        const folderSelection = nextSelection.kind !== "file" && nextSelection.kind !== "smaller_items"
+          ? nextSelection
+          : currentPage?.parent ?? selectionHistoryRef.current.at(-1) ?? tree.root;
+        void loadChildren(siteId, targetSiteId, folderSelection, 0, true);
         setTreeError(null);
       }
     } catch (treeLoadError) {
@@ -112,7 +217,7 @@ export function useDashboard() {
     } finally {
       if (foreground && treeRequestRef.current === requestId) setTreeLoading(false);
     }
-  }, []);
+  }, [loadChildren]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -247,18 +352,39 @@ export function useDashboard() {
     setCoverageTargetSiteId(nextTarget);
     selectedSiteRef.current = siteId;
     targetSiteRef.current = nextTarget;
+    childrenRequestRef.current += 1;
     setSelectedNodeId(null);
-    if (trees.has(treeKey(siteId, nextTarget))) {
+    setSelectedNode(null);
+    setSelectionHistory([]);
+    setChildrenPage(null);
+    setChildrenError(null);
+    setChildrenLoading(false);
+    setChildrenLoadingMore(false);
+    selectedNodeRef.current = null;
+    selectionHistoryRef.current = [];
+    childrenPageRef.current = null;
+    const cachedTree = trees.get(treeKey(siteId, nextTarget));
+    if (cachedTree) {
+      selectedNodeRef.current = cachedTree.root;
+      setSelectedNodeId(cachedTree.root.id);
+      setSelectedNode(cachedTree.root);
       setTreeLoading(false);
       setTreeError(null);
+      await loadChildren(siteId, nextTarget, cachedTree.root);
     } else {
       await refreshTree(siteId, nextTarget, true);
     }
-  }, [dashboard?.sites, refreshTree, trees]);
+  }, [dashboard?.sites, loadChildren, refreshTree, trees]);
 
   const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
     const sourceSiteId = selectedSiteRef.current;
     if (!sourceSiteId || targetSiteId === sourceSiteId) return;
+    childrenRequestRef.current += 1;
+    childrenPageRef.current = null;
+    setChildrenPage(null);
+    setChildrenError(null);
+    setChildrenLoading(false);
+    setChildrenLoadingMore(false);
     setCoverageTargetSiteId(targetSiteId);
     targetSiteRef.current = targetSiteId;
     await refreshTree(sourceSiteId, targetSiteId, true);
@@ -272,7 +398,17 @@ export function useDashboard() {
     setCoverageTargetSiteId(previousSourceSiteId);
     selectedSiteRef.current = previousTargetSiteId;
     targetSiteRef.current = previousSourceSiteId;
+    childrenRequestRef.current += 1;
     setSelectedNodeId(null);
+    setSelectedNode(null);
+    setSelectionHistory([]);
+    setChildrenPage(null);
+    setChildrenError(null);
+    setChildrenLoading(false);
+    setChildrenLoadingMore(false);
+    selectedNodeRef.current = null;
+    selectionHistoryRef.current = [];
+    childrenPageRef.current = null;
     await refreshTree(previousTargetSiteId, previousSourceSiteId, true);
   }, [refreshTree]);
 
@@ -303,9 +439,60 @@ export function useDashboard() {
   const activeTree = activeSiteId
     ? trees.get(treeKey(activeSiteId, coverageTargetSiteId)) ?? null
     : null;
-  const selectedNode = activeTree
-    ? findNode(activeTree.root, selectedNodeId) ?? activeTree.root
+  const activeSelectedNode = activeTree
+    ? selectedNode ?? findNode(activeTree.root, selectedNodeId) ?? activeTree.root
     : null;
+
+  const selectNode = useCallback((node: StorageNode) => {
+    const siteId = selectedSiteRef.current;
+    if (!siteId) return;
+    const openable = node.kind !== "file" && node.kind !== "smaller_items";
+    selectedNodeRef.current = node;
+    setSelectedNodeId(node.id);
+    setSelectedNode(node);
+    if (openable) {
+      const currentFolder = childrenPageRef.current?.parent;
+      const currentHistory = selectionHistoryRef.current;
+      const nextHistory = currentFolder?.id === node.id
+        ? currentHistory
+        : currentHistory.at(-1)?.id === node.id
+          ? currentHistory.slice(0, -1)
+          : currentFolder
+            ? [...currentHistory, currentFolder]
+            : currentHistory;
+      selectionHistoryRef.current = nextHistory;
+      setSelectionHistory(nextHistory);
+      void loadChildren(siteId, targetSiteRef.current, node);
+    }
+  }, [loadChildren]);
+
+  const goBack = useCallback(() => {
+    const siteId = selectedSiteRef.current;
+    if (!siteId) return;
+    const history = selectionHistoryRef.current;
+    const parent = history.at(-1);
+    if (!parent) return;
+    const nextHistory = history.slice(0, -1);
+    selectionHistoryRef.current = nextHistory;
+    selectedNodeRef.current = parent;
+    setSelectionHistory(nextHistory);
+    setSelectedNodeId(parent.id);
+    setSelectedNode(parent);
+    void loadChildren(siteId, targetSiteRef.current, parent);
+  }, [loadChildren]);
+
+  const retryChildren = useCallback(() => {
+    const siteId = selectedSiteRef.current;
+    const parent = childrenPage?.parent ?? activeSelectedNode;
+    if (siteId && parent) void loadChildren(siteId, targetSiteRef.current, parent);
+  }, [activeSelectedNode, childrenPage, loadChildren]);
+
+  const loadMoreChildren = useCallback(() => {
+    const siteId = selectedSiteRef.current;
+    if (siteId && childrenPage) {
+      void loadChildren(siteId, targetSiteRef.current, childrenPage.parent, childrenPage.children.length);
+    }
+  }, [childrenPage, loadChildren]);
 
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
     setDashboard((current) => current ? {
@@ -316,11 +503,11 @@ export function useDashboard() {
   }, []);
 
   const stageSelected = useCallback(async () => {
-    if (!selectedNode?.path || healthMetric !== "space_health") return;
+    if (!activeSelectedNode?.path || healthMetric !== "space_health") return;
     setStagingBusy(true);
     setNotice(null);
     try {
-      const report = await stagePath(selectedNode.path);
+      const report = await stagePath(activeSelectedNode.path);
       const additions = report.staged_files;
       updateStaged((current) => {
         const byId = new Map(current.map((file) => [file.file_id, file]));
@@ -335,7 +522,7 @@ export function useDashboard() {
     } finally {
       setStagingBusy(false);
     }
-  }, [healthMetric, selectedNode, updateStaged]);
+  }, [activeSelectedNode, healthMetric, updateStaged]);
 
   const removeStaged = useCallback(async (path: string) => {
     setStagingBusy(true);
@@ -365,8 +552,8 @@ export function useDashboard() {
 
   const activeSite = dashboard?.sites.find((site) => site.id === activeSiteId) ?? null;
   const coverageTargetSite = dashboard?.sites.find((site) => site.id === coverageTargetSiteId) ?? null;
-  const isSelectedStaged = Boolean(selectedNode?.path && dashboard?.staged.some((file) => {
-    const selectedPath = selectedNode.path!;
+  const isSelectedStaged = Boolean(activeSelectedNode?.path && dashboard?.staged.some((file) => {
+    const selectedPath = activeSelectedNode.path!;
     const normalized = selectedPath.endsWith("/") ? selectedPath : `${selectedPath}/`;
     return file.path === selectedPath || file.path.startsWith(normalized);
   }));
@@ -385,8 +572,16 @@ export function useDashboard() {
     coverageTargetSiteId,
     healthMetric,
     setHealthMetric,
-    selectedNode,
-    selectNode: (node: StorageNode) => setSelectedNodeId(node.id),
+    selectedNode: activeSelectedNode,
+    selectNode,
+    childrenPage,
+    childrenLoading,
+    childrenLoadingMore,
+    childrenError,
+    canGoBack: selectionHistory.length > 0,
+    goBack,
+    retryChildren,
+    loadMoreChildren,
     selectSite,
     selectCoverageTarget,
     swapCoverageSites,
@@ -411,8 +606,13 @@ export function useDashboard() {
     activeRequestIds.size,
     activeSite,
     activeSiteId,
+    activeSelectedNode,
     activeTree,
     cancel,
+    childrenError,
+    childrenLoading,
+    childrenLoadingMore,
+    childrenPage,
     coverageTargetSite,
     coverageTargetSiteId,
     dashboard,
@@ -425,6 +625,7 @@ export function useDashboard() {
     previewLoading,
     progressBySite,
     refresh,
+    retryChildren,
     removeStaged,
     reviewError,
     reviewOpen,
@@ -432,12 +633,15 @@ export function useDashboard() {
     runPreview,
     scan,
     selectCoverageTarget,
-    selectedNode,
+    selectNode,
     selectSite,
+    selectionHistory.length,
     stageSelected,
     stagingBusy,
     swapCoverageSites,
     treeError,
     treeLoading,
+    goBack,
+    loadMoreChildren,
   ]);
 }

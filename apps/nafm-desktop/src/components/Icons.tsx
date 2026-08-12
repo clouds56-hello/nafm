@@ -34,6 +34,10 @@ export function FolderIcon(props: IconProps) {
   return <IconBase {...props}><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></IconBase>;
 }
 
+export function FileIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M6 3h8l4 4v14H6V3Z" /><path d="M14 3v5h5" /></IconBase>;
+}
+
 export function CloseIcon(props: IconProps) {
   return <IconBase {...props}><path d="m6 6 12 12M18 6 6 18" /></IconBase>;
 }

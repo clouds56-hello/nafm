@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use nafm_core::{Site, SiteFolderKind, StageCommitDryRun, StorageNode, StorageTree};
+use nafm_core::{Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageNode, StorageTree};
 use serde::Serialize;
 use tauri::State;
 
@@ -135,4 +135,30 @@ pub async fn get_storage_tree(
     coverage_target,
     root,
   })
+}
+
+#[tauri::command]
+pub async fn get_storage_children(
+  state: State<'_, AppState>,
+  site_id: String,
+  target_site_id: Option<String>,
+  node_id: String,
+  offset: u64,
+  limit: u64,
+) -> Result<StorageChildrenPage, String> {
+  match target_site_id {
+    Some(target_site_id) => {
+      state
+        .repository
+        .storage_children_with_coverage(&site_id, &target_site_id, &node_id, offset, limit)
+        .await
+    }
+    None => {
+      state
+        .repository
+        .storage_children(&site_id, &node_id, offset, limit)
+        .await
+    }
+  }
+  .map_err(|error| error.to_string())
 }

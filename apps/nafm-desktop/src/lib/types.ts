@@ -38,6 +38,10 @@ export interface StorageNode {
   duplicate_file_count: number;
   space_health: number | null;
   coverage_health: number | null;
+  space_healthy_file_equivalents: number;
+  space_total_files: number;
+  coverage_covered_files: number;
+  coverage_total_files: number;
   children: StorageNode[];
 }
 
@@ -49,6 +53,24 @@ export interface StorageTree {
     added_at: string;
   } | null;
   root: StorageNode;
+}
+
+export interface StorageChildrenPage {
+  site: {
+    id: string;
+    name: string;
+    added_at: string;
+  };
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
+  parent: StorageNode;
+  children: StorageNode[];
+  total_children: number;
+  offset: number;
+  limit: number;
 }
 
 export interface ScanSelector {
