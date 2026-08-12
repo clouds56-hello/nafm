@@ -129,6 +129,13 @@ export interface StorageChildrenPage {
   limit: number;
 }
 
+export interface StorageFileReveal {
+  tree: StorageTree;
+  location: StorageLocation;
+  page: StorageChildrenPage;
+  selected_file: StorageNode;
+}
+
 export type FileContentMatchStatus = "ready" | "not_hashed";
 
 export interface FileContentMatch {
@@ -139,6 +146,7 @@ export interface FileContentMatch {
   site_folder_kind: SiteKind;
   path: string;
   size_bytes: number;
+  is_current: boolean;
 }
 
 export interface FileContentMatchesPage {

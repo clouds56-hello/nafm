@@ -105,6 +105,14 @@ pub struct StorageChildrenPage {
   pub limit: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageFileReveal {
+  pub tree: StorageTree,
+  pub location: StorageLocation,
+  pub page: StorageChildrenPage,
+  pub selected_file: StorageNode,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileContentMatchStatus {
@@ -121,6 +129,7 @@ pub struct FileContentMatch {
   pub site_folder_kind: SiteFolderKind,
   pub path: PathBuf,
   pub size_bytes: u64,
+  pub is_current: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

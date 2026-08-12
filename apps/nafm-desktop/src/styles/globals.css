@@ -311,6 +311,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-identity { min-width: 0; }
 .inspector-identity .eyebrow { font-size: 8px; }
 .inspector-identity h2 { margin: 2px 0 1px; overflow: hidden; color: #ecf2f3; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-identity h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .inspector-identity p { margin: 0; overflow: hidden; color: #65727b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 7px 8px 5px; }
 .inspector-score { min-width: 0; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; background: rgba(7,11,16,.48); }
@@ -336,7 +337,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-contents > header > small { flex: 0 0 auto; margin-left: 8px; color: #65727b; font-size: 9px; }
 .inspector-list-heading, .inspector-list li button { display: grid; grid-template-columns: minmax(0, 1fr) 54px 36px 10px; gap: 6px; align-items: center; }
 .inspector-list-heading { padding: 5px 9px; border-block: 1px solid var(--line); color: #56636c; font-size: 8px; font-weight: 720; letter-spacing: .09em; text-transform: uppercase; }
-.duplicate-list-heading { grid-template-columns: minmax(0, 1fr) 74px; }
+.duplicate-list-heading { grid-template-columns: minmax(0, 1fr) 70px 28px; gap: 6px; }
 .inspector-list-body { position: relative; min-height: 0; overflow: hidden; transition: opacity .15s ease; }
 .inspector-list-body.is-updating { opacity: .56; }
 .inspector-list { margin: 0; padding: 0; list-style: none; }
@@ -354,15 +355,23 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-row-name strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-list li button > svg { width: 10px; color: #506069; }
 .inspector-list li button > svg.is-hidden { visibility: hidden; }
-.duplicate-row { display: grid; min-height: 39px; grid-template-columns: minmax(0, 1fr) 74px; gap: 8px; align-items: center; padding: 5px 9px; color: #849199; font-size: 9px; }
+.duplicate-row { display: grid; min-height: 39px; grid-template-columns: minmax(0, 1fr) 70px 28px; gap: 6px; align-items: center; padding: 5px 9px; color: #849199; font-size: 9px; }
+.duplicate-row.is-current { background: rgba(118,225,215,.045); box-shadow: inset 2px 0 rgba(118,225,215,.55); }
 .duplicate-list li + li { border-top: 1px solid rgba(216,239,241,.055); }
+.duplicate-unhashed-note { margin: 0; padding: 5px 9px; border-bottom: 1px solid rgba(240,184,91,.12); color: #b79c70; background: rgba(240,184,91,.045); font-size: 8px; text-align: center; }
 .duplicate-row-path { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .duplicate-row-path > svg { width: 14px; flex: 0 0 14px; color: #7291a3; }
 .duplicate-row-path > span { display: grid; min-width: 0; }
 .duplicate-row-path strong, .duplicate-row-path small, .duplicate-site-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .duplicate-row-path strong { color: #dce5e7; font-size: 9px; }
 .duplicate-row-path small { margin-top: 2px; color: #59666e; font-size: 8px; }
+.duplicate-site-cell { display: grid; min-width: 0; justify-items: end; gap: 2px; }
 .duplicate-site-name { color: #91a0a7; font-size: 9px; text-align: right; }
+.duplicate-current-badge { padding: 1px 4px; border: 1px solid rgba(118,225,215,.17); border-radius: 99px; color: #91c7c2; font-size: 7px; font-weight: 720; letter-spacing: .04em; line-height: 1.3; text-transform: uppercase; }
+.duplicate-list li .duplicate-jump { display: grid; width: 26px; min-height: 26px; height: 26px; grid-template-columns: 1fr; place-items: center; padding: 0; border: 1px solid rgba(118,225,215,.13); border-radius: 7px; color: #7f969a; background: rgba(118,225,215,.025); }
+.duplicate-list li .duplicate-jump:hover { border-color: rgba(118,225,215,.35); color: var(--accent); background: rgba(118,225,215,.08); }
+.duplicate-list li .duplicate-jump svg { width: 12px; }
+.duplicate-jump-spacer { width: 26px; height: 26px; }
 .inspector-list-state { display: grid; height: 100%; min-height: 100px; place-content: center; justify-items: center; gap: 7px; padding: 12px; color: #748188; font-size: 9px; text-align: center; }
 .inspector-list-state > svg { width: 20px; color: #4e5c64; }
 .inspector-list-state p { max-width: 240px; margin: 0; }

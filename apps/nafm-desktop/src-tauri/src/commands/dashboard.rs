@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  FileContentMatchesPage, Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageLocation, StorageNode,
-  StorageTree,
+  FileContentMatchesPage, Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageFileReveal,
+  StorageLocation, StorageNode, StorageTree,
 };
 use serde::Serialize;
 use tauri::State;
@@ -56,12 +56,58 @@ pub struct StorageTreeResponse {
   root: StorageNode,
 }
 
+impl From<StorageTree> for StorageTreeResponse {
+  fn from(tree: StorageTree) -> Self {
+    Self {
+      site_id: tree.site.id,
+      coverage_target: tree.coverage_target,
+      root: tree.root,
+    }
+  }
+}
+
 #[derive(Serialize)]
 pub struct StorageLocationResponse {
   site_id: String,
   coverage_target: Option<Site>,
   breadcrumbs: Vec<StorageNode>,
   root: StorageNode,
+}
+
+impl From<StorageLocation> for StorageLocationResponse {
+  fn from(location: StorageLocation) -> Self {
+    Self {
+      site_id: location.site.id,
+      coverage_target: location.coverage_target,
+      breadcrumbs: location.breadcrumbs,
+      root: location.root,
+    }
+  }
+}
+
+#[derive(Serialize)]
+pub struct StorageFileRevealResponse {
+  tree: StorageTreeResponse,
+  location: StorageLocationResponse,
+  page: StorageChildrenPage,
+  selected_file: StorageNode,
+}
+
+impl From<StorageFileReveal> for StorageFileRevealResponse {
+  fn from(reveal: StorageFileReveal) -> Self {
+    let StorageFileReveal {
+      tree,
+      location,
+      page,
+      selected_file,
+    } = reveal;
+    Self {
+      tree: StorageTreeResponse::from(tree),
+      location: StorageLocationResponse::from(location),
+      page,
+      selected_file,
+    }
+  }
 }
 
 #[tauri::command]
@@ -139,18 +185,7 @@ pub async fn get_storage_tree(
     None => repository.storage_tree(&site_id, max_depth, max_children).await,
   }
   .map_err(|error| error.to_string())?;
-  let StorageTree {
-    site,
-    coverage_target,
-    root,
-    ..
-  } = tree;
-
-  Ok(StorageTreeResponse {
-    site_id: site.id,
-    coverage_target,
-    root,
-  })
+  Ok(StorageTreeResponse::from(tree))
 }
 
 #[tauri::command]
@@ -176,20 +211,7 @@ pub async fn get_storage_location(
     }
   }
   .map_err(|error| error.to_string())?;
-  let StorageLocation {
-    site,
-    coverage_target,
-    breadcrumbs,
-    root,
-    ..
-  } = location;
-
-  Ok(StorageLocationResponse {
-    site_id: site.id,
-    coverage_target,
-    breadcrumbs,
-    root,
-  })
+  Ok(StorageLocationResponse::from(location))
 }
 
 #[tauri::command]
@@ -228,4 +250,113 @@ pub async fn get_file_content_matches(
     .file_content_matches(&site_id, &path, offset, limit)
     .await
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_storage_file_reveal(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  file_id: String,
+  target_site_id: Option<String>,
+  max_depth: u32,
+  max_children: u32,
+  limit: u64,
+) -> Result<StorageFileRevealResponse, String> {
+  state
+    .repository_for(&expected_workspace)
+    .await?
+    .storage_file_reveal(&file_id, target_site_id.as_deref(), max_depth, max_children, limit)
+    .await
+    .map(StorageFileRevealResponse::from)
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+  use chrono::Utc;
+  use nafm_core::{StorageNodeKind, StorageTree};
+
+  use super::*;
+
+  #[test]
+  fn storage_file_reveal_uses_existing_desktop_tree_and_location_shapes() {
+    let site = Site {
+      id: "source-site".to_owned(),
+      name: "Source".to_owned(),
+      added_at: Utc::now(),
+    };
+    let selected_file = StorageNode {
+      id: "selected-file".to_owned(),
+      name: "selected.bin".to_owned(),
+      path: Some(PathBuf::from("/source/selected.bin")),
+      kind: StorageNodeKind::File,
+      total_bytes: 8,
+      file_count: 1,
+      duplicate_bytes: 0,
+      duplicate_file_count: 1,
+      space_health: Some(50.0),
+      space_healthy_file_equivalents: 0.5,
+      space_total_files: 1,
+      coverage_health: None,
+      coverage_covered_files: 0,
+      coverage_total_files: 0,
+      children: Vec::new(),
+    };
+    let parent = StorageNode {
+      id: "parent".to_owned(),
+      name: "source".to_owned(),
+      path: Some(PathBuf::from("/source")),
+      kind: StorageNodeKind::LocalRoot,
+      total_bytes: 8,
+      file_count: 1,
+      duplicate_bytes: 0,
+      duplicate_file_count: 1,
+      space_health: Some(50.0),
+      space_healthy_file_equivalents: 0.5,
+      space_total_files: 1,
+      coverage_health: None,
+      coverage_covered_files: 0,
+      coverage_total_files: 0,
+      children: vec![selected_file.clone()],
+    };
+    let reveal = StorageFileReveal {
+      tree: StorageTree {
+        site: site.clone(),
+        coverage_target: None,
+        max_depth: 5,
+        max_children: 12,
+        root: parent.clone(),
+      },
+      location: StorageLocation {
+        site: site.clone(),
+        coverage_target: None,
+        max_depth: 5,
+        max_children: 12,
+        breadcrumbs: vec![parent.clone()],
+        root: parent.clone(),
+      },
+      page: StorageChildrenPage {
+        site,
+        coverage_target: None,
+        parent,
+        children: vec![selected_file.clone()],
+        total_children: 1,
+        offset: 0,
+        limit: 6,
+      },
+      selected_file,
+    };
+
+    let json = serde_json::to_value(StorageFileRevealResponse::from(reveal)).unwrap();
+    assert_eq!(json["tree"]["site_id"], "source-site");
+    assert!(json["tree"].get("site").is_none());
+    assert!(json["tree"].get("max_depth").is_none());
+    assert!(json["tree"].get("max_children").is_none());
+    assert_eq!(json["location"]["site_id"], "source-site");
+    assert!(json["location"].get("site").is_none());
+    assert!(json["location"].get("max_depth").is_none());
+    assert!(json["location"].get("max_children").is_none());
+    assert_eq!(json["page"]["limit"], 6);
+    assert_eq!(json["selected_file"]["id"], "selected-file");
+  }
 }

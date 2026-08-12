@@ -30,6 +30,7 @@ pub fn run() {
       commands::dashboard::get_storage_location,
       commands::dashboard::get_storage_children,
       commands::dashboard::get_file_content_matches,
+      commands::dashboard::get_storage_file_reveal,
       commands::scan::start_scan,
       commands::scan::cancel_scan,
       commands::staging::stage_path,

@@ -26,6 +26,8 @@ pub enum NafmError {
   StorageNodeNotNavigable(String),
   #[error("no tracked file or folder found at path: {0}")]
   TrackedPathNotFound(PathBuf),
+  #[error("tracked file not found: {0}")]
+  TrackedFileNotFound(String),
   #[error("no stage history available for {0}")]
   StageHistoryUnavailable(&'static str),
   #[error("site name cannot be empty")]

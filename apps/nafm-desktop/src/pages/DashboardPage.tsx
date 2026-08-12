@@ -117,6 +117,8 @@ export function DashboardPage({
               onRetryChildren={state.retryChildren}
               onLoadPreviousChildren={state.loadPreviousChildren}
               onLoadNextChildren={state.loadNextChildren}
+              onJumpDuplicate={state.jumpToContentMatch}
+              focusSelectedFileRevision={state.duplicateJumpRevision}
               onStage={() => void state.stageSelected()}
               onUnstage={() => state.selectedNode?.path && void state.removeStaged(state.selectedNode.path)}
             />

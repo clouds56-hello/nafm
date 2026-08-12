@@ -15,6 +15,7 @@ import type {
   StageAddReport,
   StageRemoveReport,
   StorageChildrenPage,
+  StorageFileReveal,
   StorageLocation,
   StorageTree,
 } from "./types";
@@ -129,6 +130,24 @@ export function getStorageChildren(
     targetSiteId,
     nodeId,
     offset,
+    limit,
+  });
+}
+
+export function getStorageFileReveal(
+  expectedWorkspace: string,
+  fileId: string,
+  targetSiteId: string | null,
+  maxDepth = 5,
+  maxChildren = 12,
+  limit = 6,
+): Promise<StorageFileReveal> {
+  return invoke<StorageFileReveal>("get_storage_file_reveal", {
+    expectedWorkspace,
+    fileId,
+    targetSiteId,
+    maxDepth,
+    maxChildren,
     limit,
   });
 }

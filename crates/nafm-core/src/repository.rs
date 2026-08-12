@@ -18,8 +18,8 @@ use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
   FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress, ScanStarted, ScanSummary, Site,
   SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageLocation, StorageNode,
-  StorageNodeKind, StorageTree,
+  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation,
+  StorageNode, StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -88,6 +88,14 @@ struct StorageFileRecord {
   covered_by_target: Option<bool>,
   duplicate: bool,
   reclaimable: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RevealFileRecord {
+  id: String,
+  site_id: String,
+  site_folder_id: String,
+  path: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -563,6 +571,30 @@ impl Repository {
       let target_site =
         find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
       storage_children_page(&conn, site, Some(target_site), &node_id, offset, limit)
+    })
+    .await?
+  }
+
+  pub async fn storage_file_reveal(
+    &self,
+    file_id: &str,
+    target_site_selector: Option<&str>,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+  ) -> Result<StorageFileReveal> {
+    let db_path = self.db_path.clone();
+    let file_id = file_id.to_owned();
+    let target_site_selector = target_site_selector.map(str::to_owned);
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let file = reveal_file_record(&conn, &file_id)?.ok_or_else(|| NafmError::TrackedFileNotFound(file_id.clone()))?;
+      let site = find_site(&conn, &file.site_id)?.ok_or_else(|| NafmError::SiteNotFound(file.site_id.clone()))?;
+      let coverage_target = match target_site_selector {
+        Some(selector) => Some(find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector))?),
+        None => None,
+      };
+      storage_file_reveal(&conn, site, coverage_target, &file, max_depth, max_children, page_limit)
     })
     .await?
   }
@@ -1578,6 +1610,24 @@ fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingReco
     .map_err(Into::into)
 }
 
+fn reveal_file_record(conn: &Connection, file_id: &str) -> Result<Option<RevealFileRecord>> {
+  conn
+    .query_row(
+      "select site_id, site_folder_id, path from file_records where id = ?1",
+      params![file_id],
+      |row| {
+        Ok(RevealFileRecord {
+          id: file_id.to_owned(),
+          site_id: row.get(0)?,
+          site_folder_id: row.get(1)?,
+          path: PathBuf::from(row.get::<_, String>(2)?),
+        })
+      },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 fn cached_scan_record(
   conn: &Connection,
   site_id: &str,
@@ -1806,26 +1856,39 @@ fn file_content_matches_page(
   let limit = limit.clamp(1, MAX_FILE_CONTENT_MATCHES_PAGE_SIZE);
   let selected = conn
     .query_row(
-      "select id, hash_algorithm, content_hash, size_bytes
-       from file_records
-       where site_id = ?1 and path = ?2",
+      "select file.id, file.site_id, site.name, file.site_folder_id, folder.kind, file.path, file.size_bytes,
+         file.hash_algorithm, file.content_hash
+       from file_records file
+       join sites site on site.id = file.site_id
+       join site_folders folder on folder.id = file.site_folder_id
+       where file.site_id = ?1 and file.path = ?2",
       params![source_site_id, path.to_string_lossy()],
       |row| {
+        let site_folder_kind = row.get::<_, String>(4)?;
         Ok((
-          row.get::<_, String>(0)?,
-          row.get::<_, String>(1)?,
-          row.get::<_, Option<String>>(2)?,
-          row.get::<_, u64>(3)?,
+          FileContentMatch {
+            file_id: row.get(0)?,
+            site_id: row.get(1)?,
+            site_name: row.get(2)?,
+            site_folder_id: row.get(3)?,
+            site_folder_kind: site_folder_kind_from_db(&site_folder_kind),
+            path: PathBuf::from(row.get::<_, String>(5)?),
+            size_bytes: row.get(6)?,
+            is_current: true,
+          },
+          row.get::<_, String>(7)?,
+          row.get::<_, Option<String>>(8)?,
         ))
       },
     )
     .optional()?
     .ok_or_else(|| NafmError::TrackedPathNotFound(path.to_path_buf()))?;
-  let (selected_file_id, hash_algorithm, Some(content_hash), size_bytes) = selected else {
+  let (selected_match, hash_algorithm, content_hash) = selected;
+  let Some(content_hash) = content_hash else {
     return Ok(FileContentMatchesPage {
       status: FileContentMatchStatus::NotHashed,
-      matches: Vec::new(),
-      total_matches: 0,
+      matches: (offset == 0).then_some(selected_match).into_iter().collect(),
+      total_matches: 1,
       offset,
       limit,
     });
@@ -1834,8 +1897,8 @@ fn file_content_matches_page(
   let total_matches = conn.query_row(
     "select count(*)
      from file_records
-     where id <> ?1 and hash_algorithm = ?2 and content_hash = ?3 and size_bytes = ?4",
-    params![selected_file_id, hash_algorithm, content_hash, size_bytes],
+     where hash_algorithm = ?1 and content_hash = ?2 and size_bytes = ?3",
+    params![hash_algorithm, content_hash, selected_match.size_bytes],
     |row| row.get::<_, u64>(0),
   )?;
   let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
@@ -1844,12 +1907,11 @@ fn file_content_matches_page(
      from file_records file
      join sites site on site.id = file.site_id
      join site_folders folder on folder.id = file.site_folder_id
-     where file.id <> ?1
-       and file.hash_algorithm = ?2
-       and file.content_hash = ?3
-       and file.size_bytes = ?4
+     where file.hash_algorithm = ?1
+       and file.content_hash = ?2
+       and file.size_bytes = ?3
      order by
-       case when file.site_id = ?5 then 0 else 1 end,
+       case when file.id = ?4 then 0 when file.site_id = ?5 then 1 else 2 end,
        site.name,
        file.path,
        file.id
@@ -1858,18 +1920,20 @@ fn file_content_matches_page(
   let matches = stmt
     .query_map(
       params![
-        selected_file_id,
         hash_algorithm,
         content_hash,
-        size_bytes,
+        selected_match.size_bytes,
+        selected_match.file_id,
         source_site_id,
         limit,
         sql_offset,
       ],
       |row| {
         let site_folder_kind = row.get::<_, String>(4)?;
+        let file_id = row.get::<_, String>(0)?;
         Ok(FileContentMatch {
-          file_id: row.get(0)?,
+          is_current: file_id == selected_match.file_id,
+          file_id,
           site_id: row.get(1)?,
           site_name: row.get(2)?,
           site_folder_id: row.get(3)?,
@@ -2585,6 +2649,76 @@ fn storage_location(
     max_children,
     breadcrumbs,
     root: finish_storage_node((*selected).clone(), 0, max_depth, max_children),
+  })
+}
+
+fn storage_file_reveal(
+  conn: &Connection,
+  site: Site,
+  coverage_target: Option<Site>,
+  file: &RevealFileRecord,
+  max_depth: u32,
+  max_children: u32,
+  page_limit: u64,
+) -> Result<StorageFileReveal> {
+  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
+  let selected_node_id = format!("storage:{}:{}", file.site_folder_id, file.path.display());
+  let selected_path = find_storage_node_builder_path(&root, &selected_node_id)
+    .ok_or_else(|| NafmError::TrackedFileNotFound(file.id.clone()))?;
+  let (selected, parent_path) = selected_path
+    .split_last()
+    .expect("a selected storage file path should contain a file");
+  if selected.kind != StorageNodeKind::File {
+    return Err(NafmError::TrackedFileNotFound(file.id.clone()));
+  }
+  let parent = parent_path
+    .last()
+    .expect("a selected storage file should have a parent");
+  let mut child_builders = parent.children.values().collect::<Vec<_>>();
+  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let selected_index = child_builders
+    .iter()
+    .position(|child| child.id == selected.id)
+    .ok_or_else(|| NafmError::TrackedFileNotFound(file.id.clone()))?;
+  let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
+  let offset = selected_index as u64 / page_limit * page_limit;
+  let selected_file = storage_node_without_children(selected);
+  let page_children = child_builders
+    .into_iter()
+    .skip(offset as usize)
+    .take(page_limit as usize)
+    .map(storage_node_without_children)
+    .collect();
+
+  Ok(StorageFileReveal {
+    tree: StorageTree {
+      site: site.clone(),
+      coverage_target: coverage_target.clone(),
+      max_depth,
+      max_children,
+      root: finish_storage_node(root.clone(), 0, max_depth, max_children),
+    },
+    location: StorageLocation {
+      site: site.clone(),
+      coverage_target: coverage_target.clone(),
+      max_depth,
+      max_children,
+      breadcrumbs: parent_path
+        .iter()
+        .map(|node| storage_node_without_children(node))
+        .collect(),
+      root: finish_storage_node((*parent).clone(), 0, max_depth, max_children),
+    },
+    page: StorageChildrenPage {
+      site,
+      coverage_target,
+      parent: storage_node_without_children(parent),
+      children: page_children,
+      total_children: parent.children.len() as u64,
+      offset,
+      limit: page_limit,
+    },
+    selected_file,
   })
 }
 

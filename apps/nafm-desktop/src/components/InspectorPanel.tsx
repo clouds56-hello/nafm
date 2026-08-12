@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import {
   fileName,
   formatBytes,
@@ -7,12 +8,14 @@ import {
   healthColor,
 } from "../lib/format";
 import type {
+  FileContentMatch,
   FileContentMatchesPage,
   HealthMetric,
   StorageChildrenPage,
   StorageNode,
 } from "../lib/types";
 import {
+  ArrowIcon,
   CheckIcon,
   ChevronIcon,
   DriveIcon,
@@ -54,6 +57,8 @@ interface InspectorPanelProps {
   onRetryDuplicates: () => void;
   onPreviousDuplicates: () => void;
   onNextDuplicates: () => void;
+  onJumpDuplicate: (match: FileContentMatch) => void;
+  focusSelectedFileRevision: number;
   onStage: () => void;
   onUnstage: () => void;
   onPointerEnter: () => void;
@@ -132,15 +137,24 @@ export function InspectorPanel({
   onRetryDuplicates,
   onPreviousDuplicates,
   onNextDuplicates,
+  onJumpDuplicate,
+  focusSelectedFileRevision,
   onStage,
   onUnstage,
   onPointerEnter,
   onPointerLeave,
 }: InspectorPanelProps) {
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const DetailIcon = node.kind === "file" ? FileIcon : FolderIcon;
   const stageable = Boolean(node.path) && node.duplicate_bytes > 0 && node.kind !== "smaller_items";
   const inspectingFile = node.kind === "file";
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
+
+  useEffect(() => {
+    if (focusSelectedFileRevision > 0 && !previewing && node.kind === "file") {
+      titleRef.current?.focus({ preventScroll: true });
+    }
+  }, [focusSelectedFileRevision]);
 
   return (
     <aside
@@ -164,7 +178,7 @@ export function InspectorPanel({
         <span className="inspector-item-icon"><DetailIcon /></span>
         <div className="inspector-identity">
           <span className="eyebrow">{previewing ? "HOVER PREVIEW" : "SELECTED"}</span>
-          <h2 id="inspector-title" title={node.name}>
+          <h2 id="inspector-title" ref={titleRef} tabIndex={-1} title={node.name}>
             {node.name || (node.path ? fileName(node.path) : "Site")}
           </h2>
           <p title={node.path ?? undefined}>{node.path ?? "Entire site"}</p>
@@ -224,6 +238,7 @@ export function InspectorPanel({
             onRetry={onRetryDuplicates}
             onPrevious={onPreviousDuplicates}
             onNext={onNextDuplicates}
+            onJumpDuplicate={onJumpDuplicate}
           />
         ) : (
           <FolderContents
@@ -378,6 +393,7 @@ interface DuplicateListProps {
   onRetry: () => void;
   onPrevious: () => void;
   onNext: () => void;
+  onJumpDuplicate: (match: FileContentMatch) => void;
 }
 
 function DuplicateList({
@@ -392,15 +408,17 @@ function DuplicateList({
   onRetry,
   onPrevious,
   onNext,
+  onJumpDuplicate,
 }: DuplicateListProps) {
   const totalMatches = page?.total_matches ?? 0;
+  const rowCapacity = page?.status === "not_hashed" ? 5 : 6;
 
   return (
     <>
       <header>
         <div>
           <span className="eyebrow">{previewing ? "PREVIEW DUPLICATES" : "DUPLICATES"}</span>
-          <h3 id="contents-title">Matches in this workspace</h3>
+          <h3 id="contents-title">Copies in this workspace</h3>
         </div>
         <small aria-live="polite">
           {totalMatches > 0 ? `${rangeStart}–${rangeEnd} of ${totalMatches}` : ""}
@@ -408,7 +426,7 @@ function DuplicateList({
       </header>
 
       <div className="inspector-list-heading duplicate-list-heading" aria-hidden="true">
-        <span>Location</span><span>Site</span>
+        <span>Location</span><span>Site</span><span />
       </div>
 
       <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
@@ -419,40 +437,59 @@ function DuplicateList({
             <p>{error}</p>
             <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
           </div>
-        ) : page?.status === "not_hashed" ? (
-          <div className="inspector-list-state">
-            <FileIcon />
-            <p>This file has not been hashed yet. Scan its site to find duplicates.</p>
-          </div>
         ) : page && page.matches.length === 0 ? (
           <div className="inspector-list-state">
             <FileIcon />
-            <p>No other indexed file has the same content.</p>
+            <p>No indexed copy is available on this page.</p>
           </div>
         ) : (
-          <ul className="inspector-list duplicate-list">
-            {page?.matches.map((match) => {
-              const LocationIcon = match.site_folder_kind === "smb" ? NetworkIcon : DriveIcon;
-              return (
-                <li key={match.file_id}>
-                  <span
-                    className="duplicate-row"
-                    title={match.path}
-                    aria-label={`${match.path}, ${match.site_name} site`}
-                  >
-                    <span className="duplicate-row-path">
-                      <LocationIcon />
-                      <span><strong>{fileName(match.path)}</strong><small>{match.path}</small></span>
+          <>
+            {page?.status === "not_hashed" && (
+              <p className="duplicate-unhashed-note" role="status">
+                Not hashed yet. Scan this site to discover content copies.
+              </p>
+            )}
+            <ul className="inspector-list duplicate-list">
+              {page?.matches.map((match) => {
+                const LocationIcon = match.site_folder_kind === "smb" ? NetworkIcon : DriveIcon;
+                return (
+                  <li key={match.file_id} aria-current={match.is_current ? "location" : undefined}>
+                    <span
+                      className={`duplicate-row ${match.is_current ? "is-current" : ""}`}
+                      title={match.path}
+                    >
+                      <span className="duplicate-row-path">
+                        <LocationIcon />
+                        <span><strong>{fileName(match.path)}</strong><small>{match.path}</small></span>
+                      </span>
+                      <span className="duplicate-site-cell">
+                        <span className="duplicate-site-name" title={match.site_name}>{match.site_name}</span>
+                        {match.is_current && (
+                          <small className="duplicate-current-badge">{previewing ? "Previewed" : "Current"}</small>
+                        )}
+                      </span>
+                      {match.is_current ? (
+                        <span className="duplicate-jump-spacer" aria-hidden="true" />
+                      ) : (
+                        <button
+                          className="duplicate-jump"
+                          type="button"
+                          onClick={() => onJumpDuplicate(match)}
+                          aria-label={`Show ${fileName(match.path)} in ${match.site_name} site`}
+                          title={`Show ${fileName(match.path)} in ${match.site_name}`}
+                        >
+                          <ArrowIcon />
+                        </button>
+                      )}
                     </span>
-                    <span className="duplicate-site-name" title={match.site_name}>{match.site_name}</span>
-                  </span>
-                </li>
-              );
-            })}
-            {Array.from({ length: Math.max(0, 6 - (page?.matches.length ?? 0)) }, (_, index) => (
-              <li className="inspector-row-placeholder" key={`duplicate-placeholder-${index}`} aria-hidden="true" />
-            ))}
-          </ul>
+                  </li>
+                );
+              })}
+              {Array.from({ length: Math.max(0, rowCapacity - (page?.matches.length ?? 0)) }, (_, index) => (
+                <li className="inspector-row-placeholder" key={`duplicate-placeholder-${index}`} aria-hidden="true" />
+              ))}
+            </ul>
+          </>
         )}
         {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading duplicate page" />}
       </div>

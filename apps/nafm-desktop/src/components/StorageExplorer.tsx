@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatHealth, healthColor } from "../lib/format";
 import { getFileContentMatches, getStorageChildren } from "../lib/tauri";
 import type {
+  FileContentMatch,
   FileContentMatchesPage,
   HealthMetric,
   SiteOverview,
@@ -48,6 +49,8 @@ interface StorageExplorerProps {
   onRetryChildren: () => void;
   onLoadPreviousChildren: () => void;
   onLoadNextChildren: () => void;
+  onJumpDuplicate: (match: FileContentMatch) => void;
+  focusSelectedFileRevision: number;
   onStage: () => void;
   onUnstage: () => void;
 }
@@ -158,6 +161,8 @@ export function StorageExplorer({
   onRetryChildren,
   onLoadPreviousChildren,
   onLoadNextChildren,
+  onJumpDuplicate,
+  focusSelectedFileRevision,
   onStage,
   onUnstage,
 }: StorageExplorerProps) {
@@ -533,6 +538,11 @@ export function StorageExplorer({
     onNavigateBreadcrumb(next);
   }, [clearPreview, onNavigateBreadcrumb]);
 
+  const jumpDuplicate = useCallback((match: FileContentMatch) => {
+    clearPreview();
+    onJumpDuplicate(match);
+  }, [clearPreview, onJumpDuplicate]);
+
   useEffect(() => {
     const handleNavigationShortcut = (event: KeyboardEvent) => {
       const targetElement = event.target;
@@ -651,6 +661,8 @@ export function StorageExplorer({
           onRetryDuplicates={retryDuplicates}
           onPreviousDuplicates={loadPreviousDuplicates}
           onNextDuplicates={loadNextDuplicates}
+          onJumpDuplicate={jumpDuplicate}
+          focusSelectedFileRevision={focusSelectedFileRevision}
           onPointerEnter={cancelPreviewRestore}
           onPointerLeave={leavePreview}
           onStage={onStage}

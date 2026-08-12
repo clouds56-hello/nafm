@@ -71,16 +71,19 @@ async fn file_content_matches_orders_same_site_first_and_pages_six_at_a_time() {
     .await
     .unwrap();
   assert_eq!(first_page.status, FileContentMatchStatus::Ready);
-  assert_eq!(first_page.total_matches, 9);
+  assert_eq!(first_page.total_matches, 10);
   assert_eq!(first_page.offset, 0);
   assert_eq!(first_page.limit, 6);
   assert_eq!(first_page.matches.len(), 6);
-  assert!(first_page.matches.iter().all(|item| {
+  assert_eq!(first_page.matches[0].path, selected_path);
+  assert!(first_page.matches[0].is_current);
+  assert!(first_page.matches[1..].iter().all(|item| {
     item.site_id == source_site.id
       && item.site_name == "z-source"
       && item.site_folder_kind == SiteFolderKind::Local
       && item.path != selected_path
       && item.size_bytes == 14
+      && !item.is_current
   }));
 
   let second_page = fixture
@@ -89,24 +92,24 @@ async fn file_content_matches_orders_same_site_first_and_pages_six_at_a_time() {
     .await
     .unwrap();
   assert_eq!(second_page.status, FileContentMatchStatus::Ready);
-  assert_eq!(second_page.total_matches, 9);
+  assert_eq!(second_page.total_matches, 10);
   assert_eq!(second_page.offset, 6);
   assert_eq!(second_page.limit, 6);
-  assert_eq!(second_page.matches.len(), 3);
+  assert_eq!(second_page.matches.len(), 4);
   assert_eq!(
     second_page
       .matches
       .iter()
       .map(|item| item.site_name.as_str())
       .collect::<Vec<_>>(),
-    vec!["z-source", "a-target", "b-target"]
+    vec!["z-source", "z-source", "a-target", "b-target"]
   );
   assert_eq!(
     second_page.matches[0].path,
-    source_root.join("copy-6.bin"),
+    source_root.join("copy-5.bin"),
     "same-site matches should be path ordered before alphabetically earlier sites"
   );
-  assert!(second_page.matches.iter().all(|item| item.path != selected_path));
+  assert!(second_page.matches.iter().all(|item| !item.is_current));
 }
 
 #[tokio::test]
@@ -203,24 +206,26 @@ async fn file_content_matches_preserves_smb_metadata_and_requires_exact_content_
     .await
     .unwrap();
   assert_eq!(page.status, FileContentMatchStatus::Ready);
-  assert_eq!(page.total_matches, 2);
+  assert_eq!(page.total_matches, 3);
   assert_eq!(
     page
       .matches
       .iter()
       .map(|item| item.file_id.as_str())
       .collect::<Vec<_>>(),
-    vec!["smb-copy", local_file_id.as_str()]
+    vec!["smb-selected", "smb-copy", local_file_id.as_str()]
   );
   assert_eq!(page.matches[0].site_name, "network");
   assert_eq!(page.matches[0].site_folder_id, network_folder.id);
   assert_eq!(page.matches[0].site_folder_kind, SiteFolderKind::Smb);
-  assert_eq!(page.matches[0].path, smb_copy_path);
-  assert_eq!(page.matches[1].site_name, "local");
-  assert_eq!(page.matches[1].site_folder_id, local_folder.id);
-  assert_eq!(page.matches[1].site_folder_kind, SiteFolderKind::Local);
-  assert_eq!(page.matches[1].path, local_path);
-  assert!(page.matches.iter().all(|item| item.file_id != "smb-selected"));
+  assert_eq!(page.matches[0].path, selected_path);
+  assert!(page.matches[0].is_current);
+  assert_eq!(page.matches[1].path, smb_copy_path);
+  assert_eq!(page.matches[2].site_name, "local");
+  assert_eq!(page.matches[2].site_folder_id, local_folder.id);
+  assert_eq!(page.matches[2].site_folder_kind, SiteFolderKind::Local);
+  assert_eq!(page.matches[2].path, local_path);
+  assert!(page.matches[1..].iter().all(|item| !item.is_current));
 }
 
 #[tokio::test]
@@ -240,16 +245,27 @@ async fn file_content_matches_reports_not_hashed_and_rejects_untracked_site_path
     )
     .unwrap();
 
-  let page = fixture
+  let first_page = fixture
+    .repo
+    .file_content_matches(&site.id, &selected_path, 0, 6)
+    .await
+    .unwrap();
+  assert_eq!(first_page.status, FileContentMatchStatus::NotHashed);
+  assert_eq!(first_page.matches.len(), 1);
+  assert_eq!(first_page.matches[0].path, selected_path);
+  assert!(first_page.matches[0].is_current);
+  assert_eq!(first_page.total_matches, 1);
+
+  let later_page = fixture
     .repo
     .file_content_matches(&site.id, &selected_path, 12, 0)
     .await
     .unwrap();
-  assert_eq!(page.status, FileContentMatchStatus::NotHashed);
-  assert!(page.matches.is_empty());
-  assert_eq!(page.total_matches, 0);
-  assert_eq!(page.offset, 12);
-  assert_eq!(page.limit, 1);
+  assert_eq!(later_page.status, FileContentMatchStatus::NotHashed);
+  assert!(later_page.matches.is_empty());
+  assert_eq!(later_page.total_matches, 1);
+  assert_eq!(later_page.offset, 12);
+  assert_eq!(later_page.limit, 1);
 
   let missing_path = root.join("missing.bin");
   let missing_error = fixture
@@ -281,6 +297,214 @@ async fn file_content_matches_reports_not_hashed_and_rejects_untracked_site_path
   assert!(matches!(
     missing_site_error,
     NafmError::SiteNotFound(selector) if selector == "missing-site"
+  ));
+}
+
+#[tokio::test]
+async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
+  let fixture = Fixture::new().await;
+  let source_root = fs::canonicalize(fixture.mkdir("reveal-source")).unwrap();
+  let target_root = fs::canonicalize(fixture.mkdir("reveal-target")).unwrap();
+  let camera = source_root.join("year/day/camera");
+  fs::create_dir_all(&camera).unwrap();
+  for (name, size) in [
+    ("largest.bin", 10),
+    ("large.bin", 9),
+    ("medium.bin", 8),
+    ("selected.bin", 7),
+    ("small.bin", 6),
+    ("tiny.bin", 5),
+    ("last.bin", 4),
+  ] {
+    fs::write(camera.join(name), vec![size as u8; size]).unwrap();
+  }
+  let target_path = target_root.join("selected-copy.bin");
+  fs::write(&target_path, vec![7_u8; 7]).unwrap();
+  let source = fixture.repo.create_site("reveal-source").await.unwrap();
+  fixture
+    .add_site_folder(&source.id, &source_root, HiddenPolicy::Include)
+    .await;
+  let target = fixture.repo.create_site("reveal-target").await.unwrap();
+  fixture
+    .add_site_folder(&target.id, &target_root, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+  let selected_path = camera.join("selected.bin");
+  let (selected_file_id, _, _, _) = tracked_file_identity(&fixture.repo, &selected_path);
+
+  let reveal = fixture
+    .repo
+    .storage_file_reveal(&selected_file_id, Some(&target.id), 2, 2, 3)
+    .await
+    .unwrap();
+
+  assert_eq!(reveal.tree.site.id, source.id);
+  assert_eq!(reveal.tree.coverage_target.as_ref().unwrap().id, target.id);
+  assert_eq!(reveal.tree.max_depth, 2);
+  assert_eq!(reveal.tree.max_children, 2);
+  assert_eq!(reveal.location.site.id, source.id);
+  assert_eq!(reveal.location.coverage_target.as_ref().unwrap().id, target.id);
+  assert_eq!(
+    reveal
+      .location
+      .breadcrumbs
+      .iter()
+      .map(|node| node.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["reveal-source", "reveal-source", "year", "day", "camera"]
+  );
+  assert_eq!(reveal.location.root.name, "camera");
+  assert_eq!(reveal.page.parent.id, reveal.location.root.id);
+  assert_eq!(reveal.page.site.id, source.id);
+  assert_eq!(reveal.page.coverage_target.as_ref().unwrap().id, target.id);
+  assert_eq!(reveal.page.total_children, 7);
+  assert_eq!(reveal.page.offset, 3);
+  assert_eq!(reveal.page.limit, 3);
+  assert_eq!(
+    reveal
+      .page
+      .children
+      .iter()
+      .map(|node| node.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["selected.bin", "small.bin", "tiny.bin"]
+  );
+  assert_eq!(reveal.selected_file.name, "selected.bin");
+  assert_eq!(reveal.selected_file.path, Some(selected_path));
+  assert_eq!(reveal.selected_file.kind, StorageNodeKind::File);
+  assert!(reveal.selected_file.children.is_empty());
+  assert_eq!(
+    reveal.page.children[0].id, reveal.selected_file.id,
+    "the containing page should include the exact selected node"
+  );
+
+  let (target_file_id, _, _, _) = tracked_file_identity(&fixture.repo, &target_path);
+  let cross_site_reveal = fixture
+    .repo
+    .storage_file_reveal(&target_file_id, Some(&source.id), 5, 12, 6)
+    .await
+    .unwrap();
+  assert_eq!(cross_site_reveal.tree.site.id, target.id);
+  assert_eq!(cross_site_reveal.tree.coverage_target.as_ref().unwrap().id, source.id);
+  assert_eq!(cross_site_reveal.location.site.id, target.id);
+  assert_eq!(cross_site_reveal.page.site.id, target.id);
+  assert_eq!(cross_site_reveal.selected_file.path, Some(target_path));
+  assert_eq!(
+    cross_site_reveal.page.children[0].id,
+    cross_site_reveal.selected_file.id
+  );
+}
+
+#[tokio::test]
+async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://nas.example.test/share", "sample-user", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  let network = repo.create_site("network").await.unwrap();
+  let network_folder = repo
+    .add_site_folder(
+      &network.id,
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://nas.example.test/share/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let target = repo.create_site("target").await.unwrap();
+  let selected_path = Path::new("smb://nas.example.test/share/Media/Camera/selected.mp4");
+  insert_tracked_file(
+    &repo,
+    "smb-reveal",
+    &network.id,
+    &network_folder.id,
+    selected_path,
+    8,
+    "blake3",
+    Some("selected-hash"),
+  );
+  insert_tracked_file(
+    &repo,
+    "smb-sibling",
+    &network.id,
+    &network_folder.id,
+    Path::new("smb://nas.example.test/share/Media/Camera/sibling.mp4"),
+    4,
+    "blake3",
+    Some("sibling-hash"),
+  );
+
+  let reveal = repo
+    .storage_file_reveal("smb-reveal", Some(&target.id), 5, 12, 6)
+    .await
+    .unwrap();
+
+  assert_eq!(reveal.tree.site.id, network.id);
+  assert_eq!(reveal.tree.coverage_target.as_ref().unwrap().id, target.id);
+  assert_eq!(reveal.location.root.name, "Camera");
+  assert_eq!(
+    reveal.location.root.path,
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))
+  );
+  assert_eq!(reveal.page.offset, 0);
+  assert_eq!(reveal.page.limit, 6);
+  assert_eq!(reveal.page.total_children, 2);
+  assert_eq!(reveal.selected_file.path, Some(selected_path.to_path_buf()));
+  assert_eq!(reveal.selected_file.kind, StorageNodeKind::File);
+  assert!(
+    reveal
+      .page
+      .children
+      .iter()
+      .any(|node| node.id == reveal.selected_file.id)
+  );
+}
+
+#[tokio::test]
+async fn storage_file_reveal_rejects_vanished_files_and_invalid_targets() {
+  let fixture = Fixture::new().await;
+  let root = fs::canonicalize(fixture.mkdir("reveal-errors")).unwrap();
+  let selected_path = root.join("selected.bin");
+  fs::write(&selected_path, b"selected").unwrap();
+  let source = fixture.repo.create_site("reveal-errors").await.unwrap();
+  fixture.add_site_folder(&source.id, &root, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&source.id).await.unwrap();
+  let (file_id, _, _, _) = tracked_file_identity(&fixture.repo, &selected_path);
+
+  let target_error = fixture
+    .repo
+    .storage_file_reveal(&file_id, Some("missing-target"), 5, 12, 6)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    target_error,
+    NafmError::SiteNotFound(selector) if selector == "missing-target"
+  ));
+
+  rusqlite::Connection::open(fixture.repo.db_path())
+    .unwrap()
+    .execute("delete from file_records where id = ?1", rusqlite::params![file_id])
+    .unwrap();
+  let vanished_error = fixture
+    .repo
+    .storage_file_reveal(&file_id, None, 5, 12, 6)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    vanished_error,
+    NafmError::TrackedFileNotFound(id) if id == file_id
   ));
 }
 

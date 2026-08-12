@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelScan,
   getStorageChildren,
+  getStorageFileReveal,
   getStorageLocation,
   getStorageTree,
   loadDashboard,
@@ -15,6 +16,7 @@ import type {
   CleanupPreview,
   Dashboard,
   DuplicateFile,
+  FileContentMatch,
   HealthMetric,
   ScanProgressView,
   ScanTaskEvent,
@@ -28,8 +30,11 @@ import type {
 const CHILDREN_PAGE_SIZE = 6;
 
 interface NavigationEntry {
+  site_id: string;
+  target_site_id: string | null;
   node_id: string;
   offset: number;
+  selected_node_id: string;
 }
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
@@ -47,6 +52,14 @@ function isUnavailableLocationError(message: string): boolean {
 
 function treeKey(siteId: string, targetSiteId: string | null): string {
   return `${siteId}\u0000${targetSiteId ?? ""}`;
+}
+
+function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
+  return left.site_id === right.site_id
+    && left.target_site_id === right.target_site_id
+    && left.node_id === right.node_id
+    && left.offset === right.offset
+    && left.selected_node_id === right.selected_node_id;
 }
 
 function findNode(root: StorageNode, nodeId: string | null): StorageNode | null {
@@ -97,13 +110,16 @@ export function useDashboard(expectedWorkspace: string | null) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [contentRevision, setContentRevision] = useState(0);
+  const [duplicateJumpRevision, setDuplicateJumpRevision] = useState(0);
   const selectedSiteRef = useRef<string | null>(null);
   const targetSiteRef = useRef<string | null>(null);
   const treeRequestRef = useRef(0);
   const treeRequestByKeyRef = useRef<Map<string, number>>(new Map());
+  const treesRef = useRef<Map<string, StorageTree>>(new Map());
   const locationRequestRef = useRef(0);
   const locationRef = useRef<StorageLocation | null>(null);
   const navigationInProgressRef = useRef(false);
+  const navigationOperationRef = useRef(0);
   const childrenRequestRef = useRef(0);
   const childrenLoadingRef = useRef(false);
   const childrenRetryRef = useRef<{ node: StorageNode; offset: number } | null>(null);
@@ -117,12 +133,25 @@ export function useDashboard(expectedWorkspace: string | null) {
     if (workspaceNameRef.current !== expectedWorkspace) {
       locationRequestRef.current += 1;
       childrenRequestRef.current += 1;
+      navigationOperationRef.current += 1;
+      treeRequestRef.current += 1;
+      treeRequestByKeyRef.current.clear();
+      treesRef.current = new Map();
       locationRef.current = null;
+      selectedNodeRef.current = null;
+      childrenPageRef.current = null;
       backHistoryRef.current = [];
       forwardHistoryRef.current = [];
+      setTrees(new Map());
       setLocation(null);
+      setSelectedNodeId(null);
+      setSelectedNode(null);
+      setChildrenPage(null);
+      setChildrenLoading(false);
       setBackHistory([]);
       setForwardHistory([]);
+      navigationInProgressRef.current = false;
+      childrenLoadingRef.current = false;
     }
     workspaceNameRef.current = expectedWorkspace;
   }, [expectedWorkspace]);
@@ -134,6 +163,25 @@ export function useDashboard(expectedWorkspace: string | null) {
   useEffect(() => {
     childrenPageRef.current = childrenPage;
   }, [childrenPage]);
+
+  useEffect(() => {
+    treesRef.current = trees;
+  }, [trees]);
+
+  const currentNavigationEntry = useCallback((): NavigationEntry | null => {
+    const siteId = selectedSiteRef.current;
+    const currentLocation = locationRef.current;
+    if (!siteId || !currentLocation) return null;
+    const currentPage = childrenPageRef.current;
+    const selected = selectedNodeRef.current;
+    return {
+      site_id: siteId,
+      target_site_id: targetSiteRef.current,
+      node_id: currentLocation.root.id,
+      offset: currentPage?.parent.id === currentLocation.root.id ? currentPage.offset : 0,
+      selected_node_id: selected?.id ?? currentLocation.root.id,
+    };
+  }, []);
 
   const loadChildren = useCallback(async (
     siteId: string,
@@ -204,8 +252,6 @@ export function useDashboard(expectedWorkspace: string | null) {
   }, []);
 
   const loadFolderLocation = useCallback(async (
-    siteId: string,
-    targetSiteId: string | null,
     entry: NavigationEntry,
     historyAction: "push" | "back" | "forward" | "reset" | "preserve",
     preserveSelection = false,
@@ -214,11 +260,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     locationRequestRef.current = requestId;
     childrenRequestRef.current += 1;
     const previousLocation = locationRef.current;
-    const previousPage = childrenPageRef.current;
-    const previousEntry = previousLocation ? {
-      node_id: previousLocation.root.id,
-      offset: previousPage?.parent.id === previousLocation.root.id ? previousPage.offset : 0,
-    } : null;
+    const previousEntry = currentNavigationEntry();
+    const requestedWorkspace = workspaceNameRef.current;
     setChildrenLoading(true);
     childrenLoadingRef.current = true;
     setChildrenError(null);
@@ -226,38 +269,55 @@ export function useDashboard(expectedWorkspace: string | null) {
 
     try {
       const [nextLocation, initialPage] = await Promise.all([
-        getStorageLocation(siteId, targetSiteId, entry.node_id),
-        getStorageChildren(siteId, targetSiteId, entry.node_id, entry.offset, CHILDREN_PAGE_SIZE),
+        getStorageLocation(entry.site_id, entry.target_site_id, entry.node_id),
+        getStorageChildren(
+          entry.site_id,
+          entry.target_site_id,
+          entry.node_id,
+          entry.offset,
+          CHILDREN_PAGE_SIZE,
+        ),
       ]);
-      if (locationRequestRef.current !== requestId) {
+      if (locationRequestRef.current !== requestId
+        || workspaceNameRef.current !== requestedWorkspace) {
         return "superseded";
       }
 
       let page = initialPage;
+      let resolvedEntry = entry;
       if (page.total_children > 0 && page.offset >= page.total_children) {
         const lastOffset = Math.floor((page.total_children - 1) / CHILDREN_PAGE_SIZE)
           * CHILDREN_PAGE_SIZE;
         page = await getStorageChildren(
-          siteId,
-          targetSiteId,
+          entry.site_id,
+          entry.target_site_id,
           entry.node_id,
           lastOffset,
           CHILDREN_PAGE_SIZE,
         );
-        if (locationRequestRef.current !== requestId) {
+        if (locationRequestRef.current !== requestId
+          || workspaceNameRef.current !== requestedWorkspace) {
           return "superseded";
         }
+        resolvedEntry = { ...entry, offset: page.offset };
       }
 
       locationRef.current = nextLocation;
       childrenPageRef.current = page;
+      selectedSiteRef.current = entry.site_id;
+      targetSiteRef.current = entry.target_site_id;
+      setActiveSiteId(entry.site_id);
+      setCoverageTargetSiteId(entry.target_site_id);
       setLocation(nextLocation);
       setChildrenPage(page);
 
       const currentSelection = selectedNodeRef.current;
-      const refreshedSelection = preserveSelection && currentSelection
-        ? findNode(nextLocation.root, currentSelection.id)
-          ?? page.children.find((child) => child.id === currentSelection.id)
+      const selectionId = preserveSelection
+        ? entry.selected_node_id || currentSelection?.id
+        : entry.selected_node_id;
+      const refreshedSelection = selectionId
+        ? findNode(nextLocation.root, selectionId)
+          ?? page.children.find((child) => child.id === selectionId)
         : null;
       const nextSelection = refreshedSelection ?? nextLocation.root;
       selectedNodeRef.current = nextSelection;
@@ -268,7 +328,7 @@ export function useDashboard(expectedWorkspace: string | null) {
         backHistoryRef.current = [];
         forwardHistoryRef.current = [];
       } else if (historyAction === "push" && previousEntry
-        && previousEntry.node_id !== nextLocation.root.id) {
+        && !sameNavigationEntry(previousEntry, resolvedEntry)) {
         backHistoryRef.current = [...backHistoryRef.current, previousEntry];
         forwardHistoryRef.current = [];
       } else if (historyAction === "back" && previousEntry) {
@@ -284,7 +344,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     } catch (locationError) {
       const message = errorMessage(locationError);
       const unavailable = isUnavailableLocationError(message);
-      if (locationRequestRef.current === requestId) {
+      if (locationRequestRef.current === requestId
+        && workspaceNameRef.current === requestedWorkspace) {
         if (previousLocation && !(unavailable && (historyAction === "back" || historyAction === "forward"))) {
           setNotice(message);
           setChildrenError(null);
@@ -293,17 +354,19 @@ export function useDashboard(expectedWorkspace: string | null) {
           setTreeError(message);
         }
       }
-      if (locationRequestRef.current !== requestId) {
+      if (locationRequestRef.current !== requestId
+        || workspaceNameRef.current !== requestedWorkspace) {
         return "superseded";
       }
       return unavailable ? "unavailable" : "failed";
     } finally {
-      if (locationRequestRef.current === requestId) {
+      if (locationRequestRef.current === requestId
+        && workspaceNameRef.current === requestedWorkspace) {
         childrenLoadingRef.current = false;
         setChildrenLoading(false);
       }
     }
-  }, []);
+  }, [currentNavigationEntry]);
 
   useEffect(() => {
     selectedSiteRef.current = activeSiteId;
@@ -319,6 +382,9 @@ export function useDashboard(expectedWorkspace: string | null) {
     foreground = false,
     resetChildrenPage = false,
   ) => {
+    navigationOperationRef.current += 1;
+    navigationInProgressRef.current = false;
+    locationRequestRef.current += 1;
     const requestKey = treeKey(siteId, targetSiteId);
     const requestId = treeRequestRef.current + 1;
     treeRequestRef.current = requestId;
@@ -346,9 +412,13 @@ export function useDashboard(expectedWorkspace: string | null) {
           : 0;
         const locationRequestId = locationRequestRef.current + 1;
         let locationResult = await loadFolderLocation(
-          siteId,
-          targetSiteId,
-          { node_id: nodeId, offset: pageOffset },
+          {
+            site_id: siteId,
+            target_site_id: targetSiteId,
+            node_id: nodeId,
+            offset: pageOffset,
+            selected_node_id: selectedNodeRef.current?.id ?? nodeId,
+          },
           currentLocation && !resetChildrenPage ? "preserve" : "reset",
           Boolean(currentLocation && !resetChildrenPage),
         );
@@ -356,9 +426,13 @@ export function useDashboard(expectedWorkspace: string | null) {
           && nodeId !== tree.root.id
           && selectedSiteRef.current === siteId && targetSiteRef.current === targetSiteId) {
           locationResult = await loadFolderLocation(
-            siteId,
-            targetSiteId,
-            { node_id: tree.root.id, offset: 0 },
+            {
+              site_id: siteId,
+              target_site_id: targetSiteId,
+              node_id: tree.root.id,
+              offset: 0,
+              selected_node_id: tree.root.id,
+            },
             "reset",
           );
         }
@@ -510,6 +584,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     targetSiteRef.current = nextTarget;
     locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
+    navigationOperationRef.current += 1;
+    navigationInProgressRef.current = false;
     childrenRetryRef.current = null;
     setSelectedNodeId(null);
     setSelectedNode(null);
@@ -533,9 +609,13 @@ export function useDashboard(expectedWorkspace: string | null) {
       setTreeLoading(true);
       setTreeError(null);
       const locationResult = await loadFolderLocation(
-        siteId,
-        nextTarget,
-        { node_id: cachedTree.root.id, offset: 0 },
+        {
+          site_id: siteId,
+          target_site_id: nextTarget,
+          node_id: cachedTree.root.id,
+          offset: 0,
+          selected_node_id: cachedTree.root.id,
+        },
         "reset",
       );
       if (selectedSiteRef.current === siteId && targetSiteRef.current === nextTarget) {
@@ -552,6 +632,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     if (!sourceSiteId || targetSiteId === sourceSiteId) return;
     locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
+    navigationOperationRef.current += 1;
+    navigationInProgressRef.current = false;
     childrenRetryRef.current = null;
     setChildrenError(null);
     setChildrenLoading(false);
@@ -577,6 +659,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     targetSiteRef.current = previousSourceSiteId;
     locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
+    navigationOperationRef.current += 1;
+    navigationInProgressRef.current = false;
     childrenRetryRef.current = null;
     setSelectedNodeId(null);
     setSelectedNode(null);
@@ -638,9 +722,13 @@ export function useDashboard(expectedWorkspace: string | null) {
     if (openable) {
       if (childrenLoadingRef.current || locationRef.current?.root.id === node.id) return;
       void loadFolderLocation(
-        siteId,
-        targetSiteRef.current,
-        { node_id: node.id, offset: 0 },
+        {
+          site_id: siteId,
+          target_site_id: targetSiteRef.current,
+          node_id: node.id,
+          offset: 0,
+          selected_node_id: node.id,
+        },
         "push",
       );
     } else {
@@ -651,19 +739,21 @@ export function useDashboard(expectedWorkspace: string | null) {
   }, [loadFolderLocation]);
 
   const navigateHistory = useCallback(async (direction: "back" | "forward") => {
-    const siteId = selectedSiteRef.current;
-    if (!siteId || childrenLoadingRef.current || navigationInProgressRef.current) return;
+    if (!selectedSiteRef.current || childrenLoadingRef.current || navigationInProgressRef.current) return;
+    const operationId = navigationOperationRef.current + 1;
+    navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
     try {
-      while (selectedSiteRef.current === siteId) {
+      while (true) {
         const history = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
         const entry = history.at(-1);
         if (!entry) return;
-        const result = await loadFolderLocation(siteId, targetSiteRef.current, entry, direction);
+        const result = await loadFolderLocation(entry, direction);
         if (result !== "unavailable") return;
 
         const currentHistory = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
-        if (currentHistory.at(-1)?.node_id !== entry.node_id) return;
+        const currentEntry = currentHistory.at(-1);
+        if (!currentEntry || !sameNavigationEntry(currentEntry, entry)) return;
         const nextHistory = currentHistory.slice(0, -1);
         if (direction === "back") {
           backHistoryRef.current = nextHistory;
@@ -678,7 +768,9 @@ export function useDashboard(expectedWorkspace: string | null) {
         }
       }
     } finally {
-      navigationInProgressRef.current = false;
+      if (navigationOperationRef.current === operationId) {
+        navigationInProgressRef.current = false;
+      }
     }
   }, [loadFolderLocation]);
 
@@ -694,9 +786,13 @@ export function useDashboard(expectedWorkspace: string | null) {
     const siteId = selectedSiteRef.current;
     if (!siteId || childrenLoadingRef.current || node.id === locationRef.current?.root.id) return;
     void loadFolderLocation(
-      siteId,
-      targetSiteRef.current,
-      { node_id: node.id, offset: 0 },
+      {
+        site_id: siteId,
+        target_site_id: targetSiteRef.current,
+        node_id: node.id,
+        offset: 0,
+        selected_node_id: node.id,
+      },
       "push",
     );
   }, [loadFolderLocation]);
@@ -751,6 +847,97 @@ export function useDashboard(expectedWorkspace: string | null) {
       true,
     );
   }, [childrenPage, loadChildren]);
+
+  const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
+    const workspaceName = workspaceNameRef.current;
+    const currentSiteId = selectedSiteRef.current;
+    const currentDashboard = dashboard;
+    if (!workspaceName || !currentSiteId || !currentDashboard || navigationInProgressRef.current) return;
+
+    const currentTarget = targetSiteRef.current;
+    const preferredTarget = currentTarget && currentTarget !== match.site_id
+      ? currentTarget
+      : currentSiteId !== match.site_id
+        ? currentSiteId
+        : null;
+    const destinationTarget = preferredTarget
+      ?? currentDashboard.sites.find((site) => site.id !== match.site_id)?.id
+      ?? null;
+    const previousEntry = currentNavigationEntry();
+    const requestId = locationRequestRef.current + 1;
+    const operationId = navigationOperationRef.current + 1;
+    const requestedWorkspace = workspaceName;
+    locationRequestRef.current = requestId;
+    childrenRequestRef.current += 1;
+    navigationOperationRef.current = operationId;
+    navigationInProgressRef.current = true;
+    setChildrenLoading(true);
+    childrenLoadingRef.current = true;
+    setNotice(null);
+
+    try {
+      const reveal = await getStorageFileReveal(
+        requestedWorkspace,
+        match.file_id,
+        destinationTarget,
+      );
+      if (locationRequestRef.current !== requestId
+        || navigationOperationRef.current !== operationId
+        || workspaceNameRef.current !== requestedWorkspace) return;
+
+      const destinationEntry: NavigationEntry = {
+        site_id: reveal.tree.site_id,
+        target_site_id: reveal.tree.coverage_target?.id ?? null,
+        node_id: reveal.location.root.id,
+        offset: reveal.page.offset,
+        selected_node_id: reveal.selected_file.id,
+      };
+
+      treesRef.current = new Map(treesRef.current).set(
+        treeKey(destinationEntry.site_id, destinationEntry.target_site_id),
+        reveal.tree,
+      );
+      setTrees(treesRef.current);
+      selectedSiteRef.current = destinationEntry.site_id;
+      targetSiteRef.current = destinationEntry.target_site_id;
+      locationRef.current = reveal.location;
+      childrenPageRef.current = reveal.page;
+      selectedNodeRef.current = reveal.selected_file;
+      childrenRequestRef.current += 1;
+      childrenRetryRef.current = null;
+
+      setActiveSiteId(destinationEntry.site_id);
+      setCoverageTargetSiteId(destinationEntry.target_site_id);
+      setTreeLoading(false);
+      setLocation(reveal.location);
+      setChildrenPage(reveal.page);
+      setChildrenError(null);
+      setSelectedNodeId(reveal.selected_file.id);
+      setSelectedNode(reveal.selected_file);
+      setDuplicateJumpRevision((current) => current + 1);
+      setTreeError(null);
+
+      if (previousEntry && !sameNavigationEntry(previousEntry, destinationEntry)) {
+        backHistoryRef.current = [...backHistoryRef.current, previousEntry];
+      }
+      forwardHistoryRef.current = [];
+      setBackHistory(backHistoryRef.current);
+      setForwardHistory([]);
+    } catch (revealError) {
+      if (locationRequestRef.current === requestId
+        && workspaceNameRef.current === requestedWorkspace) {
+        setNotice(errorMessage(revealError));
+      }
+    } finally {
+      if (navigationOperationRef.current === operationId) {
+        navigationInProgressRef.current = false;
+      }
+      if (locationRequestRef.current === requestId) {
+        childrenLoadingRef.current = false;
+        setChildrenLoading(false);
+      }
+    }
+  }, [currentNavigationEntry, dashboard]);
 
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
     setDashboard((current) => current ? {
@@ -837,6 +1024,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     location,
     selectedNode: activeSelectedNode,
     selectNode,
+    jumpToContentMatch,
+    duplicateJumpRevision,
     childrenPage,
     childrenLoading,
     childrenError,
@@ -895,9 +1084,11 @@ export function useDashboard(expectedWorkspace: string | null) {
     coverageTargetSiteId,
     contentRevision,
     dashboard,
+    duplicateJumpRevision,
     error,
     healthMetric,
     isSelectedStaged,
+    jumpToContentMatch,
     loading,
     location,
     notice,
