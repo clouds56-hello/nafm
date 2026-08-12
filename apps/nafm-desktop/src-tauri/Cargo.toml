@@ -22,4 +22,9 @@ chrono.workspace = true
 nafm-core = { path = "../../../crates/nafm-core" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

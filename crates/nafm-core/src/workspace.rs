@@ -1,8 +1,11 @@
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::{NafmError, Result};
 use crate::hash::HashAlgorithm;
@@ -98,9 +101,13 @@ impl WorkspaceManager {
 
   pub async fn ensure_default_workspace(&self, hash_algorithm: Option<Arc<dyn HashAlgorithm>>) -> Result<()> {
     if !self.workspace_exists(DEFAULT_WORKSPACE_NAME)? {
-      self
+      let result = self
         .create_workspace(DEFAULT_WORKSPACE_NAME, false, hash_algorithm)
-        .await?;
+        .await;
+      match result {
+        Ok(_) | Err(NafmError::WorkspaceAlreadyExists(_)) => {}
+        Err(error) => return Err(error),
+      }
     }
     Ok(())
   }
@@ -111,9 +118,9 @@ impl WorkspaceManager {
       return Err(NafmError::WorkspaceNotFound(name));
     }
 
-    let mut config = self.load_config()?;
-    config.active_workspace = Some(name);
-    self.store_config(&config)
+    self.store_config(&WorkspaceConfig {
+      active_workspace: Some(name),
+    })
   }
 
   pub async fn create_workspace(
@@ -124,16 +131,41 @@ impl WorkspaceManager {
   ) -> Result<PathBuf> {
     let name = normalize_workspace_name(name)?;
     let cache_path = self.workspace_db_path(&name)?;
-    Repository::open(RepositoryOptions {
-      cache_path: cache_path.clone(),
+    std::fs::create_dir_all(self.workspaces_dir())?;
+    match std::fs::symlink_metadata(&cache_path) {
+      Ok(_) => return Err(NafmError::WorkspaceAlreadyExists(name)),
+      Err(error) if error.kind() == ErrorKind::NotFound => {}
+      Err(error) => return Err(error.into()),
+    }
+
+    let temporary_path = self.workspaces_dir().join(format!(".workspace-{}.tmp", Uuid::new_v4()));
+    let repository = Repository::open(RepositoryOptions {
+      cache_path: temporary_path.clone(),
       hash_algorithm,
     })
-    .await?;
+    .await;
+    if let Err(error) = repository {
+      let _ = std::fs::remove_file(&temporary_path);
+      return Err(error);
+    }
+    let link_result = std::fs::hard_link(&temporary_path, &cache_path);
+    let _ = std::fs::remove_file(&temporary_path);
+    match link_result {
+      Ok(()) => {}
+      Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+        return Err(NafmError::WorkspaceAlreadyExists(name));
+      }
+      Err(error) => return Err(error.into()),
+    }
 
     if activate {
-      let mut config = self.load_config()?;
-      config.active_workspace = Some(name);
-      self.store_config(&config)?;
+      let config = WorkspaceConfig {
+        active_workspace: Some(name),
+      };
+      if let Err(error) = self.store_config(&config) {
+        let _ = std::fs::remove_file(&cache_path);
+        return Err(error);
+      }
     }
 
     Ok(cache_path)
@@ -148,9 +180,23 @@ impl WorkspaceManager {
   }
 
   fn store_config(&self, config: &WorkspaceConfig) -> Result<()> {
-    std::fs::create_dir_all(&self.root_dir)?;
-    std::fs::write(self.config_path(), serde_json::to_vec_pretty(config)?)?;
-    Ok(())
+    fs::create_dir_all(&self.root_dir)?;
+    let destination = self.config_path();
+    let temporary_path = self.root_dir.join(format!(".config.{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+      let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary_path)?;
+      let mut contents = serde_json::to_vec_pretty(config)?;
+      contents.push(b'\n');
+      file.write_all(&contents)?;
+      file.sync_all()?;
+      drop(file);
+      fs::rename(&temporary_path, destination)?;
+      Ok(())
+    })();
+    if result.is_err() {
+      let _ = fs::remove_file(temporary_path);
+    }
+    result
   }
 }
 

@@ -286,18 +286,80 @@ impl Repository {
         return Err(NafmError::EmptySiteName);
       }
 
-      let conn = Connection::open(db_path)?;
-      let now = Utc::now();
-      let site = Site {
-        id: Uuid::new_v4().to_string(),
-        name,
-        added_at: now,
-      };
-      conn.execute(
-        "insert into sites (id, name, added_at) values (?1, ?2, ?3)",
-        params![site.id, site.name, site.added_at],
-      )?;
-      Ok(site)
+      let conn = open_connection(db_path)?;
+      with_immediate_transaction(&conn, || {
+        if find_site_by_name(&conn, &name)?.is_some() {
+          return Err(NafmError::SiteAlreadyExists(name.clone()));
+        }
+        let now = Utc::now();
+        let site = Site {
+          id: Uuid::new_v4().to_string(),
+          name,
+          added_at: now,
+        };
+        conn.execute(
+          "insert into sites (id, name, added_at) values (?1, ?2, ?3)",
+          params![site.id, site.name, site.added_at],
+        )?;
+        Ok(site)
+      })
+    })
+    .await?
+  }
+
+  pub async fn rename_site(&self, site_selector: &str, new_name: &str) -> Result<Site> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let new_name = new_name.trim().to_owned();
+    task::spawn_blocking(move || {
+      if new_name.is_empty() {
+        return Err(NafmError::EmptySiteName);
+      }
+
+      let conn = open_connection(db_path)?;
+      with_immediate_transaction(&conn, || {
+        let mut site =
+          find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
+        if find_site_by_name(&conn, &new_name)?.is_some_and(|existing| existing.id != site.id) {
+          return Err(NafmError::SiteAlreadyExists(new_name.clone()));
+        }
+        conn.execute("update sites set name = ?1 where id = ?2", params![new_name, site.id])?;
+        site.name = new_name;
+        Ok(site)
+      })
+    })
+    .await?
+  }
+
+  pub async fn remove_site(&self, site_selector: &str) -> Result<Site> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_immediate_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
+        conn.execute("delete from sites where id = ?1", params![site.id])?;
+        Ok(site)
+      })
+    })
+    .await?
+  }
+
+  pub async fn remove_site_folder(&self, site_folder_id: &str) -> Result<SiteFolder> {
+    let db_path = self.db_path.clone();
+    let site_folder_id = site_folder_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_immediate_transaction(&conn, || {
+        let site_folder = find_site_folder(&conn, &site_folder_id)?
+          .ok_or_else(|| NafmError::SiteFolderNotFound(site_folder_id.clone()))?;
+        conn.execute("delete from site_folders where id = ?1", params![site_folder.id])?;
+        conn.execute(
+          "delete from site_scan_state where site_id = ?1",
+          params![site_folder.site_id],
+        )?;
+        Ok(site_folder)
+      })
     })
     .await?
   }
@@ -307,7 +369,7 @@ impl Repository {
     let credential_store = self.credential_store.clone();
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
       let (kind, path) = resolve_site_folder_location(&request.path, &credential_store)?;
       let now = Utc::now();
@@ -319,19 +381,25 @@ impl Repository {
         hidden_policy: request.hidden_policy,
         added_at: now,
       };
-      conn.execute(
-        "insert into site_folders (id, site_id, kind, path, hidden_policy, added_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-          site_folder.id,
-          site_folder.site_id,
-          site_folder_kind_to_db(site_folder.kind),
-          site_folder.path.to_string_lossy(),
-          hidden_policy_to_db(site_folder.hidden_policy),
-          site_folder.added_at
-        ],
-      )?;
-      Ok(site_folder)
+      with_immediate_transaction(&conn, || {
+        conn.execute(
+          "insert into site_folders (id, site_id, kind, path, hidden_policy, added_at)
+           values (?1, ?2, ?3, ?4, ?5, ?6)",
+          params![
+            site_folder.id,
+            site_folder.site_id,
+            site_folder_kind_to_db(site_folder.kind),
+            site_folder.path.to_string_lossy(),
+            hidden_policy_to_db(site_folder.hidden_policy),
+            site_folder.added_at
+          ],
+        )?;
+        conn.execute(
+          "delete from site_scan_state where site_id = ?1",
+          params![site_folder.site_id],
+        )?;
+        Ok(site_folder)
+      })
     })
     .await?
   }
@@ -339,7 +407,7 @@ impl Repository {
   pub async fn list_sites(&self) -> Result<Vec<Site>> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       list_sites(&conn)
     })
     .await?
@@ -349,7 +417,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site_id = match site_selector {
         Some(selector) => Some(
           find_site(&conn, &selector)?
@@ -366,7 +434,7 @@ impl Repository {
   pub async fn site_overviews(&self) -> Result<Vec<SiteOverview>> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       list_sites(&conn)?
         .into_iter()
         .map(|site| site_overview(&conn, site))
@@ -379,7 +447,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       site_overview(&conn, site)
     })
@@ -390,7 +458,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       storage_tree(&conn, site, None, max_depth, max_children)
     })
@@ -408,7 +476,7 @@ impl Repository {
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       let target_site =
         find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
@@ -428,7 +496,7 @@ impl Repository {
     let site_selector = site_selector.to_owned();
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       storage_children_page(&conn, site, None, &node_id, offset, limit)
     })
@@ -448,7 +516,7 @@ impl Repository {
     let target_site_selector = target_site_selector.to_owned();
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       let target_site =
         find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
@@ -461,7 +529,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site_id = match site_selector {
         Some(selector) => Some(
           find_site(&conn, &selector)?
@@ -570,7 +638,7 @@ impl Repository {
     let selector = selector.to_owned();
     let lookup_db_path = db_path.clone();
     let (site, site_folders) = task::spawn_blocking(move || {
-      let conn = Connection::open(&lookup_db_path)?;
+      let conn = open_connection(&lookup_db_path)?;
       let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
       let site_folders = list_site_folders(&conn, Some(&site.id))?;
       Ok::<_, NafmError>((site, site_folders))
@@ -585,7 +653,7 @@ impl Repository {
 
     let hash_algorithm = self.hash_algorithm.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(&db_path)?;
+      let conn = open_connection(&db_path)?;
       scan_site_blocking(
         &conn,
         &db_path,
@@ -641,7 +709,7 @@ impl Repository {
     let preparation_site = site.clone();
     let hash_algorithm_name = self.hash_algorithm.name().to_owned();
     let mut preparation = task::spawn_blocking(move || {
-      let conn = Connection::open(preparation_db_path)?;
+      let conn = open_connection(preparation_db_path)?;
       prepare_scan(
         &conn,
         &preparation_site,
@@ -743,7 +811,7 @@ impl Repository {
     let hash_algorithm_name = self.hash_algorithm.name().to_owned();
     let scan_time = Utc::now();
     let (removed, duplicate_groups) = task::spawn_blocking(move || {
-      let conn = Connection::open(finalize_db_path)?;
+      let conn = open_connection(finalize_db_path)?;
       replace_site_file_records_atomically(&conn, &finalize_site, &pending_records, &hash_algorithm_name, scan_time)
     })
     .await??;
@@ -767,7 +835,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let site_id = match site_selector {
         Some(selector) => Some(
           find_site(&conn, &selector)?
@@ -790,7 +858,7 @@ impl Repository {
     let source_site_selector = source_site_selector.to_owned();
     let target_site_selector = target_site_selector.to_owned();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let source_site = find_site(&conn, &source_site_selector)?
         .ok_or_else(|| NafmError::SiteNotFound(source_site_selector.clone()))?;
       let target_site = find_site(&conn, &target_site_selector)?
@@ -804,7 +872,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let path = path.to_path_buf();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let (canonical_path, is_remote) = normalize_user_location(&path)?;
       stage_add_path(&conn, &canonical_path, is_remote)
     })
@@ -814,7 +882,7 @@ impl Repository {
   pub async fn stage_commit_dry_run(&self) -> Result<StageCommitDryRun> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       stage_commit_dry_run(&conn)
     })
     .await?
@@ -824,7 +892,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     let path = path.to_path_buf();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       let (canonical_path, is_remote) = normalize_user_location(&path)?;
       stage_remove_path(&conn, &canonical_path, is_remote)
     })
@@ -834,7 +902,7 @@ impl Repository {
   pub async fn stage_reset(&self) -> Result<StageResetReport> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       stage_reset(&conn)
     })
     .await?
@@ -843,7 +911,7 @@ impl Repository {
   pub async fn stage_undo(&self) -> Result<StageHistoryReport> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       stage_undo(&conn)
     })
     .await?
@@ -852,7 +920,7 @@ impl Repository {
   pub async fn stage_redo(&self) -> Result<StageHistoryReport> {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       stage_redo(&conn)
     })
     .await?
@@ -867,7 +935,7 @@ impl Repository {
         return Err(NafmError::CachePathHasNoParent(db_path));
       }
 
-      let conn = Connection::open(db_path)?;
+      let conn = open_connection(db_path)?;
       conn.execute_batch(
         "
         pragma foreign_keys = on;
@@ -951,6 +1019,26 @@ impl Repository {
       Ok(())
     })
     .await?
+  }
+}
+
+fn open_connection(path: impl AsRef<Path>) -> Result<Connection> {
+  let conn = Connection::open(path)?;
+  conn.pragma_update(None, "foreign_keys", "on")?;
+  Ok(conn)
+}
+
+fn with_immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+  conn.execute_batch("begin immediate transaction")?;
+  match operation() {
+    Ok(value) => {
+      conn.execute_batch("commit")?;
+      Ok(value)
+    }
+    Err(error) => {
+      let _ = conn.execute_batch("rollback");
+      Err(error)
+    }
   }
 }
 
@@ -1134,7 +1222,7 @@ async fn cache_hashed_file(
   let hash_algorithm = hash_algorithm.to_owned();
   let content_hash = content_hash.to_owned();
   task::spawn_blocking(move || {
-    let conn = Connection::open(db_path)?;
+    let conn = open_connection(db_path)?;
     upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm, &content_hash)
   })
   .await?
@@ -1281,7 +1369,7 @@ fn hash_files_in_parallel(
     let (sender, receiver) = mpsc::channel::<(usize, FileProbe, String)>();
     let writer_progress_context = Arc::clone(progress_context);
     let writer = scope.spawn(move || -> Result<Vec<(usize, String)>> {
-      let conn = Connection::open(writer_db_path)?;
+      let conn = open_connection(writer_db_path)?;
       let mut hashed_records = Vec::with_capacity(hash_targets.len());
       for (index, file, content_hash) in receiver {
         upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm_name, &content_hash)?;
@@ -2761,6 +2849,32 @@ fn find_site(conn: &Connection, selector: &str) -> Result<Option<Site>> {
        where id = ?1 or name = ?1",
       params![selector],
       site_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn find_site_by_name(conn: &Connection, name: &str) -> Result<Option<Site>> {
+  conn
+    .query_row(
+      "select id, name, added_at
+       from sites
+       where name = ?1",
+      params![name],
+      site_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn find_site_folder(conn: &Connection, id: &str) -> Result<Option<SiteFolder>> {
+  conn
+    .query_row(
+      "select id, site_id, kind, path, hidden_policy, added_at
+       from site_folders
+       where id = ?1",
+      params![id],
+      site_folder_from_row,
     )
     .optional()
     .map_err(Into::into)

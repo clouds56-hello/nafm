@@ -95,6 +95,170 @@ async fn site_overview_has_no_scan_timestamp_before_files_are_tracked() {
 }
 
 #[tokio::test]
+async fn rename_site_preserves_identity_and_rejects_name_conflicts() {
+  let fixture = Fixture::new().await;
+  let original = fixture.repo.create_site("camera").await.unwrap();
+  fixture.repo.create_site("archive").await.unwrap();
+  assert!(matches!(
+    fixture.repo.create_site("archive").await.unwrap_err(),
+    NafmError::SiteAlreadyExists(name) if name == "archive"
+  ));
+
+  let renamed = fixture.repo.rename_site(&original.id, "media").await.unwrap();
+
+  assert_eq!(renamed.id, original.id);
+  assert_eq!(renamed.added_at, original.added_at);
+  assert_eq!(renamed.name, "media");
+  assert!(matches!(
+    fixture.repo.rename_site(&renamed.id, "archive").await.unwrap_err(),
+    NafmError::SiteAlreadyExists(name) if name == "archive"
+  ));
+  assert!(matches!(
+    fixture.repo.rename_site(&renamed.id, "  ").await.unwrap_err(),
+    NafmError::EmptySiteName
+  ));
+  assert_eq!(
+    fixture.repo.site_overview(&renamed.id).await.unwrap().site.name,
+    "media"
+  );
+}
+
+#[tokio::test]
+async fn remove_site_folder_cascades_index_data_but_keeps_source_and_allows_empty_site() {
+  let fixture = Fixture::new().await;
+  let first = fixture.mkdir("first-root");
+  let second = fixture.mkdir("second-root");
+  let first_file = first.join("one.bin");
+  let second_file = second.join("two.bin");
+  fs::write(&first_file, b"same-content").unwrap();
+  fs::write(&second_file, b"same-content").unwrap();
+  let site = fixture.repo.create_site("media").await.unwrap();
+  let first_folder = fixture
+    .repo
+    .add_site_folder(
+      &site.id,
+      AddSiteFolderRequest {
+        path: first.clone(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let second_folder = fixture
+    .repo
+    .add_site_folder(
+      &site.id,
+      AddSiteFolderRequest {
+        path: second.clone(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  fixture.repo.stage_add_path(&first_file).await.unwrap();
+  insert_scan_cache_entry(&fixture.repo, &site.id, &first_folder.id, &first_file);
+
+  let removed = fixture.repo.remove_site_folder(&first_folder.id).await.unwrap();
+
+  assert_eq!(removed.id, first_folder.id);
+  assert!(first_file.is_file());
+  assert!(second_file.is_file());
+  assert_eq!(database_count(&fixture.repo, "site_folders", "id", &first_folder.id), 0);
+  assert_eq!(
+    database_count(&fixture.repo, "file_records", "site_folder_id", &first_folder.id),
+    0
+  );
+  assert_eq!(
+    database_count(&fixture.repo, "scan_cache_entries", "site_folder_id", &first_folder.id),
+    0
+  );
+  assert_eq!(table_count(&fixture.repo, "stage_entries"), 0);
+  assert_eq!(table_count(&fixture.repo, "stage_snapshot_files"), 0);
+  assert_eq!(database_count(&fixture.repo, "site_scan_state", "site_id", &site.id), 0);
+  assert_eq!(fixture.repo.list_site_folders(Some(&site.id)).await.unwrap().len(), 1);
+
+  fixture.repo.remove_site_folder(&second_folder.id).await.unwrap();
+  assert!(fixture.repo.list_site_folders(Some(&site.id)).await.unwrap().is_empty());
+  assert_eq!(fixture.repo.site_overview(&site.id).await.unwrap().site.id, site.id);
+}
+
+fn insert_scan_cache_entry(repo: &Repository, site_id: &str, site_folder_id: &str, path: &Path) {
+  rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .execute(
+      "insert into scan_cache_entries (
+        site_id, site_folder_id, path, size_bytes, modified_unix_nanos,
+        hash_algorithm, content_hash, cached_at
+      ) values (?1, ?2, ?3, 12, 0, 'blake3', 'cached-hash', '2026-01-01T00:00:00Z')",
+      rusqlite::params![site_id, site_folder_id, path.to_string_lossy()],
+    )
+    .unwrap();
+}
+
+fn database_count(repo: &Repository, table: &str, column: &str, value: &str) -> u64 {
+  let query = format!("select count(*) from {table} where {column} = ?1");
+  rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .query_row(&query, rusqlite::params![value], |row| row.get(0))
+    .unwrap()
+}
+
+fn table_count(repo: &Repository, table: &str) -> u64 {
+  let query = format!("select count(*) from {table}");
+  rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .query_row(&query, [], |row| row.get(0))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn remove_site_cascades_all_site_owned_data_without_deleting_source_files() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("remove-site-root");
+  let first_file = root.join("one.bin");
+  let second_file = root.join("two.bin");
+  fs::write(&first_file, b"same-content").unwrap();
+  fs::write(&second_file, b"same-content").unwrap();
+  let site = fixture.repo.create_site("temporary").await.unwrap();
+  let folder = fixture
+    .repo
+    .add_site_folder(
+      &site.id,
+      AddSiteFolderRequest {
+        path: root.clone(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  fixture.repo.stage_add_path(&first_file).await.unwrap();
+  insert_scan_cache_entry(&fixture.repo, &site.id, &folder.id, &first_file);
+
+  let removed = fixture.repo.remove_site(&site.id).await.unwrap();
+
+  assert_eq!(removed.id, site.id);
+  assert!(root.is_dir());
+  assert!(first_file.is_file());
+  assert!(second_file.is_file());
+  assert_eq!(database_count(&fixture.repo, "sites", "id", &site.id), 0);
+  assert_eq!(database_count(&fixture.repo, "site_folders", "site_id", &site.id), 0);
+  assert_eq!(database_count(&fixture.repo, "file_records", "site_id", &site.id), 0);
+  assert_eq!(
+    database_count(&fixture.repo, "scan_cache_entries", "site_id", &site.id),
+    0
+  );
+  assert_eq!(database_count(&fixture.repo, "site_scan_state", "site_id", &site.id), 0);
+  assert_eq!(table_count(&fixture.repo, "stage_entries"), 0);
+  assert_eq!(table_count(&fixture.repo, "stage_snapshot_files"), 0);
+  assert!(matches!(
+    fixture.repo.remove_site(&site.id).await.unwrap_err(),
+    NafmError::SiteNotFound(selector) if selector == site.id
+  ));
+}
+
+#[tokio::test]
 async fn storage_tree_is_bounded_aggregated_and_stable() {
   let fixture = Fixture::new().await;
   let media = fixture.mkdir("media");

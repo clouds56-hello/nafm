@@ -4,6 +4,10 @@ import type {
   CancelScanReport,
   CleanupPreview,
   Dashboard,
+  HiddenPolicy,
+  ManagementMutationResult,
+  ManagementSnapshot,
+  SavedConnection,
   ScanTask,
   ScanTaskEvent,
   ScanSelector,
@@ -12,6 +16,77 @@ import type {
   StorageTree,
   StorageChildrenPage,
 } from "./types";
+
+export function loadManagement(): Promise<ManagementSnapshot> {
+  return invoke<ManagementSnapshot>("load_management");
+}
+
+export function createWorkspace(name: string): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("create_workspace", { name });
+}
+
+export function switchWorkspace(name: string): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("switch_workspace", { name });
+}
+
+export function createSite(
+  workspaceName: string,
+  name: string,
+  folderPath?: string,
+  hiddenPolicy?: HiddenPolicy,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("create_site", {
+    name,
+    workspaceName,
+    folderPath: folderPath || null,
+    hiddenPolicy: hiddenPolicy ?? null,
+  });
+}
+
+export function renameSite(
+  workspaceName: string,
+  siteId: string,
+  name: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("rename_site", { workspaceName, siteId, name });
+}
+
+export function removeSite(workspaceName: string, siteId: string): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("remove_site", { workspaceName, siteId });
+}
+
+export function addSiteFolder(
+  workspaceName: string,
+  siteId: string,
+  path: string,
+  hiddenPolicy?: HiddenPolicy,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("add_site_folder", {
+    siteId,
+    workspaceName,
+    path,
+    hiddenPolicy: hiddenPolicy ?? null,
+  });
+}
+
+export function removeSiteFolder(
+  workspaceName: string,
+  folderId: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("remove_site_folder", { workspaceName, folderId });
+}
+
+export function connectSmb(
+  url: string,
+  username: string,
+  password: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("connect_smb", { url, username, password });
+}
+
+export function matchSmbConnection(url: string): Promise<SavedConnection | null> {
+  return invoke<SavedConnection | null>("match_smb_connection", { url });
+}
 
 export function loadDashboard(): Promise<Dashboard> {
   return invoke<Dashboard>("load_dashboard");
@@ -42,20 +117,20 @@ export function getStorageChildren(
   });
 }
 
-export function startScan(selector: ScanSelector): Promise<ScanTask> {
-  return invoke<ScanTask>("start_scan", { selector });
+export function startScan(selector: ScanSelector, expectedWorkspace: string): Promise<ScanTask> {
+  return invoke<ScanTask>("start_scan", { selector, expectedWorkspace });
 }
 
 export function cancelScan(requestId: number): Promise<CancelScanReport> {
   return invoke<CancelScanReport>("cancel_scan", { requestId });
 }
 
-export function stagePath(path: string): Promise<StageAddReport> {
-  return invoke<StageAddReport>("stage_path", { path });
+export function stagePath(path: string, expectedWorkspace: string): Promise<StageAddReport> {
+  return invoke<StageAddReport>("stage_path", { path, expectedWorkspace });
 }
 
-export function unstagePath(path: string): Promise<StageRemoveReport> {
-  return invoke<StageRemoveReport>("unstage_path", { path });
+export function unstagePath(path: string, expectedWorkspace: string): Promise<StageRemoveReport> {
+  return invoke<StageRemoveReport>("unstage_path", { path, expectedWorkspace });
 }
 
 export function previewCleanup(): Promise<CleanupPreview> {

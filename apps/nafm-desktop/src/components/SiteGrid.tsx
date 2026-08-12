@@ -8,14 +8,16 @@ interface SiteGridProps {
   onSelect: (siteId: string) => void;
   onScan: (siteId: string) => void;
   onCancel: (requestId: number) => void;
+  onAdd: () => void;
+  onManage: (siteId: string) => void;
 }
 
-export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan, onCancel }: SiteGridProps) {
+export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan, onCancel, onAdd, onManage }: SiteGridProps) {
   return (
     <aside className="sites-section" aria-labelledby="sites-title">
       <header className="site-rail-heading">
         <div><span className="eyebrow">WORKSPACE</span><h1 id="sites-title">Sites</h1></div>
-        <span className="site-count">{sites.length}</span>
+        <span className="site-heading-actions"><span className="site-count">{sites.length}</span><button className="site-add-button" type="button" onClick={onAdd} aria-label="Add site">+</button></span>
       </header>
       <div className="site-grid">
         {sites.map((site) => (
@@ -27,6 +29,7 @@ export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan
             onSelect={() => onSelect(site.id)}
             onScan={() => onScan(site.id)}
             onCancel={onCancel}
+            onManage={() => onManage(site.id)}
           />
         ))}
       </div>

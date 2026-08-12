@@ -1,8 +1,8 @@
 import { DriveIcon, RefreshIcon, ScanIcon, WarningIcon } from "./Icons";
 
-export function DashboardSkeleton() {
+export function DashboardSkeleton({ embedded = false }: { embedded?: boolean }) {
   return (
-    <main className="dashboard-skeleton" aria-label="Loading workspace">
+    <main className={`dashboard-skeleton ${embedded ? "is-embedded" : ""}`} aria-label="Loading workspace">
       <aside className="skeleton-site-rail">
         <div className="skeleton-line title" />
         <div className="skeleton-card" />
@@ -18,9 +18,9 @@ export function DashboardSkeleton() {
   );
 }
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+export function ErrorState({ message, onRetry, embedded = false }: { message: string; onRetry: () => void; embedded?: boolean }) {
   return (
-    <div className="full-state error-state">
+    <div className={`full-state error-state ${embedded ? "is-embedded" : ""}`}>
       <span className="state-icon"><WarningIcon /></span>
       <h1>Workspace unavailable</h1>
       <p>{message}</p>
@@ -29,14 +29,14 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
   );
 }
 
-export function EmptyWorkspace() {
+export function EmptyWorkspace({ onAddSite }: { onAddSite: () => void }) {
   return (
     <div className="full-state empty-workspace">
       <span className="state-icon"><DriveIcon /></span>
       <span className="eyebrow">EMPTY WORKSPACE</span>
       <h1>Add your first storage site</h1>
-      <p>Use the NAFM CLI to add a local folder or SMB share. It will appear here automatically.</p>
-      <code>nafm site add photos ~/Pictures</code>
+      <p>Add a local folder or SMB share to begin comparing storage health.</p>
+      <button className="primary-button" type="button" onClick={onAddSite}><DriveIcon />Add your first site</button>
     </div>
   );
 }

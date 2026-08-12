@@ -4,6 +4,50 @@ export type ScanState = "idle" | "queued" | "discovering" | "hashing" | "finaliz
 export type ScanPhase = "discovering" | "hashing" | "finalizing";
 export type ScanTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type HealthMetric = "space_health" | "coverage_health";
+export type HiddenPolicy = "include" | "skip";
+
+export interface WorkspaceSummary {
+  name: string;
+  path: string;
+  active: boolean;
+}
+
+export interface ManagedSiteFolder {
+  id: string;
+  site_id: string;
+  kind: SiteKind;
+  path: string;
+  hidden_policy: HiddenPolicy;
+  added_at: string;
+}
+
+export interface ManagedSite {
+  id: string;
+  name: string;
+  added_at: string;
+  folders: ManagedSiteFolder[];
+  last_scanned_at: string | null;
+  total_files: number;
+  total_bytes: number;
+}
+
+export interface SavedConnection {
+  url: string;
+  username: string;
+}
+
+export interface ManagementSnapshot {
+  active_workspace: WorkspaceSummary;
+  workspaces: WorkspaceSummary[];
+  sites: ManagedSite[];
+  connections: SavedConnection[];
+}
+
+export interface ManagementMutationResult {
+  snapshot: ManagementSnapshot | null;
+  active_workspace: WorkspaceSummary;
+  refresh_error: string | null;
+}
 
 export interface SiteOverview {
   id: string;
@@ -20,6 +64,7 @@ export interface SiteOverview {
 }
 
 export interface Dashboard {
+  workspace_name: string;
   workspace_path: string;
   sites: SiteOverview[];
   active_tasks: ScanTask[];

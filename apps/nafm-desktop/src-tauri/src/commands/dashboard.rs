@@ -7,6 +7,7 @@ use crate::state::{AppState, ScanTask};
 
 #[derive(Serialize)]
 pub struct Dashboard {
+  workspace_name: String,
   workspace_path: String,
   sites: Vec<SiteOverview>,
   active_tasks: Vec<ScanTask>,
@@ -52,12 +53,13 @@ pub struct StorageTreeResponse {
 
 #[tauri::command]
 pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
-  let overviews = state
+  let workspace = state.active_workspace().await;
+  let overviews = workspace
     .repository
     .site_overviews()
     .await
     .map_err(|error| error.to_string())?;
-  let StageCommitDryRun { staged_files, .. } = state
+  let StageCommitDryRun { staged_files, .. } = workspace
     .repository
     .stage_commit_dry_run()
     .await
@@ -97,7 +99,8 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     .collect();
 
   Ok(Dashboard {
-    workspace_path: state.workspace_path.clone(),
+    workspace_name: workspace.name,
+    workspace_path: workspace.path.display().to_string(),
     sites,
     active_tasks,
     staged: staged_files,
@@ -113,14 +116,14 @@ pub async fn get_storage_tree(
   max_depth: u32,
   max_children: u32,
 ) -> Result<StorageTreeResponse, String> {
+  let repository = state.repository().await;
   let tree = match target_site_id {
     Some(target_site_id) => {
-      state
-        .repository
+      repository
         .storage_tree_with_coverage(&site_id, &target_site_id, max_depth, max_children)
         .await
     }
-    None => state.repository.storage_tree(&site_id, max_depth, max_children).await,
+    None => repository.storage_tree(&site_id, max_depth, max_children).await,
   }
   .map_err(|error| error.to_string())?;
   let StorageTree {
@@ -146,19 +149,14 @@ pub async fn get_storage_children(
   offset: u64,
   limit: u64,
 ) -> Result<StorageChildrenPage, String> {
+  let repository = state.repository().await;
   match target_site_id {
     Some(target_site_id) => {
-      state
-        .repository
+      repository
         .storage_children_with_coverage(&site_id, &target_site_id, &node_id, offset, limit)
         .await
     }
-    None => {
-      state
-        .repository
-        .storage_children(&site_id, &node_id, offset, limit)
-        .await
-    }
+    None => repository.storage_children(&site_id, &node_id, offset, limit).await,
   }
   .map_err(|error| error.to_string())
 }

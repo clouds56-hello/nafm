@@ -1,6 +1,6 @@
 import { formatBytes, formatCount, formatRelativeTime, percent } from "../lib/format";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
-import { ChevronIcon, DriveIcon, NetworkIcon, ScanIcon } from "./Icons";
+import { ChevronIcon, DriveIcon, MoreIcon, NetworkIcon, ScanIcon } from "./Icons";
 
 interface SiteCardProps {
   site: SiteOverview;
@@ -9,9 +9,10 @@ interface SiteCardProps {
   onSelect: () => void;
   onScan: () => void;
   onCancel: (requestId: number) => void;
+  onManage: () => void;
 }
 
-export function SiteCard({ site, progress, active, onSelect, onScan, onCancel }: SiteCardProps) {
+export function SiteCard({ site, progress, active, onSelect, onScan, onCancel, onManage }: SiteCardProps) {
   const isScanning = Boolean(progress) || ["queued", "discovering", "hashing", "finalizing"].includes(site.scan_state);
   const progressValue = progress ? percent(progress.processed_files, progress.total_files) : 0;
   const SiteIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
@@ -53,15 +54,18 @@ export function SiteCard({ site, progress, active, onSelect, onScan, onCancel }:
 
       <footer className="site-card-footer">
         <span>{site.scan_state === "failed" ? "Last scan failed" : formatRelativeTime(site.last_scanned_at)}</span>
-        <button
-          className="icon-text-button"
-          type="button"
-          onClick={() => progress ? onCancel(progress.request_id) : onScan()}
-          disabled={isScanning && !progress}
-          aria-label={progress ? `Cancel scan of ${site.name}` : `Scan ${site.name}`}
-        >
-          <ScanIcon /> {progress ? "Cancel" : isScanning ? "Scanning" : "Scan"}
-        </button>
+        <span className="site-card-actions">
+          <button className="site-more-button" type="button" onClick={onManage} aria-label={`Manage ${site.name}`}><MoreIcon /></button>
+          <button
+            className="icon-text-button"
+            type="button"
+            onClick={() => progress ? onCancel(progress.request_id) : onScan()}
+            disabled={isScanning && !progress}
+            aria-label={progress ? `Cancel scan of ${site.name}` : `Scan ${site.name}`}
+          >
+            <ScanIcon /> {progress ? "Cancel" : isScanning ? "Scanning" : "Scan"}
+          </button>
+        </span>
       </footer>
     </article>
   );

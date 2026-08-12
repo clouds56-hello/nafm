@@ -16,10 +16,11 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The first desktop release reads the same active workspace as the CLI. It can
+The desktop app shares workspace and credential state with the CLI. It can
+create and switch workspaces, manage multi-root sites, verify SMB connections,
 scan all sites concurrently, cancel scans cooperatively, explore a radial map
-of used and safely reclaimable space, and stage duplicate copies for a cleanup
-preview. Deletion is deliberately disabled in this release.
+of space and cross-site coverage health, and stage duplicate copies for a
+cleanup preview. Deletion is deliberately disabled in this release.
 
 ```sh
 cd apps/nafm-desktop
@@ -27,8 +28,13 @@ pnpm install
 pnpm tauri dev
 ```
 
-Configure sites and SMB credentials with the CLI first; the desktop app picks
-them up from `~/.tokn/nafm`.
+Use the workspace chip for quick switching, the **+** shortcut in the Sites
+rail to add a site, or the header settings button to open the Management
+Center. The Management Center exposes workspaces, every root belonging to a
+site, and SMB connections. Unregistering a site or root removes only NAFM's
+index and cached scan data; it never deletes source files.
+
+The CLI remains available for the same setup and automation workflows.
 
 ## SMB credentials
 

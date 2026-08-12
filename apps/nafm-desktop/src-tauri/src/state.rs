@@ -1,27 +1,73 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
-use nafm_core::Repository;
+use nafm_core::{CredentialStore, Repository, WorkspaceManager};
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
 pub struct AppState {
-  pub repository: Repository,
-  pub workspace_path: String,
+  session: Arc<RwLock<ActiveWorkspace>>,
+  pub workspace_manager: WorkspaceManager,
+  pub credential_store: CredentialStore,
   pub scan_tasks: ScanTaskRegistry,
+  pub transition_gate: Arc<Mutex<()>>,
 }
 
 impl AppState {
-  pub fn new(repository: Repository, workspace_path: String) -> Self {
+  pub fn new(
+    workspace_manager: WorkspaceManager,
+    credential_store: CredentialStore,
+    workspace_name: String,
+    workspace_path: PathBuf,
+    repository: Repository,
+  ) -> Self {
     Self {
-      repository,
-      workspace_path,
+      session: Arc::new(RwLock::new(ActiveWorkspace {
+        name: workspace_name,
+        path: workspace_path,
+        repository,
+      })),
+      workspace_manager,
+      credential_store,
       scan_tasks: ScanTaskRegistry::default(),
+      transition_gate: Arc::new(Mutex::new(())),
     }
   }
+
+  pub async fn active_workspace(&self) -> ActiveWorkspace {
+    self.session.read().await.clone()
+  }
+
+  pub async fn repository(&self) -> Repository {
+    self.session.read().await.repository.clone()
+  }
+
+  pub async fn repository_for(&self, expected_workspace: &str) -> Result<Repository, String> {
+    let active = self.session.read().await;
+    if active.name == expected_workspace {
+      Ok(active.repository.clone())
+    } else {
+      Err(format!(
+        "workspace changed from {expected_workspace} to {}; retry the operation",
+        active.name
+      ))
+    }
+  }
+
+  pub async fn replace_active_workspace(&self, workspace: ActiveWorkspace) {
+    *self.session.write().await = workspace;
+  }
+}
+
+#[derive(Clone)]
+pub struct ActiveWorkspace {
+  pub name: String,
+  pub path: PathBuf,
+  pub repository: Repository,
 }
 
 #[derive(Clone, Default)]

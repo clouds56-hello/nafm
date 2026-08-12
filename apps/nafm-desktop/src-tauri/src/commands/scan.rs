@@ -62,6 +62,7 @@ pub async fn start_scan(
   app: AppHandle,
   state: State<'_, AppState>,
   selector: ScanSelector,
+  expected_workspace: String,
 ) -> Result<ScanTask, String> {
   let selector_value = selector.value()?;
   let request_id = state.scan_tasks.next_request_id();
@@ -71,7 +72,8 @@ pub async fn start_scan(
     status: ScanTaskStatus::Running,
     created_at: Utc::now(),
   };
-  let repository = state.repository.clone();
+  let transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&expected_workspace).await?;
   let registry = state.scan_tasks.clone();
   let cancelled = Arc::new(AtomicBool::new(false));
   let cancelled_for_task = cancelled.clone();
@@ -86,6 +88,7 @@ pub async fn start_scan(
   if !inserted {
     return Err("a scan is already running for this selection".to_owned());
   }
+  drop(transition);
 
   tokio::spawn(async move {
     let result = if selector_value == "all" {
@@ -94,6 +97,7 @@ pub async fn start_scan(
       scan_site(&app, &repository, request_id, &selector_value, task_cancellation).await
     };
 
+    registry.remove(request_id).await;
     if cancelled_for_task.load(Ordering::Acquire) {
       emit_task_terminal(&app, request_id, ScanEventKind::Cancelled);
     } else if let Err(message) = result {
@@ -117,7 +121,6 @@ pub async fn start_scan(
     } else {
       emit_task_terminal(&app, request_id, ScanEventKind::Completed);
     }
-    registry.remove(request_id).await;
   });
   Ok(scan_task)
 }

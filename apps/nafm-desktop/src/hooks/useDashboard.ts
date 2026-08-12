@@ -56,7 +56,7 @@ function validTarget(
   return sites.find((site) => site.id !== sourceSiteId)?.id ?? null;
 }
 
-export function useDashboard() {
+export function useDashboard(expectedWorkspace: string | null) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +90,11 @@ export function useDashboard() {
   const selectedNodeRef = useRef<StorageNode | null>(null);
   const selectionHistoryRef = useRef<StorageNode[]>([]);
   const childrenPageRef = useRef<StorageChildrenPage | null>(null);
+  const workspaceNameRef = useRef(expectedWorkspace);
+
+  useEffect(() => {
+    workspaceNameRef.current = expectedWorkspace;
+  }, [expectedWorkspace]);
 
   useEffect(() => {
     selectedNodeRef.current = selectedNode;
@@ -249,6 +254,7 @@ export function useDashboard() {
     setError(null);
     try {
       const next = await loadDashboard();
+      workspaceNameRef.current = next.workspace_name;
       setDashboard(next);
       setActiveRequestIds(new Set(next.active_tasks.map((task) => task.request_id)));
       const requestedSite = selectedSiteRef.current;
@@ -446,7 +452,12 @@ export function useDashboard() {
   const scan = useCallback(async (siteId?: string) => {
     setNotice(null);
     try {
-      const task = await startScan(siteId ? { site_id: siteId } : { all: true });
+      const workspaceName = workspaceNameRef.current;
+      if (!workspaceName) throw new Error("Workspace is still loading.");
+      const task = await startScan(
+        siteId ? { site_id: siteId } : { all: true },
+        workspaceName,
+      );
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
     } catch (scanError) {
       setNotice(errorMessage(scanError));
@@ -565,7 +576,9 @@ export function useDashboard() {
     setStagingBusy(true);
     setNotice(null);
     try {
-      const report = await stagePath(activeSelectedNode.path);
+      const workspaceName = workspaceNameRef.current;
+      if (!workspaceName) throw new Error("Workspace is still loading.");
+      const report = await stagePath(activeSelectedNode.path, workspaceName);
       const additions = report.staged_files;
       updateStaged((current) => {
         const byId = new Map(current.map((file) => [file.file_id, file]));
@@ -586,7 +599,9 @@ export function useDashboard() {
     setStagingBusy(true);
     setReviewError(null);
     try {
-      const report = await unstagePath(path);
+      const workspaceName = workspaceNameRef.current;
+      if (!workspaceName) throw new Error("Workspace is still loading.");
+      const report = await unstagePath(path, workspaceName);
       const removed = new Set(report.removed_files.map((file) => file.file_id));
       updateStaged((current) => current.filter((file) => !removed.has(file.file_id)));
     } catch (unstageError) {

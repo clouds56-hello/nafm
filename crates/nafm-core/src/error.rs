@@ -8,12 +8,16 @@ pub type Result<T> = std::result::Result<T, NafmError>;
 pub enum NafmError {
   #[error("workspace not found: {0}")]
   WorkspaceNotFound(String),
+  #[error("workspace already exists: {0}")]
+  WorkspaceAlreadyExists(String),
   #[error("workspace name cannot be empty")]
   EmptyWorkspaceName,
   #[error("invalid workspace name: {0}")]
   InvalidWorkspaceName(String),
   #[error("site not found: {0}")]
   SiteNotFound(String),
+  #[error("site already exists: {0}")]
+  SiteAlreadyExists(String),
   #[error("site folder not found: {0}")]
   SiteFolderNotFound(String),
   #[error("storage node not found: {0}")]

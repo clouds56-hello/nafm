@@ -1,7 +1,8 @@
 use std::fs;
 
 use nafm_core::{
-  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, Repository, RepositoryOptions, WorkspaceManager,
+  AddSiteFolderRequest, DEFAULT_WORKSPACE_NAME, HiddenPolicy, NafmError, Repository, RepositoryOptions,
+  WorkspaceManager,
 };
 
 #[tokio::test]
@@ -36,6 +37,78 @@ async fn workspace_create_with_activate_sets_current_workspace() {
 
   assert_eq!(manager.current_workspace_name().unwrap(), "alpha");
   assert!(manager.workspace_exists("alpha").unwrap());
+}
+
+#[tokio::test]
+async fn activating_default_atomically_replaces_and_repairs_malformed_config() {
+  let temp = tempfile::tempdir().unwrap();
+  let manager = WorkspaceManager::new(temp.path().to_path_buf());
+  manager.ensure_default_workspace(None).await.unwrap();
+  fs::write(manager.config_path(), b"{ invalid json").unwrap();
+
+  manager.activate_workspace(DEFAULT_WORKSPACE_NAME).unwrap();
+
+  assert_eq!(manager.current_workspace_name().unwrap(), DEFAULT_WORKSPACE_NAME);
+  let config = fs::read_to_string(manager.config_path()).unwrap();
+  assert_eq!(
+    serde_json::from_str::<serde_json::Value>(&config).unwrap()["active_workspace"],
+    DEFAULT_WORKSPACE_NAME
+  );
+  assert!(
+    fs::read_dir(temp.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .all(|entry| !entry.file_name().to_string_lossy().starts_with(".config."))
+  );
+}
+
+#[tokio::test]
+async fn workspace_create_rejects_duplicates_without_altering_existing_data_or_activation() {
+  let temp = tempfile::tempdir().unwrap();
+  let manager = WorkspaceManager::new(temp.path().to_path_buf());
+  manager.create_workspace("alpha", false, None).await.unwrap();
+  let alpha = Repository::open(RepositoryOptions {
+    cache_path: manager.workspace_db_path("alpha").unwrap(),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  alpha.create_site("keep-me").await.unwrap();
+
+  let error = manager.create_workspace("alpha", true, None).await.unwrap_err();
+
+  assert!(matches!(error, NafmError::WorkspaceAlreadyExists(name) if name == "alpha"));
+  assert_eq!(manager.current_workspace_name().unwrap(), DEFAULT_WORKSPACE_NAME);
+  let reopened = Repository::open(RepositoryOptions {
+    cache_path: manager.workspace_db_path("alpha").unwrap(),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  assert_eq!(reopened.list_sites().await.unwrap()[0].name, "keep-me");
+}
+
+#[tokio::test]
+async fn concurrent_default_workspace_creation_is_idempotent() {
+  let temp = tempfile::tempdir().unwrap();
+  let manager = WorkspaceManager::new(temp.path().to_path_buf());
+  let first = manager.clone();
+  let second = manager.clone();
+
+  let (first_result, second_result) = tokio::join!(
+    first.ensure_default_workspace(None),
+    second.ensure_default_workspace(None),
+  );
+
+  first_result.unwrap();
+  second_result.unwrap();
+  assert_eq!(manager.list_workspaces().unwrap().len(), 1);
+  Repository::open(RepositoryOptions {
+    cache_path: manager.workspace_db_path(DEFAULT_WORKSPACE_NAME).unwrap(),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
 }
 
 #[tokio::test]
