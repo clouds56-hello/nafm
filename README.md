@@ -1,6 +1,6 @@
 # NAFM
 
-NAFM is a Rust CLI and core SDK for site-aware duplicate management. It tracks
+NAFM is a Rust desktop app, CLI, and core SDK for site-aware duplicate management. It tracks
 logical sites, scans their folders for exact-content matches, reports duplicate
 content within a site, and reports content that is missing across sites.
 
@@ -11,6 +11,24 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 - `nafm-core`: async Rust library/SDK with replaceable hash algorithms.
 - `nafm-cli`: non-TUI command line interface.
+- `nafm-desktop`: Tauri 2 + React desktop interface with a bounded radial
+  storage map, live multi-site scans, and safe cleanup staging.
+
+## Desktop app
+
+The first desktop release reads the same active workspace as the CLI. It can
+scan all sites concurrently, cancel scans cooperatively, explore a radial map
+of used and safely reclaimable space, and stage duplicate copies for a cleanup
+preview. Deletion is deliberately disabled in this release.
+
+```sh
+cd apps/nafm-desktop
+pnpm install
+pnpm tauri dev
+```
+
+Configure sites and SMB credentials with the CLI first; the desktop app picks
+them up from `~/.tokn/nafm`.
 
 ## SMB credentials
 

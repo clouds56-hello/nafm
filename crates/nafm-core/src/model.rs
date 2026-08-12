@@ -34,6 +34,49 @@ pub struct SiteFolder {
   pub added_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SiteOverview {
+  pub site: Site,
+  pub folders: Vec<SiteFolder>,
+  pub total_file_count: u64,
+  pub total_bytes: u64,
+  pub duplicate_file_count: u64,
+  pub duplicate_bytes: u64,
+  pub latest_scan_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageNodeKind {
+  Site,
+  LocalRoot,
+  SmbRoot,
+  Directory,
+  File,
+  SmallerItems,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageNode {
+  pub id: String,
+  pub name: String,
+  pub path: Option<PathBuf>,
+  pub kind: StorageNodeKind,
+  pub total_bytes: u64,
+  pub file_count: u64,
+  pub duplicate_bytes: u64,
+  pub duplicate_file_count: u64,
+  pub children: Vec<StorageNode>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageTree {
+  pub site: Site,
+  pub max_depth: u32,
+  pub max_children: u32,
+  pub root: StorageNode,
+}
+
 #[derive(Clone, Debug)]
 pub struct AddSiteFolderRequest {
   pub path: PathBuf,

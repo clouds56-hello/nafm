@@ -1,0 +1,49 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  CancelScanReport,
+  CleanupPreview,
+  Dashboard,
+  ScanTask,
+  ScanTaskEvent,
+  ScanSelector,
+  StageAddReport,
+  StageRemoveReport,
+  StorageTree,
+} from "./types";
+
+export function loadDashboard(): Promise<Dashboard> {
+  return invoke<Dashboard>("load_dashboard");
+}
+
+export function getStorageTree(siteId: string): Promise<StorageTree> {
+  return invoke<StorageTree>("get_storage_tree", {
+    siteId,
+    maxDepth: 5,
+    maxChildren: 12,
+  });
+}
+
+export function startScan(selector: ScanSelector): Promise<ScanTask> {
+  return invoke<ScanTask>("start_scan", { selector });
+}
+
+export function cancelScan(requestId: number): Promise<CancelScanReport> {
+  return invoke<CancelScanReport>("cancel_scan", { requestId });
+}
+
+export function stagePath(path: string): Promise<StageAddReport> {
+  return invoke<StageAddReport>("stage_path", { path });
+}
+
+export function unstagePath(path: string): Promise<StageRemoveReport> {
+  return invoke<StageRemoveReport>("unstage_path", { path });
+}
+
+export function previewCleanup(): Promise<CleanupPreview> {
+  return invoke<CleanupPreview>("preview_cleanup");
+}
+
+export function onScanTaskEvent(handler: (event: ScanTaskEvent) => void): Promise<UnlistenFn> {
+  return listen<ScanTaskEvent>("task://scan/events", ({ payload }) => handler(payload));
+}

@@ -16,12 +16,14 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
-  ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, StageAddReport, StageCommitDryRun, StageHistoryReport,
-  StageRemoveReport, StageResetReport, StageWarning, StageWarningReason,
+  ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun,
+  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageNode,
+  StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
+type ScanCancellationCallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -73,11 +75,67 @@ struct PendingFileRecord {
 }
 
 #[derive(Clone, Debug)]
+struct StorageFileRecord {
+  site_folder_id: String,
+  path: PathBuf,
+  size_bytes: u64,
+  duplicate: bool,
+  reclaimable: bool,
+}
+
+#[derive(Clone, Debug)]
+struct StorageNodeBuilder {
+  id: String,
+  name: String,
+  path: Option<PathBuf>,
+  kind: StorageNodeKind,
+  total_bytes: u64,
+  file_count: u64,
+  duplicate_bytes: u64,
+  duplicate_file_count: u64,
+  children: BTreeMap<String, StorageNodeBuilder>,
+}
+
+impl StorageNodeBuilder {
+  fn new(id: String, name: String, path: Option<PathBuf>, kind: StorageNodeKind) -> Self {
+    Self {
+      id,
+      name,
+      path,
+      kind,
+      total_bytes: 0,
+      file_count: 0,
+      duplicate_bytes: 0,
+      duplicate_file_count: 0,
+      children: BTreeMap::new(),
+    }
+  }
+
+  fn add_file_metrics(&mut self, file: &StorageFileRecord) {
+    self.total_bytes = self.total_bytes.saturating_add(file.size_bytes);
+    self.file_count = self.file_count.saturating_add(1);
+    if file.duplicate {
+      self.duplicate_file_count = self.duplicate_file_count.saturating_add(1);
+    }
+    if file.reclaimable {
+      self.duplicate_bytes = self.duplicate_bytes.saturating_add(file.size_bytes);
+    }
+  }
+}
+
+#[derive(Clone, Debug)]
 struct ScanProgressContext {
   site_id: String,
   site_name: String,
   files_reused: u64,
   total_files: u64,
+}
+
+struct ScanExecutionContext<'a> {
+  progress_callback: Option<&'a ScanProgressCallback>,
+  progress_context: &'a Arc<ScanProgressContext>,
+  processed_files: &'a AtomicU64,
+  cancellation_callback: Option<&'a ScanCancellationCallback>,
 }
 
 struct ScanPreparation {
@@ -222,6 +280,40 @@ impl Repository {
     .await?
   }
 
+  pub async fn site_overviews(&self) -> Result<Vec<SiteOverview>> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      list_sites(&conn)?
+        .into_iter()
+        .map(|site| site_overview(&conn, site))
+        .collect()
+    })
+    .await?
+  }
+
+  pub async fn site_overview(&self, site_selector: &str) -> Result<SiteOverview> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      site_overview(&conn, site)
+    })
+    .await?
+  }
+
+  pub async fn storage_tree(&self, site_selector: &str, max_depth: u32, max_children: u32) -> Result<StorageTree> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = Connection::open(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      storage_tree(&conn, site, max_depth, max_children)
+    })
+    .await?
+  }
+
   pub async fn file_counts_by_parent_folder(&self, site_selector: Option<&str>) -> Result<BTreeMap<String, u64>> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.map(str::to_owned);
@@ -259,6 +351,14 @@ impl Repository {
   }
 
   pub async fn scan_all_with_events(&self, event_callback: Option<ScanEventCallback>) -> Result<Vec<ScanSummary>> {
+    self.scan_all_with_events_and_cancellation(event_callback, None).await
+  }
+
+  pub async fn scan_all_with_events_and_cancellation(
+    &self,
+    event_callback: Option<ScanEventCallback>,
+    cancellation_callback: Option<ScanCancellationCallback>,
+  ) -> Result<Vec<ScanSummary>> {
     let sites = self.list_sites().await?;
     let mut tasks = JoinSet::new();
     for (index, site) in sites.into_iter().enumerate() {
@@ -269,12 +369,20 @@ impl Repository {
         }));
       }
       let repo = self.clone();
+      let cancellation_callback = cancellation_callback.clone();
       let progress_callback = event_callback.clone().map(|event_callback| {
         Arc::new(move |progress: &ScanProgress| {
           event_callback(&ScanEvent::Progress(progress.clone()));
         }) as ScanProgressCallback
       });
-      tasks.spawn(async move { (index, repo.scan_site_with_progress(&site.id, progress_callback).await) });
+      tasks.spawn(async move {
+        (
+          index,
+          repo
+            .scan_site_with_progress_and_cancellation(&site.id, progress_callback, cancellation_callback)
+            .await,
+        )
+      });
     }
 
     let mut summaries = vec![None; tasks.len()];
@@ -304,6 +412,17 @@ impl Repository {
     selector: &str,
     progress_callback: Option<ScanProgressCallback>,
   ) -> Result<ScanSummary> {
+    self
+      .scan_site_with_progress_and_cancellation(selector, progress_callback, None)
+      .await
+  }
+
+  pub async fn scan_site_with_progress_and_cancellation(
+    &self,
+    selector: &str,
+    progress_callback: Option<ScanProgressCallback>,
+    cancellation_callback: Option<ScanCancellationCallback>,
+  ) -> Result<ScanSummary> {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
     let lookup_db_path = db_path.clone();
@@ -316,7 +435,9 @@ impl Repository {
     .await??;
 
     if site_folders.iter().any(|folder| folder.kind == SiteFolderKind::Smb) {
-      return self.scan_site_with_smb(&site, &site_folders, progress_callback).await;
+      return self
+        .scan_site_with_smb(&site, &site_folders, progress_callback, cancellation_callback)
+        .await;
     }
 
     let hash_algorithm = self.hash_algorithm.clone();
@@ -329,6 +450,7 @@ impl Repository {
         &site_folders,
         hash_algorithm.as_ref(),
         progress_callback.as_ref(),
+        cancellation_callback.as_ref(),
       )
     })
     .await?
@@ -339,7 +461,9 @@ impl Repository {
     site: &Site,
     site_folders: &[SiteFolder],
     progress_callback: Option<ScanProgressCallback>,
+    cancellation_callback: Option<ScanCancellationCallback>,
   ) -> Result<ScanSummary> {
+    check_scan_cancelled(cancellation_callback.as_ref())?;
     let mut files_by_path = BTreeMap::new();
     let local_folders = site_folders
       .iter()
@@ -347,7 +471,11 @@ impl Repository {
       .cloned()
       .collect::<Vec<_>>();
     if !local_folders.is_empty() {
-      for file in task::spawn_blocking(move || discover_site_files(&local_folders)).await?? {
+      let local_cancellation_callback = cancellation_callback.clone();
+      for file in
+        task::spawn_blocking(move || discover_site_files(&local_folders, local_cancellation_callback.as_ref()))
+          .await??
+      {
         files_by_path.insert(file.path.clone(), file);
       }
     }
@@ -359,7 +487,8 @@ impl Repository {
       .collect::<Vec<_>>();
     smb_folders.sort_by_key(|folder| std::cmp::Reverse(folder.path.components().count()));
     for site_folder in &smb_folders {
-      for file in discover_smb_files(site_folder, &self.credential_store).await? {
+      check_scan_cancelled(cancellation_callback.as_ref())?;
+      for file in discover_smb_files(site_folder, &self.credential_store, cancellation_callback.as_ref()).await? {
         files_by_path.entry(file.path.clone()).or_insert(file);
       }
     }
@@ -399,15 +528,20 @@ impl Repository {
       let local_progress_callback = progress_callback.clone();
       let local_progress_context = progress_context.clone();
       let local_processed_files = processed_files.clone();
+      let local_cancellation_callback = cancellation_callback.clone();
       let hashed_records = task::spawn_blocking(move || {
+        let execution = ScanExecutionContext {
+          progress_callback: local_progress_callback.as_ref(),
+          progress_context: &local_progress_context,
+          processed_files: &local_processed_files,
+          cancellation_callback: local_cancellation_callback.as_ref(),
+        };
         hash_files_in_parallel(
           &local_db_path,
           &local_site,
           &local_targets,
           local_hash_algorithm.as_ref(),
-          local_progress_callback.as_ref(),
-          &local_progress_context,
-          &local_processed_files,
+          &execution,
         )
       })
       .await??;
@@ -434,10 +568,19 @@ impl Repository {
       let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
       let tree = client.connect_share(&location.share).await?;
       for (index, file) in targets {
+        check_scan_cancelled(cancellation_callback.as_ref())?;
         let FileSource::Smb { remote_path, .. } = &file.source else {
           unreachable!("remote target should have an SMB source");
         };
-        let content_hash = hash_smb_file(&client, &tree, remote_path, &file, self.hash_algorithm.as_ref()).await?;
+        let content_hash = hash_smb_file(
+          &client,
+          &tree,
+          remote_path,
+          &file,
+          self.hash_algorithm.as_ref(),
+          cancellation_callback.as_ref(),
+        )
+        .await?;
         cache_hashed_file(&db_path, &site.id, &file, self.hash_algorithm.name(), &content_hash).await?;
         report_scan_progress(
           progress_callback.as_ref(),
@@ -450,6 +593,7 @@ impl Repository {
       let _ = client.disconnect_share(&tree).await;
     }
 
+    check_scan_cancelled(cancellation_callback.as_ref())?;
     let finalize_db_path = db_path;
     let finalize_site = site.clone();
     let pending_records = preparation.pending_records;
@@ -711,7 +855,12 @@ fn normalize_user_location(path: &Path) -> Result<(PathBuf, bool)> {
   Ok((std::fs::canonicalize(path)?, false))
 }
 
-async fn discover_smb_files(site_folder: &SiteFolder, credential_store: &CredentialStore) -> Result<Vec<FileProbe>> {
+async fn discover_smb_files(
+  site_folder: &SiteFolder,
+  credential_store: &CredentialStore,
+  cancellation_callback: Option<&ScanCancellationCallback>,
+) -> Result<Vec<FileProbe>> {
+  check_scan_cancelled(cancellation_callback)?;
   let location_value = site_folder.path.to_string_lossy();
   let location = SmbLocation::parse(&location_value)?;
   let credential = credential_store
@@ -724,12 +873,14 @@ async fn discover_smb_files(site_folder: &SiteFolder, credential_store: &Credent
   let mut visited = BTreeSet::new();
 
   while let Some((remote_directory, relative_segments)) = directories.pop() {
+    check_scan_cancelled(cancellation_callback)?;
     if !visited.insert(remote_directory.clone()) {
       continue;
     }
     let mut entries = client.list_directory(&mut tree, &remote_directory).await?;
     entries.sort_by(|left, right| left.name.cmp(&right.name));
     for entry in entries {
+      check_scan_cancelled(cancellation_callback)?;
       if entry.name == "." || entry.name == ".." {
         continue;
       }
@@ -781,6 +932,7 @@ async fn hash_smb_file(
   remote_path: &str,
   file: &FileProbe,
   hash_algorithm: &dyn HashAlgorithm,
+  cancellation_callback: Option<&ScanCancellationCallback>,
 ) -> Result<String> {
   const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 
@@ -793,6 +945,7 @@ async fn hash_smb_file(
   let mut hasher = hash_algorithm.new_hasher();
   let mut offset = 0;
   while offset < file.size_bytes {
+    check_scan_cancelled(cancellation_callback)?;
     let bytes = reader.read_at(offset, CHUNK_SIZE.min(file.size_bytes - offset)).await?;
     if bytes.is_empty() {
       break;
@@ -833,8 +986,10 @@ fn scan_site_blocking(
   site_folders: &[SiteFolder],
   hash_algorithm: &dyn HashAlgorithm,
   progress_callback: Option<&ScanProgressCallback>,
+  cancellation_callback: Option<&ScanCancellationCallback>,
 ) -> Result<ScanSummary> {
-  let files = discover_site_files(site_folders)?;
+  check_scan_cancelled(cancellation_callback)?;
+  let files = discover_site_files(site_folders, cancellation_callback)?;
   let scan_time = Utc::now();
   let processed_files = AtomicU64::new(0);
   let mut preparation = prepare_scan(conn, site, files, hash_algorithm.name())?;
@@ -846,19 +1001,18 @@ fn scan_site_blocking(
     total_files: preparation.files_seen,
   });
 
-  let hashed_records = hash_files_in_parallel(
-    db_path,
-    site,
-    &preparation.hash_targets,
-    hash_algorithm,
+  let execution = ScanExecutionContext {
     progress_callback,
-    &progress_context,
-    &processed_files,
-  )?;
+    progress_context: &progress_context,
+    processed_files: &processed_files,
+    cancellation_callback,
+  };
+  let hashed_records = hash_files_in_parallel(db_path, site, &preparation.hash_targets, hash_algorithm, &execution)?;
   for (index, content_hash) in hashed_records {
     preparation.pending_records[index].content_hash = Some(content_hash);
   }
 
+  check_scan_cancelled(cancellation_callback)?;
   let (removed, duplicate_groups) = replace_site_file_records_atomically(
     conn,
     site,
@@ -941,9 +1095,7 @@ fn hash_files_in_parallel(
   site: &Site,
   hash_targets: &[(usize, FileProbe)],
   hash_algorithm: &dyn HashAlgorithm,
-  progress_callback: Option<&ScanProgressCallback>,
-  progress_context: &Arc<ScanProgressContext>,
-  processed_files: &AtomicU64,
+  execution: &ScanExecutionContext<'_>,
 ) -> Result<Vec<(usize, String)>> {
   if hash_targets.is_empty() {
     return Ok(Vec::new());
@@ -957,16 +1109,27 @@ fn hash_files_in_parallel(
   let writer_db_path = db_path.to_path_buf();
   let site_id = site.id.clone();
   let hash_algorithm_name = hash_algorithm.name().to_owned();
+  let ScanExecutionContext {
+    progress_callback,
+    progress_context,
+    processed_files,
+    cancellation_callback,
+  } = execution;
 
   std::thread::scope(|scope| -> Result<Vec<(usize, String)>> {
     let (sender, receiver) = mpsc::channel::<(usize, FileProbe, String)>();
-    let writer_progress_context = progress_context.clone();
+    let writer_progress_context = Arc::clone(progress_context);
     let writer = scope.spawn(move || -> Result<Vec<(usize, String)>> {
       let conn = Connection::open(writer_db_path)?;
       let mut hashed_records = Vec::with_capacity(hash_targets.len());
       for (index, file, content_hash) in receiver {
         upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm_name, &content_hash)?;
-        report_scan_progress(progress_callback, &writer_progress_context, &file.path, processed_files);
+        report_scan_progress(
+          *progress_callback,
+          writer_progress_context.as_ref(),
+          &file.path,
+          processed_files,
+        );
         hashed_records.push((index, content_hash));
       }
       Ok(hashed_records)
@@ -976,7 +1139,9 @@ fn hash_files_in_parallel(
       let sender = sender.clone();
       tasks.push(scope.spawn(move || -> Result<()> {
         for (index, file) in chunk {
+          check_scan_cancelled(*cancellation_callback)?;
           let content_hash = hash_algorithm.hash_file(&file.path)?;
+          check_scan_cancelled(*cancellation_callback)?;
           sender
             .send((*index, file.clone(), content_hash))
             .map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -1002,6 +1167,14 @@ fn hash_files_in_parallel(
   })
 }
 
+fn check_scan_cancelled(cancellation_callback: Option<&ScanCancellationCallback>) -> Result<()> {
+  if cancellation_callback.is_some_and(|is_cancelled| is_cancelled()) {
+    Err(NafmError::ScanCancelled)
+  } else {
+    Ok(())
+  }
+}
+
 fn report_scan_progress(
   progress_callback: Option<&ScanProgressCallback>,
   progress_context: &ScanProgressContext,
@@ -1021,17 +1194,22 @@ fn report_scan_progress(
   });
 }
 
-fn discover_site_files(site_folders: &[SiteFolder]) -> Result<Vec<FileProbe>> {
+fn discover_site_files(
+  site_folders: &[SiteFolder],
+  cancellation_callback: Option<&ScanCancellationCallback>,
+) -> Result<Vec<FileProbe>> {
   let mut files_by_path = BTreeMap::new();
   let mut sorted_site_folders = site_folders.to_vec();
   sorted_site_folders.sort_by_key(|site_folder| std::cmp::Reverse(site_folder.path.components().count()));
 
   for site_folder in &sorted_site_folders {
+    check_scan_cancelled(cancellation_callback)?;
     if site_folder.kind != SiteFolderKind::Local {
       continue;
     }
     let walker = WalkDir::new(&site_folder.path).follow_links(false).into_iter();
     for entry in walker.filter_entry(|entry| should_visit(entry, site_folder.hidden_policy)) {
+      check_scan_cancelled(cancellation_callback)?;
       let entry = entry.map_err(|err| std::io::Error::other(err.to_string()))?;
       if !entry.file_type().is_file() {
         continue;
@@ -1804,6 +1982,284 @@ fn tracked_file_exists(conn: &Connection, path: &Path) -> Result<bool> {
       |row| row.get::<_, bool>(0),
     )
     .map_err(Into::into)
+}
+
+fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
+  let folders = list_site_folders(conn, Some(&site.id))?;
+  let files = storage_file_records(conn, &site.id)?;
+  let total_file_count = files.len() as u64;
+  let total_bytes = files.iter().map(|file| file.size_bytes).sum();
+  let duplicate_file_count = files.iter().filter(|file| file.duplicate).count() as u64;
+  let duplicate_bytes = files
+    .iter()
+    .filter(|file| file.reclaimable)
+    .map(|file| file.size_bytes)
+    .sum();
+  let latest_scan_at = conn.query_row(
+    "select max(last_seen_at) from file_records where site_id = ?1",
+    params![site.id],
+    |row| row.get::<_, Option<DateTime<Utc>>>(0),
+  )?;
+
+  Ok(SiteOverview {
+    site,
+    folders,
+    total_file_count,
+    total_bytes,
+    duplicate_file_count,
+    duplicate_bytes,
+    latest_scan_at,
+  })
+}
+
+fn storage_file_records(conn: &Connection, site_id: &str) -> Result<Vec<StorageFileRecord>> {
+  let mut rows = conn
+    .prepare(
+      "select site_folder_id, path, size_bytes, hash_algorithm, content_hash
+       from file_records
+       where site_id = ?1
+       order by path",
+    )?
+    .query_map(params![site_id], |row| {
+      Ok((
+        StorageFileRecord {
+          site_folder_id: row.get(0)?,
+          path: PathBuf::from(row.get::<_, String>(1)?),
+          size_bytes: row.get(2)?,
+          duplicate: false,
+          reclaimable: false,
+        },
+        row.get::<_, String>(3)?,
+        row.get::<_, Option<String>>(4)?,
+      ))
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+  let mut groups = BTreeMap::<(String, String, u64), Vec<usize>>::new();
+  for (index, (file, hash_algorithm, content_hash)) in rows.iter().enumerate() {
+    if let Some(content_hash) = content_hash {
+      groups
+        .entry((hash_algorithm.clone(), content_hash.clone(), file.size_bytes))
+        .or_default()
+        .push(index);
+    }
+  }
+  for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
+    for (group_index, row_index) in indexes.iter().enumerate() {
+      rows[*row_index].0.duplicate = true;
+      rows[*row_index].0.reclaimable = group_index > 0;
+    }
+  }
+
+  Ok(rows.into_iter().map(|(file, _, _)| file).collect())
+}
+
+fn storage_tree(conn: &Connection, site: Site, max_depth: u32, max_children: u32) -> Result<StorageTree> {
+  let folders = list_site_folders(conn, Some(&site.id))?;
+  let files = storage_file_records(conn, &site.id)?;
+  let mut root = StorageNodeBuilder::new(
+    format!("site:{}", site.id),
+    site.name.clone(),
+    None,
+    StorageNodeKind::Site,
+  );
+
+  for folder in &folders {
+    root.children.insert(
+      folder.id.clone(),
+      StorageNodeBuilder::new(
+        format!("site_folder:{}", folder.id),
+        storage_root_name(folder),
+        Some(folder.path.clone()),
+        match folder.kind {
+          SiteFolderKind::Local => StorageNodeKind::LocalRoot,
+          SiteFolderKind::Smb => StorageNodeKind::SmbRoot,
+        },
+      ),
+    );
+  }
+
+  let folders_by_id = folders
+    .iter()
+    .map(|folder| (folder.id.as_str(), folder))
+    .collect::<BTreeMap<_, _>>();
+  for file in &files {
+    let Some(folder) = folders_by_id.get(file.site_folder_id.as_str()) else {
+      continue;
+    };
+    let segments = storage_relative_segments(folder, &file.path)?;
+    if segments.is_empty() {
+      continue;
+    }
+
+    root.add_file_metrics(file);
+    let folder_node = root
+      .children
+      .get_mut(&folder.id)
+      .expect("site folder node should exist");
+    folder_node.add_file_metrics(file);
+    insert_storage_file(folder_node, folder, &segments, file)?;
+  }
+
+  Ok(StorageTree {
+    site,
+    max_depth,
+    max_children,
+    root: finish_storage_node(root, 0, max_depth, max_children),
+  })
+}
+
+fn storage_root_name(folder: &SiteFolder) -> String {
+  if folder.kind == SiteFolderKind::Smb {
+    return SmbLocation::parse(&folder.path.to_string_lossy())
+      .ok()
+      .and_then(|location| {
+        location
+          .relative_path
+          .rsplit('/')
+          .find(|segment| !segment.is_empty())
+          .map(str::to_owned)
+          .or(Some(location.share))
+      })
+      .unwrap_or_else(|| folder.path.display().to_string());
+  }
+
+  folder
+    .path
+    .file_name()
+    .map(|name| name.to_string_lossy().into_owned())
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| folder.path.display().to_string())
+}
+
+fn storage_relative_segments(folder: &SiteFolder, file_path: &Path) -> Result<Vec<String>> {
+  if folder.kind == SiteFolderKind::Smb {
+    let folder_location = SmbLocation::parse(&folder.path.to_string_lossy())?;
+    let file_location = SmbLocation::parse(&file_path.to_string_lossy())?;
+    if folder_location.server_address != file_location.server_address
+      || !folder_location.share.eq_ignore_ascii_case(&file_location.share)
+    {
+      return Ok(Vec::new());
+    }
+    let folder_segments = folder_location
+      .relative_path
+      .split('/')
+      .filter(|segment| !segment.is_empty())
+      .collect::<Vec<_>>();
+    let file_segments = file_location
+      .relative_path
+      .split('/')
+      .filter(|segment| !segment.is_empty())
+      .collect::<Vec<_>>();
+    return Ok(
+      file_segments
+        .strip_prefix(folder_segments.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|segment| (*segment).to_owned())
+        .collect(),
+    );
+  }
+
+  Ok(
+    file_path
+      .strip_prefix(&folder.path)
+      .unwrap_or(file_path)
+      .components()
+      .map(|component| component.as_os_str().to_string_lossy().into_owned())
+      .collect(),
+  )
+}
+
+fn insert_storage_file(
+  folder_node: &mut StorageNodeBuilder,
+  folder: &SiteFolder,
+  segments: &[String],
+  file: &StorageFileRecord,
+) -> Result<()> {
+  let mut current = folder_node;
+  for (index, name) in segments.iter().enumerate() {
+    let path = storage_child_path(folder, &segments[..=index])?;
+    let kind = if index + 1 == segments.len() {
+      StorageNodeKind::File
+    } else {
+      StorageNodeKind::Directory
+    };
+    let id = format!("storage:{}:{}", folder.id, path.display());
+    current = current
+      .children
+      .entry(name.clone())
+      .or_insert_with(|| StorageNodeBuilder::new(id, name.clone(), Some(path), kind));
+    current.add_file_metrics(file);
+  }
+  Ok(())
+}
+
+fn storage_child_path(folder: &SiteFolder, segments: &[String]) -> Result<PathBuf> {
+  if folder.kind == SiteFolderKind::Smb {
+    let location = SmbLocation::parse(&folder.path.to_string_lossy())?;
+    return Ok(PathBuf::from(location.join_path_segments(segments)?));
+  }
+  Ok(
+    segments
+      .iter()
+      .fold(folder.path.clone(), |path, segment| path.join(segment)),
+  )
+}
+
+fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, max_children: u32) -> StorageNode {
+  let mut child_builders = builder.children.into_values().collect::<Vec<_>>();
+  child_builders.sort_by(|left, right| {
+    right
+      .total_bytes
+      .cmp(&left.total_bytes)
+      .then_with(|| left.name.cmp(&right.name))
+      .then_with(|| left.id.cmp(&right.id))
+  });
+
+  let children = if depth >= max_depth || max_children == 0 {
+    Vec::new()
+  } else if child_builders.len() <= max_children as usize {
+    child_builders
+      .into_iter()
+      .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
+      .collect()
+  } else {
+    let retained_count = max_children.saturating_sub(1) as usize;
+    let consolidated = child_builders.split_off(retained_count);
+    let mut children = child_builders
+      .into_iter()
+      .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
+      .collect::<Vec<_>>();
+    children.push(consolidate_storage_nodes(&builder.id, consolidated));
+    children
+  };
+
+  StorageNode {
+    id: builder.id,
+    name: builder.name,
+    path: builder.path,
+    kind: builder.kind,
+    total_bytes: builder.total_bytes,
+    file_count: builder.file_count,
+    duplicate_bytes: builder.duplicate_bytes,
+    duplicate_file_count: builder.duplicate_file_count,
+    children,
+  }
+}
+
+fn consolidate_storage_nodes(parent_id: &str, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
+  StorageNode {
+    id: format!("smaller_items:{parent_id}"),
+    name: "Smaller items".to_owned(),
+    path: None,
+    kind: StorageNodeKind::SmallerItems,
+    total_bytes: nodes.iter().map(|node| node.total_bytes).sum(),
+    file_count: nodes.iter().map(|node| node.file_count).sum(),
+    duplicate_bytes: nodes.iter().map(|node| node.duplicate_bytes).sum(),
+    duplicate_file_count: nodes.iter().map(|node| node.duplicate_file_count).sum(),
+    children: Vec::new(),
+  }
 }
 
 fn list_sites(conn: &Connection) -> Result<Vec<Site>> {

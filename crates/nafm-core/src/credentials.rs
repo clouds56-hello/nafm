@@ -380,17 +380,20 @@ mod tests {
 
   #[test]
   fn parses_and_normalizes_smb_locations() {
-    let location = SmbLocation::parse("smb://OMV.lan:445/Media/Family%20Videos/").unwrap();
+    let location = SmbLocation::parse("smb://NAS.EXAMPLE.TEST:445/Media/Family%20Videos/").unwrap();
 
-    assert_eq!(location.normalized_url, "smb://omv.lan:445/Media/Family%20Videos");
-    assert_eq!(location.server_address, "omv.lan:445");
+    assert_eq!(
+      location.normalized_url,
+      "smb://nas.example.test:445/Media/Family%20Videos"
+    );
+    assert_eq!(location.server_address, "nas.example.test:445");
     assert_eq!(location.share, "Media");
     assert_eq!(location.relative_path, "Family Videos");
   }
 
   #[test]
   fn rejects_credentials_embedded_in_url() {
-    let error = SmbLocation::parse("smb://alice:secret@omv.lan/Media").unwrap_err();
+    let error = SmbLocation::parse("smb://alice:secret@nas.example.test/Media").unwrap_err();
 
     assert_eq!(
       error.to_string(),
@@ -400,13 +403,13 @@ mod tests {
 
   #[test]
   fn joins_remote_path_segments_with_url_encoding() {
-    let location = SmbLocation::parse("smb://omv.lan/Media").unwrap();
+    let location = SmbLocation::parse("smb://nas.example.test/Media").unwrap();
 
     let url = location
       .join_path_segments(&["Family Videos".to_owned(), "clip #1.mp4".to_owned()])
       .unwrap();
 
-    assert_eq!(url, "smb://omv.lan/Media/Family%20Videos/clip%20%231.mp4");
+    assert_eq!(url, "smb://nas.example.test/Media/Family%20Videos/clip%20%231.mp4");
   }
 
   #[test]
@@ -415,14 +418,17 @@ mod tests {
     let store = CredentialStore::new(temp.path().join("nafm"));
 
     store
-      .save_smb_credential("smb://OMV.lan/Media/", " alice ", "first")
+      .save_smb_credential("smb://NAS.EXAMPLE.TEST/Media/", " alice ", "first")
       .unwrap();
     store
-      .save_smb_credential("smb://omv.lan/Media", "bob", "second")
+      .save_smb_credential("smb://nas.example.test/Media", "bob", "second")
       .unwrap();
 
-    let credential = store.load_smb_credential("smb://omv.lan/Media/").unwrap().unwrap();
-    assert_eq!(credential.url, "smb://omv.lan/Media");
+    let credential = store
+      .load_smb_credential("smb://nas.example.test/Media/")
+      .unwrap()
+      .unwrap();
+    assert_eq!(credential.url, "smb://nas.example.test/Media");
     assert_eq!(credential.username, "bob");
     assert_eq!(credential.password, "second");
 
@@ -468,16 +474,16 @@ mod tests {
     let temp = tempfile::tempdir().unwrap();
     let store = CredentialStore::new(temp.path().join("nafm"));
     store
-      .save_smb_credential("smb://zeta.lan/Media", "alice", "first-secret")
+      .save_smb_credential("smb://zeta.example.test/Media", "alice", "first-secret")
       .unwrap();
     store
-      .save_smb_credential("smb://alpha.lan/Archive", "bob", "second-secret")
+      .save_smb_credential("smb://alpha.example.test/Archive", "bob", "second-secret")
       .unwrap();
 
     let credentials = store.list_smb_credentials().unwrap();
 
     assert_eq!(credentials.len(), 2);
-    assert_eq!(credentials[0].url, "smb://alpha.lan/Archive");
+    assert_eq!(credentials[0].url, "smb://alpha.example.test/Archive");
     assert_eq!(credentials[0].username, "bob");
     let output = serde_json::to_string(&credentials).unwrap();
     assert!(!output.contains("first-secret"));
@@ -493,7 +499,7 @@ mod tests {
     let root = temp.path().join("nafm");
     let store = CredentialStore::new(root.clone());
     store
-      .save_smb_credential("smb://omv.lan/Media", "alice", "secret")
+      .save_smb_credential("smb://nas.example.test/Media", "alice", "secret")
       .unwrap();
 
     assert_eq!(fs::metadata(root).unwrap().permissions().mode() & 0o777, 0o700);

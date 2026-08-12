@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, ContentHasher, CredentialStore, HashAlgorithm, HiddenPolicy, Repository, RepositoryOptions,
-  ScanEvent, SiteFolderKind, StageWarningReason,
+  AddSiteFolderRequest, ContentHasher, CredentialStore, HashAlgorithm, HiddenPolicy, NafmError, Repository,
+  RepositoryOptions, ScanEvent, SiteFolderKind, StageWarningReason, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -38,12 +38,133 @@ async fn scan_site_detects_duplicates_across_site_folders() {
 }
 
 #[tokio::test]
-async fn adds_smb_site_folder_with_saved_credentials() {
+async fn site_overview_reports_site_scoped_storage_and_reclaimable_bytes() {
+  let fixture = Fixture::new().await;
+  let archive = fixture.mkdir("archive");
+  let backup = fixture.mkdir("backup");
+  fs::write(archive.join("a-copy.bin"), b"ten-bytes!").unwrap();
+  fs::write(archive.join("b-copy.bin"), b"ten-bytes!").unwrap();
+  fs::write(archive.join("unique.bin"), b"solo").unwrap();
+  fs::write(backup.join("only-copy.bin"), b"ten-bytes!").unwrap();
+
+  fixture.create_site("archive").await;
+  fixture
+    .add_site_folder("archive", &archive, HiddenPolicy::Include)
+    .await;
+  fixture.create_site("backup").await;
+  fixture.add_site_folder("backup", &backup, HiddenPolicy::Include).await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let overview = fixture.repo.site_overview("archive").await.unwrap();
+  assert_eq!(overview.site.name, "archive");
+  assert_eq!(overview.folders.len(), 1);
+  assert_eq!(overview.total_file_count, 3);
+  assert_eq!(overview.total_bytes, 24);
+  assert_eq!(overview.duplicate_file_count, 2);
+  assert_eq!(overview.duplicate_bytes, 10);
+  assert!(overview.latest_scan_at.is_some());
+
+  let overviews = fixture.repo.site_overviews().await.unwrap();
+  assert_eq!(
+    overviews
+      .iter()
+      .map(|overview| overview.site.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["archive", "backup"]
+  );
+  let backup = overviews
+    .iter()
+    .find(|overview| overview.site.name == "backup")
+    .unwrap();
+  assert_eq!(backup.total_file_count, 1);
+  assert_eq!(backup.duplicate_file_count, 0);
+  assert_eq!(backup.duplicate_bytes, 0);
+}
+
+#[tokio::test]
+async fn site_overview_has_no_scan_timestamp_before_files_are_tracked() {
+  let fixture = Fixture::new().await;
+  fixture.create_site("empty").await;
+
+  let overview = fixture.repo.site_overview("empty").await.unwrap();
+  assert_eq!(overview.total_file_count, 0);
+  assert_eq!(overview.total_bytes, 0);
+  assert_eq!(overview.duplicate_file_count, 0);
+  assert_eq!(overview.duplicate_bytes, 0);
+  assert_eq!(overview.latest_scan_at, None);
+}
+
+#[tokio::test]
+async fn storage_tree_is_bounded_aggregated_and_stable() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("media");
+  for (directory, contents) in [
+    ("large", b"123456789".as_slice()),
+    ("medium", b"123456".as_slice()),
+    ("small", b"123".as_slice()),
+    ("tiny", b"1".as_slice()),
+  ] {
+    let path = media.join(directory);
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("clip.bin"), contents).unwrap();
+  }
+  fs::write(media.join("large/copy.bin"), b"123456").unwrap();
+
+  fixture.create_site("media").await;
+  fixture.add_site_folder("media", &media, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("media").await.unwrap();
+
+  let tree = fixture.repo.storage_tree("media", 3, 3).await.unwrap();
+  assert_eq!(tree.max_depth, 3);
+  assert_eq!(tree.max_children, 3);
+  assert_eq!(tree.root.kind, StorageNodeKind::Site);
+  assert_eq!(tree.root.total_bytes, 25);
+  assert_eq!(tree.root.file_count, 5);
+  assert_eq!(tree.root.duplicate_file_count, 2);
+  assert_eq!(tree.root.duplicate_bytes, 6);
+  assert_eq!(tree.root.children.len(), 1);
+
+  let folder = &tree.root.children[0];
+  assert_eq!(folder.kind, StorageNodeKind::LocalRoot);
+  assert_eq!(
+    folder.path.as_deref(),
+    Some(fs::canonicalize(&media).unwrap().as_path())
+  );
+  assert_eq!(folder.children.len(), 3);
+  assert_eq!(folder.children[0].name, "large");
+  assert_eq!(folder.children[0].duplicate_file_count, 1);
+  assert_eq!(folder.children[0].duplicate_bytes, 0);
+  assert_eq!(folder.children[1].name, "medium");
+  assert_eq!(folder.children[1].duplicate_file_count, 1);
+  assert_eq!(folder.children[1].duplicate_bytes, 6);
+  let smaller = &folder.children[2];
+  assert_eq!(smaller.kind, StorageNodeKind::SmallerItems);
+  assert_eq!(smaller.total_bytes, 4);
+  assert_eq!(smaller.file_count, 2);
+  assert!(smaller.children.is_empty());
+  assert!(folder.children.iter().all(|child| child.children.len() <= 3));
+
+  let repeated = fixture.repo.storage_tree("media", 3, 3).await.unwrap();
+  assert_eq!(tree.root.id, repeated.root.id);
+  assert_eq!(folder.id, repeated.root.children[0].id);
+  assert_eq!(smaller.id, repeated.root.children[0].children[2].id);
+
+  let shallow = fixture.repo.storage_tree("media", 1, 10).await.unwrap();
+  assert_eq!(shallow.root.children.len(), 1);
+  assert!(shallow.root.children[0].children.is_empty());
+
+  let no_children = fixture.repo.storage_tree("media", 10, 0).await.unwrap();
+  assert!(no_children.root.children.is_empty());
+  assert_eq!(no_children.root.total_bytes, 25);
+}
+
+#[tokio::test]
+async fn storage_tree_preserves_smb_roots_and_paths() {
   let cache = tempfile::tempdir().unwrap();
   let credentials_root = tempfile::tempdir().unwrap();
   let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
   credential_store
-    .save_smb_credential("smb://OMV.lan/Media/", "alice", "secret")
+    .save_smb_credential("smb://nas.example.test/share", "sample-user", "secret")
     .unwrap();
   let repo = Repository::open_with_credential_store(
     RepositoryOptions {
@@ -54,13 +175,76 @@ async fn adds_smb_site_folder_with_saved_credentials() {
   )
   .await
   .unwrap();
-  repo.create_site("omv").await.unwrap();
+  let site = repo.create_site("network").await.unwrap();
+  let folder = repo
+    .add_site_folder(
+      "network",
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://nas.example.test/share/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
+  for (id, path) in [
+    ("file-a", "smb://nas.example.test/share/Media/Camera/A.mp4"),
+    ("file-b", "smb://nas.example.test/share/Media/Camera/B.mp4"),
+  ] {
+    conn
+      .execute(
+        "insert into file_records (
+          id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos,
+          hash_algorithm, content_hash, last_seen_at
+        ) values (?1, ?2, ?3, ?4, 8, 0, 'blake3', 'same-hash', '2026-01-01T00:00:00Z')",
+        rusqlite::params![id, &site.id, &folder.id, path],
+      )
+      .unwrap();
+  }
+  drop(conn);
+
+  let tree = repo.storage_tree("network", 4, 10).await.unwrap();
+  let root = &tree.root.children[0];
+  assert_eq!(root.kind, StorageNodeKind::SmbRoot);
+  assert_eq!(root.name, "Media");
+  assert_eq!(root.path, Some(PathBuf::from("smb://nas.example.test/share/Media")));
+  assert_eq!(root.children[0].name, "Camera");
+  assert_eq!(
+    root.children[0].path,
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))
+  );
+  assert_eq!(
+    root.children[0].children[0].path,
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera/A.mp4"))
+  );
+  assert_eq!(tree.root.duplicate_file_count, 2);
+  assert_eq!(tree.root.duplicate_bytes, 8);
+}
+
+#[tokio::test]
+async fn adds_smb_site_folder_with_saved_credentials() {
+  let cache = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://NAS.EXAMPLE.TEST/Media/", "sample-user", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  repo.create_site("network").await.unwrap();
 
   let folder = repo
     .add_site_folder(
-      "omv",
+      "network",
       AddSiteFolderRequest {
-        path: PathBuf::from("smb://omv.lan/Media"),
+        path: PathBuf::from("smb://nas.example.test/Media"),
         hidden_policy: HiddenPolicy::Include,
       },
     )
@@ -68,9 +252,9 @@ async fn adds_smb_site_folder_with_saved_credentials() {
     .unwrap();
 
   assert_eq!(folder.kind, SiteFolderKind::Smb);
-  assert_eq!(folder.path, PathBuf::from("smb://omv.lan/Media"));
+  assert_eq!(folder.path, PathBuf::from("smb://nas.example.test/Media"));
   assert_eq!(
-    repo.list_site_folders(Some("omv")).await.unwrap()[0].kind,
+    repo.list_site_folders(Some("network")).await.unwrap()[0].kind,
     SiteFolderKind::Smb
   );
 }
@@ -81,7 +265,7 @@ async fn adds_nested_smb_site_folder_with_share_credentials() {
   let credentials_root = tempfile::tempdir().unwrap();
   let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
   credential_store
-    .save_smb_credential("smb://nas.example.test/share", "alice", "secret")
+    .save_smb_credential("smb://nas.example.test/share", "sample-user", "secret")
     .unwrap();
   let repo = Repository::open_with_credential_store(
     RepositoryOptions {
@@ -92,11 +276,11 @@ async fn adds_nested_smb_site_folder_with_share_credentials() {
   )
   .await
   .unwrap();
-  repo.create_site("omv").await.unwrap();
+  repo.create_site("network").await.unwrap();
 
   let folder = repo
     .add_site_folder(
-      "omv",
+      "network",
       AddSiteFolderRequest {
         path: PathBuf::from("smb://nas.example.test/share/Media"),
         hidden_policy: HiddenPolicy::Include,
@@ -122,13 +306,13 @@ async fn adding_smb_site_folder_requires_saved_credentials() {
   )
   .await
   .unwrap();
-  repo.create_site("omv").await.unwrap();
+  repo.create_site("network").await.unwrap();
 
   let error = repo
     .add_site_folder(
-      "omv",
+      "network",
       AddSiteFolderRequest {
-        path: PathBuf::from("smb://omv.lan/Media"),
+        path: PathBuf::from("smb://nas.example.test/Media"),
         hidden_policy: HiddenPolicy::Include,
       },
     )
@@ -137,7 +321,7 @@ async fn adding_smb_site_folder_requires_saved_credentials() {
 
   assert_eq!(
     error.to_string(),
-    "no saved credentials for SMB location: smb://omv.lan/Media"
+    "no saved credentials for SMB location: smb://nas.example.test/Media"
   );
 }
 
@@ -184,7 +368,7 @@ async fn stages_tracked_smb_files_without_local_path_canonicalization() {
   let credentials_root = tempfile::tempdir().unwrap();
   let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
   credential_store
-    .save_smb_credential("smb://omv.lan/Media", "alice", "secret")
+    .save_smb_credential("smb://nas.example.test/Media", "sample-user", "secret")
     .unwrap();
   let repo = Repository::open_with_credential_store(
     RepositoryOptions {
@@ -195,12 +379,12 @@ async fn stages_tracked_smb_files_without_local_path_canonicalization() {
   )
   .await
   .unwrap();
-  let site = repo.create_site("omv").await.unwrap();
+  let site = repo.create_site("network").await.unwrap();
   let folder = repo
     .add_site_folder(
-      "omv",
+      "network",
       AddSiteFolderRequest {
-        path: PathBuf::from("smb://omv.lan/Media"),
+        path: PathBuf::from("smb://nas.example.test/Media"),
         hidden_policy: HiddenPolicy::Include,
       },
     )
@@ -208,8 +392,8 @@ async fn stages_tracked_smb_files_without_local_path_canonicalization() {
     .unwrap();
   let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
   for (id, path) in [
-    ("file-1", "smb://omv.lan/Media/a.mp4"),
-    ("file-2", "smb://omv.lan/Media/b.mp4"),
+    ("file-1", "smb://nas.example.test/Media/a.mp4"),
+    ("file-2", "smb://nas.example.test/Media/b.mp4"),
   ] {
     conn
       .execute(
@@ -224,14 +408,17 @@ async fn stages_tracked_smb_files_without_local_path_canonicalization() {
   drop(conn);
 
   let added = repo
-    .stage_add_path(Path::new("smb://omv.lan/Media/a.mp4"))
+    .stage_add_path(Path::new("smb://nas.example.test/Media/a.mp4"))
     .await
     .unwrap();
   assert_eq!(added.staged_files.len(), 1);
-  assert_eq!(added.staged_files[0].path, PathBuf::from("smb://omv.lan/Media/a.mp4"));
+  assert_eq!(
+    added.staged_files[0].path,
+    PathBuf::from("smb://nas.example.test/Media/a.mp4")
+  );
 
   let removed = repo
-    .stage_remove_path(Path::new("smb://omv.lan/Media/a.mp4"))
+    .stage_remove_path(Path::new("smb://nas.example.test/Media/a.mp4"))
     .await
     .unwrap();
   assert_eq!(removed.removed_files.len(), 1);
@@ -537,6 +724,197 @@ async fn scan_site_progress_skips_cached_files() {
   assert_eq!(summary.files_hashed, 0);
   assert_eq!(summary.files_reused, 2);
   assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scan_site_cancellation_preserves_completed_hashes_for_resume() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  for index in 0..12 {
+    fs::write(
+      root.path().join(format!("file-{index:02}.bin")),
+      format!("content-{index}"),
+    )
+    .unwrap();
+  }
+
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(SlowHashAlgorithm {
+      current: Arc::new(AtomicUsize::new(0)),
+      max: Arc::new(AtomicUsize::new(0)),
+      delay: Duration::from_millis(20),
+    })),
+  })
+  .await
+  .unwrap();
+  repo.create_site("media").await.unwrap();
+  repo
+    .add_site_folder(
+      "media",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let cancelled_from_progress = cancelled.clone();
+  let cancelled_for_scan = cancelled.clone();
+  let result = repo
+    .scan_site_with_progress_and_cancellation(
+      "media",
+      Some(Arc::new(move |_| {
+        cancelled_from_progress.store(true, Ordering::SeqCst);
+      })),
+      Some(Arc::new(move || cancelled_for_scan.load(Ordering::SeqCst))),
+    )
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  let cached_count = rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .query_row("select count(*) from scan_cache_entries", [], |row| {
+      row.get::<_, u64>(0)
+    })
+    .unwrap();
+  assert!(
+    cached_count > 0,
+    "completed hashes should remain durable after cancellation"
+  );
+  assert!(
+    cached_count < 12,
+    "cancellation should stop before every file is cached"
+  );
+
+  let summary = repo.scan_site("media").await.unwrap();
+  assert_eq!(summary.files_seen, 12);
+  assert_eq!(summary.files_reused, cached_count);
+  assert_eq!(summary.files_hashed, 12 - cached_count);
+}
+
+#[tokio::test]
+async fn scan_site_honors_cancellation_before_hashing() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("file.bin"), b"content").unwrap();
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+
+  let result = fixture
+    .repo
+    .scan_site_with_progress_and_cancellation("docs", None, Some(Arc::new(|| true)))
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  let cache_count = rusqlite::Connection::open(fixture.repo.db_path())
+    .unwrap()
+    .query_row("select count(*) from scan_cache_entries", [], |row| {
+      row.get::<_, u64>(0)
+    })
+    .unwrap();
+  assert_eq!(cache_count, 0);
+}
+
+#[tokio::test]
+async fn scan_site_honors_cancellation_requested_from_final_progress() {
+  let fixture = Fixture::new().await;
+  let docs = fixture.mkdir("docs");
+  fs::write(docs.join("file.bin"), b"content").unwrap();
+  fixture.create_site("docs").await;
+  fixture.add_site_folder("docs", &docs, HiddenPolicy::Include).await;
+
+  let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let cancelled_from_progress = cancelled.clone();
+  let cancelled_for_scan = cancelled.clone();
+  let result = fixture
+    .repo
+    .scan_site_with_progress_and_cancellation(
+      "docs",
+      Some(Arc::new(move |_| {
+        cancelled_from_progress.store(true, Ordering::SeqCst);
+      })),
+      Some(Arc::new(move || cancelled_for_scan.load(Ordering::SeqCst))),
+    )
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  let conn = rusqlite::Connection::open(fixture.repo.db_path()).unwrap();
+  assert_eq!(
+    conn
+      .query_row("select count(*) from scan_cache_entries", [], |row| row
+        .get::<_, u64>(0))
+      .unwrap(),
+    1,
+    "the completed hash should remain available for resume"
+  );
+  assert_eq!(
+    conn
+      .query_row("select count(*) from file_records", [], |row| row.get::<_, u64>(0))
+      .unwrap(),
+    0,
+    "a cancelled scan should not publish its new file set"
+  );
+}
+
+#[tokio::test]
+async fn concurrent_site_scans_use_independent_cancellation_callbacks() {
+  let fixture = Fixture::new().await;
+  for site_name in ["cancelled", "continuing"] {
+    let folder = fixture.mkdir(site_name);
+    fs::write(folder.join("file.bin"), site_name).unwrap();
+    fixture.create_site(site_name).await;
+    fixture.add_site_folder(site_name, &folder, HiddenPolicy::Include).await;
+  }
+
+  let (cancelled, continuing) = tokio::join!(
+    fixture
+      .repo
+      .scan_site_with_progress_and_cancellation("cancelled", None, Some(Arc::new(|| true))),
+    fixture.repo.scan_site("continuing"),
+  );
+
+  assert!(matches!(cancelled, Err(NafmError::ScanCancelled)));
+  let continuing = continuing.unwrap();
+  assert_eq!(continuing.site_name, "continuing");
+  assert_eq!(continuing.files_seen, 1);
+  assert_eq!(continuing.files_hashed, 1);
+}
+
+#[tokio::test]
+async fn scan_all_cancellation_does_not_publish_site_summaries() {
+  let fixture = Fixture::new().await;
+  for site_name in ["alpha", "beta"] {
+    let folder = fixture.mkdir(site_name);
+    fs::write(folder.join("file.bin"), site_name).unwrap();
+    fixture.create_site(site_name).await;
+    fixture.add_site_folder(site_name, &folder, HiddenPolicy::Include).await;
+  }
+
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let events_for_callback = events.clone();
+  let result = fixture
+    .repo
+    .scan_all_with_events_and_cancellation(
+      Some(Arc::new(move |event| {
+        events_for_callback.lock().unwrap().push(event.clone());
+      })),
+      Some(Arc::new(|| true)),
+    )
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  let events = events.lock().unwrap();
+  assert_eq!(
+    events
+      .iter()
+      .filter(|event| matches!(event, ScanEvent::Started(_)))
+      .count(),
+    2
+  );
+  assert!(!events.iter().any(|event| matches!(event, ScanEvent::Summary(_))));
 }
 
 #[tokio::test]

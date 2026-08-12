@@ -1,2 +1,7 @@
 /target/
-Cargo.lock
+/apps/nafm-desktop/dist/
+/apps/nafm-desktop/node_modules/
+/apps/nafm-desktop/*.tsbuildinfo
+/apps/nafm-desktop/vite.config.js
+/apps/nafm-desktop/vite.config.d.ts
+/apps/nafm-desktop/src-tauri/gen/

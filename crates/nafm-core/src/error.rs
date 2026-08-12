@@ -36,6 +36,8 @@ pub enum NafmError {
   SmbCredentialNotFound(String),
   #[error("SMB file changed while it was being scanned: {0}")]
   SmbFileChanged(PathBuf),
+  #[error("scan cancelled")]
+  ScanCancelled,
   #[error("unsupported site location scheme: {0}")]
   UnsupportedLocationScheme(String),
   #[error("credentials path is not a regular file or directory: {0}")]

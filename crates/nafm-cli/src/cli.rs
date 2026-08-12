@@ -101,12 +101,12 @@ mod tests {
 
   #[test]
   fn parses_smb_connect_command() {
-    let cli = Cli::try_parse_from(["nafm", "connect", "smb://omv.lan/Media", "--username", "alice"]).unwrap();
+    let cli = Cli::try_parse_from(["nafm", "connect", "smb://nas.example.test/Media", "--username", "alice"]).unwrap();
 
     assert!(matches!(
       cli.command,
       Command::Connect { url, username }
-        if url == "smb://omv.lan/Media" && username == "alice"
+        if url == "smb://nas.example.test/Media" && username == "alice"
     ));
   }
 

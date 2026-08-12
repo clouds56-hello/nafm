@@ -1,0 +1,35 @@
+const bytes = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+const integers = new Intl.NumberFormat();
+
+export function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${bytes.format(value / 1024 ** unitIndex)} ${units[unitIndex]}`;
+}
+
+export function formatCount(value: number): string {
+  return integers.format(value);
+}
+
+export function formatRelativeTime(value: string | null): string {
+  if (!value) return "Not scanned yet";
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "Unknown";
+  const delta = timestamp - Date.now();
+  const minutes = Math.round(delta / 60_000);
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return formatter.format(hours, "hour");
+  return formatter.format(Math.round(hours / 24), "day");
+}
+
+export function fileName(path: string): string {
+  const segments = path.replaceAll("\\", "/").split("/").filter(Boolean);
+  return segments.at(-1) ?? path;
+}
+
+export function percent(numerator: number, denominator: number): number {
+  return denominator > 0 ? Math.min(100, Math.max(0, (numerator / denominator) * 100)) : 0;
+}

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "apps/nafm-desktop/src-tauri",
   "crates/nafm-core",
   "crates/nafm-cli",
 ]
