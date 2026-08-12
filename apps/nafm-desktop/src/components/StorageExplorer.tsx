@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { formatHealth } from "../lib/format";
 import type { HealthMetric, SiteOverview, StorageNode, StorageTree } from "../lib/types";
 import { HealthControls } from "./HealthControls";
@@ -39,8 +40,13 @@ export function StorageExplorer({
   onStage,
   onUnstage,
 }: StorageExplorerProps) {
+  const [previewNode, setPreviewNode] = useState<StorageNode | null>(null);
   const score = tree.root[metric];
   const coverageWithoutTarget = metric === "coverage_health" && !target;
+  const visibleNode = previewNode ?? node;
+
+  useEffect(() => setPreviewNode(null), [tree, node.id]);
+  const preview = useCallback((next: StorageNode | null) => setPreviewNode(next), []);
 
   return (
     <section className="explorer-section" aria-labelledby="map-title">
@@ -89,12 +95,14 @@ export function StorageExplorer({
               root={tree.root}
               metric={metric}
               selectedNodeId={node.id}
+              onPreviewNode={preview}
               onSelectNode={onSelectNode}
             />
             <NodeDetails
-              node={node}
+              node={visibleNode}
               metric={metric}
               coverageTargetName={target?.name ?? null}
+              previewing={previewNode !== null}
               staged={staged}
               busy={stagingBusy}
               onStage={onStage}

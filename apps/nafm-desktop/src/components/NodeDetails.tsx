@@ -6,6 +6,7 @@ interface NodeDetailsProps {
   node: StorageNode;
   metric: HealthMetric;
   coverageTargetName: string | null;
+  previewing: boolean;
   staged: boolean;
   busy: boolean;
   onStage: () => void;
@@ -25,6 +26,7 @@ export function NodeDetails({
   node,
   metric,
   coverageTargetName,
+  previewing,
   staged,
   busy,
   onStage,
@@ -33,9 +35,12 @@ export function NodeDetails({
   const stageable = Boolean(node.path) && node.duplicate_bytes > 0 && node.kind !== "smaller_items";
 
   return (
-    <aside className="node-details" aria-label="Selection details">
+    <aside
+      className={`node-details ${previewing ? "is-previewing" : ""}`}
+      aria-label={previewing ? "Hover preview details" : "Selection details"}
+    >
       <div className="detail-icon"><FolderIcon /></div>
-      <span className="eyebrow">SELECTED</span>
+      <span className="eyebrow">{previewing ? "HOVER PREVIEW" : "SELECTED"}</span>
       <h3 title={node.name}>{node.name || (node.path ? fileName(node.path) : "Site")}</h3>
       <p className="detail-path" title={node.path ?? undefined}>{node.path ?? "Entire site"}</p>
 
@@ -53,7 +58,9 @@ export function NodeDetails({
         <div><span>Files</span><strong>{formatCount(node.file_count)}</strong></div>
       </div>
 
-      {metric === "space_health" ? (
+      {previewing ? (
+        <p className="detail-help preview-help">Move away to return to the selected item. Click to select and open this folder.</p>
+      ) : metric === "space_health" ? (
         <>
           <p className="detail-help">
             {stageable

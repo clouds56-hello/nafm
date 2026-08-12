@@ -6,6 +6,7 @@ interface SunburstMapProps {
   root: StorageNode;
   metric: HealthMetric;
   selectedNodeId: string;
+  onPreviewNode: (node: StorageNode | null) => void;
   onSelectNode: (node: StorageNode) => void;
 }
 
@@ -93,7 +94,11 @@ function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRa
   if (angle < -Math.PI / 2) angle += TAU;
   return [...arcs].reverse().find((arc) => {
     const inner = innerRadius + (arc.depth - 1) * ringWidth;
-    return radius >= inner && radius <= inner + ringWidth - 4 && angle >= arc.start && angle <= arc.end;
+    const gap = Math.min(GAP, Math.max(0, (arc.end - arc.start) * 0.12));
+    return radius >= inner
+      && radius <= inner + ringWidth - 4
+      && angle >= arc.start + gap
+      && angle <= arc.end - gap;
   });
 }
 
@@ -124,9 +129,11 @@ function drawScoreLabel(
   context.restore();
 }
 
-export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: SunburstMapProps) {
+export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSelectNode }: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const [size, setSize] = useState(560);
   const [hovered, setHovered] = useState<ArcDatum | null>(null);
   const [currentRootId, setCurrentRootId] = useState(root.id);
@@ -137,6 +144,13 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
   const innerRadius = size * 0.17;
   const maxDepth = arcs.reduce((maximum, arc) => Math.max(maximum, arc.depth), 1);
   const ringWidth = (size * 0.43 - innerRadius) / Math.max(1, Math.min(4, maxDepth));
+  const previewArc = useCallback((next: ArcDatum | null) => {
+    setHovered((current) => {
+      if (current?.node.id === next?.node.id) return current;
+      onPreviewNode(next?.node ?? null);
+      return next;
+    });
+  }, [onPreviewNode]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -147,6 +161,57 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
     observer.observe(frame);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    const canvas = hoverCanvasRef.current;
+    if (!canvas) return;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = size * ratio;
+    canvas.height = size * ratio;
+    canvas.style.width = `${size}px`;
+    canvas.style.height = `${size}px`;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.scale(ratio, ratio);
+
+    const drawHover = (pulse: number) => {
+      context.clearRect(0, 0, size, size);
+      if (!hovered) return;
+      const center = size / 2;
+      const inner = innerRadius + (hovered.depth - 1) * ringWidth;
+      const outer = inner + ringWidth - 4;
+      const color = healthColor(hovered.node[metric]);
+      drawArc(context, center, inner, outer, hovered.start, hovered.end);
+      context.save();
+      context.strokeStyle = "rgba(255,255,255,.78)";
+      context.lineWidth = 1.5 + pulse * 1.5;
+      context.shadowColor = color;
+      context.shadowBlur = 13 + pulse * 18;
+      context.stroke();
+      context.restore();
+    };
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (!hovered) {
+      drawHover(0);
+      return;
+    }
+    if (reducedMotion.matches) {
+      drawHover(0.35);
+      return;
+    }
+
+    const startedAt = performance.now();
+    const animate = (now: number) => {
+      drawHover((Math.sin((now - startedAt) / 190) + 1) / 2);
+      animationFrameRef.current = window.requestAnimationFrame(animate);
+    };
+    animationFrameRef.current = window.requestAnimationFrame(animate);
+    return () => {
+      if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    };
+  }, [hovered, innerRadius, metric, ringWidth, size]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -174,14 +239,13 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
       const color = healthColor(arc.node[metric]);
       drawArc(context, center, inner, outer, arc.start, arc.end);
       const selected = arc.node.id === selectedNodeId;
-      const isHovered = hovered?.node.id === arc.node.id;
-      context.globalAlpha = selected || isHovered ? 1 : 0.84;
+      context.globalAlpha = selected ? 1 : 0.84;
       context.fillStyle = color;
       context.fill();
-      if (selected || isHovered) {
+      if (selected) {
         context.save();
-        context.strokeStyle = selected ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.65)";
-        context.lineWidth = selected ? 2 : 1;
+        context.strokeStyle = "rgba(255,255,255,.95)";
+        context.lineWidth = 2;
         context.shadowColor = color;
         context.shadowBlur = 12;
         context.stroke();
@@ -197,11 +261,12 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
     context.fill();
     context.strokeStyle = "rgba(255,255,255,.07)";
     context.stroke();
-  }, [arcs, hovered, innerRadius, metric, ringWidth, selectedNodeId, size]);
+  }, [arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
     setCurrentRootId(root.id);
-  }, [root.id]);
+    previewArc(null);
+  }, [previewArc, root.id]);
 
   const getPointerArc = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -209,16 +274,23 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
   }, [arcs, innerRadius, ringWidth, size]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      previewArc(null);
+      return;
+    }
     if (arcs.length === 0) return;
     const current = Math.max(0, arcs.findIndex((arc) => arc.node.id === (hovered?.node.id ?? selectedNodeId)));
     if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
       event.preventDefault();
       const offset = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
-      setHovered(arcs[(current + offset + arcs.length) % arcs.length] ?? null);
+      const next = arcs[(current + offset + arcs.length) % arcs.length] ?? null;
+      previewArc(next);
     } else if ((event.key === "Enter" || event.key === " ") && hovered) {
       event.preventDefault();
       onSelectNode(hovered.node);
       if (hovered.node.children.length > 0) setCurrentRootId(hovered.node.id);
+      previewArc(null);
     }
   };
 
@@ -240,22 +312,29 @@ export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: Sunb
         role="img"
         tabIndex={0}
         aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. Use arrow keys to explore and Enter to select.`}
-        onPointerMove={(event) => setHovered(getPointerArc(event) ?? null)}
-        onPointerLeave={() => setHovered(null)}
+        onPointerMove={(event) => {
+          const next = getPointerArc(event) ?? null;
+          previewArc(next);
+        }}
+        onPointerLeave={() => previewArc(null)}
         onClick={(event) => {
           const arc = getPointerArc(event);
           if (arc) {
             onSelectNode(arc.node);
             if (arc.node.children.length > 0) setCurrentRootId(arc.node.id);
+            previewArc(null);
           }
         }}
         onKeyDown={handleKeyDown}
+        onBlur={() => previewArc(null)}
       />
+      <canvas ref={hoverCanvasRef} className="sunburst-hover-canvas" aria-hidden="true" />
       <button
         className="map-center-control health-center"
         type="button"
         onClick={() => {
           if (!parentRoot) return;
+          previewArc(null);
           setCurrentRootId(parentRoot.id);
           onSelectNode(parentRoot);
         }}
