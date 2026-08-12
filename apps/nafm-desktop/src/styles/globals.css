@@ -284,10 +284,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-stage svg { width: 11px; }
 .inspector-readonly { margin-left: auto; color: #69767e; font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
 .inspector-panel.is-previewing .inspector-readonly { color: #85aaa7; }
-.inspector-preview-state { display: grid; min-width: 0; min-height: 0; place-content: center; justify-items: center; gap: 9px; padding: 22px; color: #738188; text-align: center; }
-.inspector-preview-state > div { display: inline-flex; align-items: center; gap: 8px; color: #a4c7c4; font-size: 10px; }
-.inspector-preview-state p { max-width: 235px; margin: 0; font-size: 10px; line-height: 1.55; }
-.inspector-preview-pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(118,225,215,.45); animation: pulse 1.6s infinite; }
 .inspector-contents { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr) auto auto; overflow: hidden; }
 .inspector-contents > header { display: flex; min-width: 0; align-items: center; justify-content: space-between; min-height: 39px; padding: 6px 9px; }
 .inspector-contents > header > div { min-width: 0; }
@@ -303,6 +299,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-row-placeholder { min-height: 39px; }
 .inspector-list li button { width: 100%; min-height: 39px; padding: 5px 9px; border: 0; color: #849199; background: transparent; font-size: 9px; text-align: left; cursor: pointer; }
 .inspector-list li button:hover { color: #bcc7ca; background: rgba(118,225,215,.04); }
+.inspector-panel.is-previewing .inspector-list li button:disabled { opacity: 1; cursor: default; }
 .inspector-list li button[aria-current="true"] { color: #dbe5e6; background: rgba(118,225,215,.07); box-shadow: inset 2px 0 var(--accent); }
 .inspector-list li button > span, .inspector-list li button > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-list li button > strong { font-size: 10px; font-variant-numeric: tabular-nums; }

@@ -6,7 +6,9 @@ interface SunburstMapProps {
   root: StorageNode;
   metric: HealthMetric;
   selectedNodeId: string;
-  onPreviewNode: (node: StorageNode | null) => void;
+  onPreviewNode: (node: StorageNode) => void;
+  onPreviewLeave: () => void;
+  onPreviewCancel: () => void;
   onSelectNode: (node: StorageNode) => void;
 }
 
@@ -114,7 +116,15 @@ function drawScoreLabel(
   context.restore();
 }
 
-export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSelectNode }: SunburstMapProps) {
+export function SunburstMap({
+  root,
+  metric,
+  selectedNodeId,
+  onPreviewNode,
+  onPreviewLeave,
+  onPreviewCancel,
+  onSelectNode,
+}: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
@@ -130,13 +140,18 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
   const innerRadius = size * 0.17;
   const maxDepth = arcs.reduce((maximum, arc) => Math.max(maximum, arc.depth), 1);
   const ringWidth = (size * 0.43 - innerRadius) / Math.max(1, Math.min(4, maxDepth));
-  const previewArc = useCallback((next: ArcDatum | null) => {
+  const previewArc = useCallback((next: ArcDatum | null, restore: "delayed" | "immediate" = "immediate") => {
     const nextNodeId = next?.node.id ?? null;
-    if (hoveredNodeIdRef.current === nextNodeId) return;
+    if (hoveredNodeIdRef.current === nextNodeId) {
+      if (!next && restore === "immediate") onPreviewCancel();
+      return;
+    }
     hoveredNodeIdRef.current = nextNodeId;
     setHovered(next);
-    onPreviewNode(next?.node ?? null);
-  }, [onPreviewNode]);
+    if (next) onPreviewNode(next.node);
+    else if (restore === "delayed") onPreviewLeave();
+    else onPreviewCancel();
+  }, [onPreviewCancel, onPreviewLeave, onPreviewNode]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -252,7 +267,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
   useEffect(() => {
     setCurrentRootId(root.id);
     previewArc(null);
-  }, [previewArc, root.id]);
+  }, [previewArc, root]);
 
   useEffect(() => {
     const selectedPath = findPath(root, selectedNodeId);
@@ -270,7 +285,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      previewArc(null);
+      previewArc(null, "immediate");
       return;
     }
     if (arcs.length === 0) return;
@@ -284,7 +299,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
       event.preventDefault();
       onSelectNode(hovered.node);
       if (hovered.node.children.length > 0) setCurrentRootId(hovered.node.id);
-      previewArc(null);
+      previewArc(null, "immediate");
     }
   };
 
@@ -308,19 +323,19 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
         aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. Use arrow keys to explore and Enter to select.`}
         onPointerMove={(event) => {
           const next = getPointerArc(event) ?? null;
-          previewArc(next);
+          previewArc(next, next ? "immediate" : "delayed");
         }}
-        onPointerLeave={() => previewArc(null)}
+        onPointerLeave={() => previewArc(null, "delayed")}
         onClick={(event) => {
           const arc = getPointerArc(event);
           if (arc) {
             onSelectNode(arc.node);
             if (arc.node.children.length > 0) setCurrentRootId(arc.node.id);
-            previewArc(null);
+            previewArc(null, "immediate");
           }
         }}
         onKeyDown={handleKeyDown}
-        onBlur={() => previewArc(null)}
+        onBlur={() => previewArc(null, "immediate")}
       />
       <canvas ref={hoverCanvasRef} className="sunburst-hover-canvas" aria-hidden="true" />
       <button
@@ -328,7 +343,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
         type="button"
         onClick={() => {
           if (!parentRoot) return;
-          previewArc(null);
+          previewArc(null, "immediate");
           setCurrentRootId(parentRoot.id);
           onSelectNode(parentRoot);
         }}
