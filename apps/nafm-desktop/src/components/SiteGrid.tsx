@@ -12,14 +12,11 @@ interface SiteGridProps {
 
 export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan, onCancel }: SiteGridProps) {
   return (
-    <section className="sites-section" aria-labelledby="sites-title">
-      <div className="section-heading compact">
-        <div>
-          <span className="eyebrow">WORKSPACE</span>
-          <h1 id="sites-title">Your storage</h1>
-        </div>
-        <span className="site-count">{sites.length} {sites.length === 1 ? "site" : "sites"}</span>
-      </div>
+    <aside className="sites-section" aria-labelledby="sites-title">
+      <header className="site-rail-heading">
+        <div><span className="eyebrow">WORKSPACE</span><h1 id="sites-title">Sites</h1></div>
+        <span className="site-count">{sites.length}</span>
+      </header>
       <div className="site-grid">
         {sites.map((site) => (
           <SiteCard
@@ -33,6 +30,6 @@ export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan
           />
         ))}
       </div>
-    </section>
+    </aside>
   );
 }

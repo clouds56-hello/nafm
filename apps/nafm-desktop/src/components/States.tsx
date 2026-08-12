@@ -2,10 +2,18 @@ import { DriveIcon, RefreshIcon, ScanIcon, WarningIcon } from "./Icons";
 
 export function DashboardSkeleton() {
   return (
-    <main className="page-shell" aria-label="Loading workspace">
-      <div className="skeleton-line title" />
-      <div className="skeleton-grid"><div className="skeleton-card" /><div className="skeleton-card" /><div className="skeleton-card" /></div>
-      <div className="skeleton-map"><span /></div>
+    <main className="dashboard-skeleton" aria-label="Loading workspace">
+      <aside className="skeleton-site-rail">
+        <div className="skeleton-line title" />
+        <div className="skeleton-card" />
+        <div className="skeleton-card" />
+        <div className="skeleton-card" />
+      </aside>
+      <div className="skeleton-workspace">
+        <div className="skeleton-toolbar" />
+        <div className="skeleton-map"><span /></div>
+        <div className="skeleton-inspector" />
+      </div>
     </main>
   );
 }

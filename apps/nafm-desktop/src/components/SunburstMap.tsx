@@ -6,6 +6,7 @@ interface SunburstMapProps {
   root: StorageNode;
   metric: HealthMetric;
   selectedNodeId: string;
+  previewNode: StorageNode | null;
   onPreviewNode: (node: StorageNode | null) => void;
   onSelectNode: (node: StorageNode) => void;
 }
@@ -114,7 +115,7 @@ function drawScoreLabel(
   context.restore();
 }
 
-export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSelectNode }: SunburstMapProps) {
+export function SunburstMap({ root, metric, selectedNodeId, previewNode, onPreviewNode, onSelectNode }: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
@@ -141,7 +142,7 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
     const frame = frameRef.current;
     if (!frame) return;
     const observer = new ResizeObserver(([entry]) => {
-      setSize(Math.max(280, Math.min(640, Math.floor(entry.contentRect.width))));
+      setSize(Math.max(240, Math.min(640, Math.floor(entry.contentRect.width), Math.floor(entry.contentRect.height))));
     });
     observer.observe(frame);
     return () => observer.disconnect();
@@ -322,6 +323,14 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
         onBlur={() => previewArc(null)}
       />
       <canvas ref={hoverCanvasRef} className="sunburst-hover-canvas" aria-hidden="true" />
+      {previewNode && (
+        <div className="map-hover-card" aria-hidden="true">
+          <span>{previewNode.kind === "file" ? "FILE" : "FOLDER"}</span>
+          <strong title={previewNode.name}>{previewNode.name}</strong>
+          <small>{formatBytes(previewNode.total_bytes)} · {formatCount(previewNode.file_count)} files</small>
+          <b style={{ color: healthColor(previewNode[metric]) }}>{formatHealth(previewNode[metric])}</b>
+        </div>
+      )}
       <button
         className="map-center-control health-center"
         type="button"
@@ -341,7 +350,6 @@ export function SunburstMap({ root, metric, selectedNodeId, onPreviewNode, onSel
       <div className="health-legend" aria-label="Health score color scale">
         <div className="health-gradient" />
         <div><span>0 unhealthy</span><span>50</span><span>100 healthy</span></div>
-        <small><i /> Gray means not scanned or unavailable</small>
       </div>
       <p className="sr-only" aria-live="polite">
         {hovered

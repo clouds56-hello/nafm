@@ -11,7 +11,7 @@ export function AppHeader({ stagedCount, activeTaskCount, onScanAll, onOpenRevie
   const scanning = activeTaskCount > 0;
   return (
     <header className="app-header">
-      <div className="brand" aria-label="NAFM home">
+      <div className="brand" aria-label="NAFM home" data-tauri-drag-region>
         <span className="brand-mark"><span /></span>
         <span>NAFM</span>
       </div>

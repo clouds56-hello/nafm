@@ -45,9 +45,9 @@ export function SiteCard({ site, progress, active, onSelect, onScan, onCancel }:
         </div>
       ) : (
         <div className="site-stats">
-          <div><span>Used</span><strong>{formatBytes(site.total_bytes)}</strong></div>
-          <div><span>Files</span><strong>{formatCount(site.total_files)}</strong></div>
-          <div className="reclaimable"><span>Reclaimable</span><strong>{formatBytes(site.duplicate_bytes)}</strong></div>
+          <span>{formatBytes(site.total_bytes)}</span>
+          <span>{formatCount(site.total_files)} files</span>
+          <strong>{formatBytes(site.duplicate_bytes)} reclaimable</strong>
         </div>
       )}
 

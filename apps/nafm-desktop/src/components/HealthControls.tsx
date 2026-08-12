@@ -33,7 +33,6 @@ export function HealthControls({
           onClick={() => onMetricChange("space_health")}
         >
           <strong>Space health</strong>
-          <span>Duplicates within this site</span>
         </button>
         <button
           type="button"
@@ -42,7 +41,6 @@ export function HealthControls({
           onClick={() => onMetricChange("coverage_health")}
         >
           <strong>Coverage health</strong>
-          <span>Content present on another site</span>
         </button>
       </div>
 
@@ -51,7 +49,6 @@ export function HealthControls({
           <div className="direction-site">
             <span>Source</span>
             <strong title={source.location}>{source.name}</strong>
-            <small>{formatRelativeTime(source.last_scanned_at)}</small>
           </div>
           <div className="direction-arrow" aria-hidden="true">→</div>
           <label className="direction-site direction-target">
@@ -67,7 +64,7 @@ export function HealthControls({
             ) : (
               <strong>No other site</strong>
             )}
-            <small>{target ? formatRelativeTime(target.last_scanned_at) : "Add another site to compare"}</small>
+            <small>{target ? formatRelativeTime(target.last_scanned_at) : "Add another site"}</small>
           </label>
           <button
             className="swap-button"
