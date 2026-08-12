@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, ContentHasher, CredentialStore, HashAlgorithm, HiddenPolicy, NafmError, Repository,
-  RepositoryOptions, ScanEvent, SiteFolderKind, StageWarningReason, StorageNodeKind,
+  AddSiteFolderRequest, ContentHasher, CredentialStore, FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError,
+  Repository, RepositoryOptions, ScanEvent, SiteFolderKind, StageWarningReason, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -35,6 +35,253 @@ async fn scan_site_detects_duplicates_across_site_folders() {
   let duplicates = fixture.repo.find_duplicates(Some("archive")).await.unwrap();
   assert_eq!(duplicates.len(), 1);
   assert_eq!(duplicates[0].files.len(), 2);
+}
+
+#[tokio::test]
+async fn file_content_matches_orders_same_site_first_and_pages_six_at_a_time() {
+  let fixture = Fixture::new().await;
+  let source_root = fs::canonicalize(fixture.mkdir("matches-source")).unwrap();
+  let first_target_root = fs::canonicalize(fixture.mkdir("matches-first-target")).unwrap();
+  let second_target_root = fs::canonicalize(fixture.mkdir("matches-second-target")).unwrap();
+  let selected_path = source_root.join("selected.bin");
+  fs::write(&selected_path, b"shared-content").unwrap();
+  for index in 0..7 {
+    fs::write(source_root.join(format!("copy-{index}.bin")), b"shared-content").unwrap();
+  }
+  fs::write(first_target_root.join("target.bin"), b"shared-content").unwrap();
+  fs::write(second_target_root.join("target.bin"), b"shared-content").unwrap();
+
+  let source_site = fixture.repo.create_site("z-source").await.unwrap();
+  fixture
+    .add_site_folder(&source_site.id, &source_root, HiddenPolicy::Include)
+    .await;
+  fixture.create_site("a-target").await;
+  fixture
+    .add_site_folder("a-target", &first_target_root, HiddenPolicy::Include)
+    .await;
+  fixture.create_site("b-target").await;
+  fixture
+    .add_site_folder("b-target", &second_target_root, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let first_page = fixture
+    .repo
+    .file_content_matches(&source_site.id, &selected_path, 0, 6)
+    .await
+    .unwrap();
+  assert_eq!(first_page.status, FileContentMatchStatus::Ready);
+  assert_eq!(first_page.total_matches, 9);
+  assert_eq!(first_page.offset, 0);
+  assert_eq!(first_page.limit, 6);
+  assert_eq!(first_page.matches.len(), 6);
+  assert!(first_page.matches.iter().all(|item| {
+    item.site_id == source_site.id
+      && item.site_name == "z-source"
+      && item.site_folder_kind == SiteFolderKind::Local
+      && item.path != selected_path
+      && item.size_bytes == 14
+  }));
+
+  let second_page = fixture
+    .repo
+    .file_content_matches(&source_site.id, &selected_path, 6, 6)
+    .await
+    .unwrap();
+  assert_eq!(second_page.status, FileContentMatchStatus::Ready);
+  assert_eq!(second_page.total_matches, 9);
+  assert_eq!(second_page.offset, 6);
+  assert_eq!(second_page.limit, 6);
+  assert_eq!(second_page.matches.len(), 3);
+  assert_eq!(
+    second_page
+      .matches
+      .iter()
+      .map(|item| item.site_name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["z-source", "a-target", "b-target"]
+  );
+  assert_eq!(
+    second_page.matches[0].path,
+    source_root.join("copy-6.bin"),
+    "same-site matches should be path ordered before alphabetically earlier sites"
+  );
+  assert!(second_page.matches.iter().all(|item| item.path != selected_path));
+}
+
+#[tokio::test]
+async fn file_content_matches_preserves_smb_metadata_and_requires_exact_content_identity() {
+  let cache = tempfile::tempdir().unwrap();
+  let local_root = tempfile::tempdir().unwrap();
+  let credentials_root = tempfile::tempdir().unwrap();
+  let credential_store = CredentialStore::new(credentials_root.path().join("nafm"));
+  credential_store
+    .save_smb_credential("smb://nas.example.test/share", "sample-user", "secret")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: cache.path().join("nafm.sqlite3"),
+      hash_algorithm: None,
+    },
+    credential_store,
+  )
+  .await
+  .unwrap();
+  let local_site = repo.create_site("local").await.unwrap();
+  let local_folder = repo
+    .add_site_folder(
+      &local_site.id,
+      AddSiteFolderRequest {
+        path: local_root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let local_path = local_root.path().join("local-copy.bin");
+  fs::write(&local_path, b"shared-content").unwrap();
+  let local_path = fs::canonicalize(local_path).unwrap();
+  repo.scan_site(&local_site.id).await.unwrap();
+  let (local_file_id, hash_algorithm, content_hash, size_bytes) = tracked_file_identity(&repo, &local_path);
+
+  let network_site = repo.create_site("network").await.unwrap();
+  let network_folder = repo
+    .add_site_folder(
+      &network_site.id,
+      AddSiteFolderRequest {
+        path: PathBuf::from("smb://nas.example.test/share/Media"),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let selected_path = PathBuf::from("smb://nas.example.test/share/Media/selected.bin");
+  let smb_copy_path = PathBuf::from("smb://nas.example.test/share/Media/copy.bin");
+  insert_tracked_file(
+    &repo,
+    "smb-selected",
+    &network_site.id,
+    &network_folder.id,
+    &selected_path,
+    size_bytes,
+    &hash_algorithm,
+    Some(&content_hash),
+  );
+  insert_tracked_file(
+    &repo,
+    "smb-copy",
+    &network_site.id,
+    &network_folder.id,
+    &smb_copy_path,
+    size_bytes,
+    &hash_algorithm,
+    Some(&content_hash),
+  );
+  insert_tracked_file(
+    &repo,
+    "wrong-size",
+    &network_site.id,
+    &network_folder.id,
+    Path::new("smb://nas.example.test/share/Media/wrong-size.bin"),
+    size_bytes + 1,
+    &hash_algorithm,
+    Some(&content_hash),
+  );
+  insert_tracked_file(
+    &repo,
+    "wrong-algorithm",
+    &network_site.id,
+    &network_folder.id,
+    Path::new("smb://nas.example.test/share/Media/wrong-algorithm.bin"),
+    size_bytes,
+    "other-algorithm",
+    Some(&content_hash),
+  );
+
+  let page = repo
+    .file_content_matches(&network_site.id, &selected_path, 0, 6)
+    .await
+    .unwrap();
+  assert_eq!(page.status, FileContentMatchStatus::Ready);
+  assert_eq!(page.total_matches, 2);
+  assert_eq!(
+    page
+      .matches
+      .iter()
+      .map(|item| item.file_id.as_str())
+      .collect::<Vec<_>>(),
+    vec!["smb-copy", local_file_id.as_str()]
+  );
+  assert_eq!(page.matches[0].site_name, "network");
+  assert_eq!(page.matches[0].site_folder_id, network_folder.id);
+  assert_eq!(page.matches[0].site_folder_kind, SiteFolderKind::Smb);
+  assert_eq!(page.matches[0].path, smb_copy_path);
+  assert_eq!(page.matches[1].site_name, "local");
+  assert_eq!(page.matches[1].site_folder_id, local_folder.id);
+  assert_eq!(page.matches[1].site_folder_kind, SiteFolderKind::Local);
+  assert_eq!(page.matches[1].path, local_path);
+  assert!(page.matches.iter().all(|item| item.file_id != "smb-selected"));
+}
+
+#[tokio::test]
+async fn file_content_matches_reports_not_hashed_and_rejects_untracked_site_paths() {
+  let fixture = Fixture::new().await;
+  let root = fs::canonicalize(fixture.mkdir("not-hashed")).unwrap();
+  let selected_path = root.join("selected.bin");
+  fs::write(&selected_path, b"content").unwrap();
+  let site = fixture.repo.create_site("source").await.unwrap();
+  fixture.add_site_folder(&site.id, &root, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  rusqlite::Connection::open(fixture.repo.db_path())
+    .unwrap()
+    .execute(
+      "update file_records set content_hash = null where site_id = ?1 and path = ?2",
+      rusqlite::params![site.id, selected_path.to_string_lossy()],
+    )
+    .unwrap();
+
+  let page = fixture
+    .repo
+    .file_content_matches(&site.id, &selected_path, 12, 0)
+    .await
+    .unwrap();
+  assert_eq!(page.status, FileContentMatchStatus::NotHashed);
+  assert!(page.matches.is_empty());
+  assert_eq!(page.total_matches, 0);
+  assert_eq!(page.offset, 12);
+  assert_eq!(page.limit, 1);
+
+  let missing_path = root.join("missing.bin");
+  let missing_error = fixture
+    .repo
+    .file_content_matches(&site.id, &missing_path, 0, 6)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    missing_error,
+    NafmError::TrackedPathNotFound(path) if path == missing_path
+  ));
+
+  let other_site = fixture.repo.create_site("other").await.unwrap();
+  let wrong_site_error = fixture
+    .repo
+    .file_content_matches(&other_site.id, &selected_path, 0, 6)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    wrong_site_error,
+    NafmError::TrackedPathNotFound(path) if path == selected_path
+  ));
+
+  let missing_site_error = fixture
+    .repo
+    .file_content_matches("missing-site", &selected_path, 0, 6)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    missing_site_error,
+    NafmError::SiteNotFound(selector) if selector == "missing-site"
+  ));
 }
 
 #[tokio::test]
@@ -210,6 +457,48 @@ fn table_count(repo: &Repository, table: &str) -> u64 {
     .unwrap()
     .query_row(&query, [], |row| row.get(0))
     .unwrap()
+}
+
+fn tracked_file_identity(repo: &Repository, path: &Path) -> (String, String, String, u64) {
+  rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .query_row(
+      "select id, hash_algorithm, content_hash, size_bytes from file_records where path = ?1",
+      rusqlite::params![path.to_string_lossy()],
+      |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_tracked_file(
+  repo: &Repository,
+  id: &str,
+  site_id: &str,
+  site_folder_id: &str,
+  path: &Path,
+  size_bytes: u64,
+  hash_algorithm: &str,
+  content_hash: Option<&str>,
+) {
+  rusqlite::Connection::open(repo.db_path())
+    .unwrap()
+    .execute(
+      "insert into file_records (
+        id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos,
+        hash_algorithm, content_hash, last_seen_at
+      ) values (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, '2026-01-01T00:00:00Z')",
+      rusqlite::params![
+        id,
+        site_id,
+        site_folder_id,
+        path.to_string_lossy(),
+        size_bytes,
+        hash_algorithm,
+        content_hash,
+      ],
+    )
+    .unwrap();
 }
 
 #[tokio::test]

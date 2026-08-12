@@ -1,6 +1,9 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageLocation, StorageNode, StorageTree,
+  FileContentMatchesPage, Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageLocation, StorageNode,
+  StorageTree,
 };
 use serde::Serialize;
 use tauri::State;
@@ -208,4 +211,21 @@ pub async fn get_storage_children(
     None => repository.storage_children(&site_id, &node_id, offset, limit).await,
   }
   .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_file_content_matches(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  site_id: String,
+  path: PathBuf,
+  offset: u64,
+  limit: u64,
+) -> Result<FileContentMatchesPage, String> {
+  state
+    .repository_for(&expected_workspace)
+    .await?
+    .file_content_matches(&site_id, &path, offset, limit)
+    .await
+    .map_err(|error| error.to_string())
 }

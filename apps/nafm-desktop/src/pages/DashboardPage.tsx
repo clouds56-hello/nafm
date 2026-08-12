@@ -84,6 +84,8 @@ export function DashboardPage({
             <MapError message={state.treeError} onRetry={() => void state.retryTree()} />
           ) : state.activeSite && state.activeTree && state.location && state.selectedNode && (state.activeTree.root.file_count > 0 || state.activeTree.root.children.length > 0) ? (
             <StorageExplorer
+              workspaceName={state.dashboard.workspace_name}
+              contentRevision={state.contentRevision}
               sites={state.dashboard.sites}
               source={state.activeSite}
               target={state.coverageTargetSite}

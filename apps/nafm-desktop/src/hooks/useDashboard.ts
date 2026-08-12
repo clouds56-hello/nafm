@@ -96,6 +96,7 @@ export function useDashboard(expectedWorkspace: string | null) {
   const [preview, setPreview] = useState<CleanupPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [contentRevision, setContentRevision] = useState(0);
   const selectedSiteRef = useRef<string | null>(null);
   const targetSiteRef = useRef<string | null>(null);
   const treeRequestRef = useRef(0);
@@ -433,6 +434,7 @@ export function useDashboard(expectedWorkspace: string | null) {
           return next;
         });
         if (event.kind === "completed") {
+          setContentRevision((current) => current + 1);
           const sourceSiteId = selectedSiteRef.current;
           const targetSiteId = targetSiteRef.current;
           if (sourceSiteId && (event.site_id === sourceSiteId || event.site_id === targetSiteId)) {
@@ -867,6 +869,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     scan,
     cancel,
     activeTaskCount: activeRequestIds.size,
+    contentRevision,
     stagingBusy,
     stageSelected,
     removeStaged,
@@ -890,6 +893,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     childrenPage,
     coverageTargetSite,
     coverageTargetSiteId,
+    contentRevision,
     dashboard,
     error,
     healthMetric,

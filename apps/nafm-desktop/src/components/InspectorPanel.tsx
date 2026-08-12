@@ -6,8 +6,22 @@ import {
   formatHealth,
   healthColor,
 } from "../lib/format";
-import type { HealthMetric, StorageChildrenPage, StorageNode } from "../lib/types";
-import { CheckIcon, ChevronIcon, FileIcon, FolderIcon, LayersIcon, RefreshIcon } from "./Icons";
+import type {
+  FileContentMatchesPage,
+  HealthMetric,
+  StorageChildrenPage,
+  StorageNode,
+} from "../lib/types";
+import {
+  CheckIcon,
+  ChevronIcon,
+  DriveIcon,
+  FileIcon,
+  FolderIcon,
+  LayersIcon,
+  NetworkIcon,
+  RefreshIcon,
+} from "./Icons";
 
 interface InspectorPanelProps {
   node: StorageNode;
@@ -25,11 +39,21 @@ interface InspectorPanelProps {
   canLoadNext: boolean;
   rangeStart: number;
   rangeEnd: number;
+  duplicatesPage: FileContentMatchesPage | null;
+  duplicatesLoading: boolean;
+  duplicatesError: string | null;
+  canLoadPreviousDuplicates: boolean;
+  canLoadNextDuplicates: boolean;
+  duplicateRangeStart: number;
+  duplicateRangeEnd: number;
   onBack: () => void;
   onSelect: (node: StorageNode) => void;
   onRetry: () => void;
   onPrevious: () => void;
   onNext: () => void;
+  onRetryDuplicates: () => void;
+  onPreviousDuplicates: () => void;
+  onNextDuplicates: () => void;
   onStage: () => void;
   onUnstage: () => void;
   onPointerEnter: () => void;
@@ -93,11 +117,21 @@ export function InspectorPanel({
   canLoadNext,
   rangeStart,
   rangeEnd,
+  duplicatesPage,
+  duplicatesLoading,
+  duplicatesError,
+  canLoadPreviousDuplicates,
+  canLoadNextDuplicates,
+  duplicateRangeStart,
+  duplicateRangeEnd,
   onBack,
   onSelect,
   onRetry,
   onPrevious,
   onNext,
+  onRetryDuplicates,
+  onPreviousDuplicates,
+  onNextDuplicates,
   onStage,
   onUnstage,
   onPointerEnter,
@@ -105,8 +139,7 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   const DetailIcon = node.kind === "file" ? FileIcon : FolderIcon;
   const stageable = Boolean(node.path) && node.duplicate_bytes > 0 && node.kind !== "smaller_items";
-  const totalChildren = page?.total_children ?? 0;
-  const contentsName = page?.parent.name || node.name || "Contents";
+  const inspectingFile = node.kind === "file";
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   return (
@@ -178,80 +211,265 @@ export function InspectorPanel({
       </div>
 
       <section className="inspector-contents" aria-labelledby="contents-title">
-        <header>
-          <div>
-            <span className="eyebrow">
-              {previewing ? "PREVIEW CONTENTS" : page?.parent.id === node.id ? "CONTENTS" : "IN FOLDER"}
-            </span>
-            <h3 id="contents-title" title={contentsName}>{contentsName}</h3>
-          </div>
-          <small aria-live="polite">
-            {totalChildren > 0 ? `${rangeStart}–${rangeEnd} of ${totalChildren}` : ""}
-          </small>
-        </header>
-
-        <div className="inspector-list-heading" aria-hidden="true">
-          <span>Name</span><span>Size</span><span>{metric === "space_health" ? "Space" : "Coverage"}</span><span />
-        </div>
-
-        <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
-          {loading && !page ? (
-            <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Loading contents…</div>
-          ) : error && !page ? (
-            <div className="inspector-list-state is-error" role="alert">
-              <p>{error}</p>
-              <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
-            </div>
-          ) : !canHaveChildren || page?.children.length === 0 ? (
-            <div className="inspector-list-state">
-              {!canHaveChildren || page?.parent.kind === "file" ? <FileIcon /> : <FolderIcon />}
-              <p>{!canHaveChildren || page?.parent.kind === "file" ? "This file has no children." : "This selection has no direct children."}</p>
-            </div>
-          ) : (
-            <ul className="inspector-list">
-              {page?.children.map((child) => {
-                const score = child[metric];
-                const openable = canOpen(child);
-                const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
-                return (
-                  <li key={child.id}>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(child)}
-                      disabled={previewing}
-                      aria-current={child.id === node.id ? "true" : undefined}
-                      aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
-                    >
-                      <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
-                      <span>{formatBytes(child.total_bytes)}</span>
-                      <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
-                      <ChevronIcon className={openable ? "" : "is-hidden"} />
-                    </button>
-                  </li>
-                );
-              })}
-              {Array.from({ length: Math.max(0, 6 - (page?.children.length ?? 0)) }, (_, index) => (
-                <li className="inspector-row-placeholder" key={`placeholder-${index}`} aria-hidden="true" />
-              ))}
-            </ul>
-          )}
-          {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading page" />}
-        </div>
-
-        {error && page && (
-          <div className="inspector-inline-error" role="alert">{error} <button type="button" onClick={onRetry}>Try again</button></div>
+        {inspectingFile ? (
+          <DuplicateList
+            previewing={previewing}
+            page={duplicatesPage}
+            loading={duplicatesLoading}
+            error={duplicatesError}
+            canLoadPrevious={canLoadPreviousDuplicates}
+            canLoadNext={canLoadNextDuplicates}
+            rangeStart={duplicateRangeStart}
+            rangeEnd={duplicateRangeEnd}
+            onRetry={onRetryDuplicates}
+            onPrevious={onPreviousDuplicates}
+            onNext={onNextDuplicates}
+          />
+        ) : (
+          <FolderContents
+            node={node}
+            previewing={previewing}
+            metric={metric}
+            page={page}
+            loading={loading}
+            error={error}
+            canHaveChildren={canHaveChildren}
+            canLoadPrevious={canLoadPrevious}
+            canLoadNext={canLoadNext}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            onSelect={onSelect}
+            onRetry={onRetry}
+            onPrevious={onPrevious}
+            onNext={onNext}
+          />
         )}
-
-        <footer className="inspector-pagination">
-          <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
-            <ChevronIcon /> Previous
-          </button>
-          <span>{totalChildren > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
-          <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
-            Next <ChevronIcon />
-          </button>
-        </footer>
       </section>
     </aside>
+  );
+}
+
+interface FolderContentsProps {
+  node: StorageNode;
+  previewing: boolean;
+  metric: HealthMetric;
+  page: StorageChildrenPage | null;
+  loading: boolean;
+  error: string | null;
+  canHaveChildren: boolean;
+  canLoadPrevious: boolean;
+  canLoadNext: boolean;
+  rangeStart: number;
+  rangeEnd: number;
+  onSelect: (node: StorageNode) => void;
+  onRetry: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+}
+
+function FolderContents({
+  node,
+  previewing,
+  metric,
+  page,
+  loading,
+  error,
+  canHaveChildren,
+  canLoadPrevious,
+  canLoadNext,
+  rangeStart,
+  rangeEnd,
+  onSelect,
+  onRetry,
+  onPrevious,
+  onNext,
+}: FolderContentsProps) {
+  const totalChildren = page?.total_children ?? 0;
+  const contentsName = page?.parent.name || node.name || "Contents";
+
+  return (
+    <>
+      <header>
+        <div>
+          <span className="eyebrow">
+            {previewing ? "PREVIEW CONTENTS" : page?.parent.id === node.id ? "CONTENTS" : "IN FOLDER"}
+          </span>
+          <h3 id="contents-title" title={contentsName}>{contentsName}</h3>
+        </div>
+        <small aria-live="polite">
+          {totalChildren > 0 ? `${rangeStart}–${rangeEnd} of ${totalChildren}` : ""}
+        </small>
+      </header>
+
+      <div className="inspector-list-heading" aria-hidden="true">
+        <span>Name</span><span>Size</span><span>{metric === "space_health" ? "Space" : "Coverage"}</span><span />
+      </div>
+
+      <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
+        {loading && !page ? (
+          <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Loading contents…</div>
+        ) : error && !page ? (
+          <div className="inspector-list-state is-error" role="alert">
+            <p>{error}</p>
+            <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
+          </div>
+        ) : !canHaveChildren || page?.children.length === 0 ? (
+          <div className="inspector-list-state">
+            {!canHaveChildren || page?.parent.kind === "file" ? <FileIcon /> : <FolderIcon />}
+            <p>{!canHaveChildren || page?.parent.kind === "file" ? "This file has no children." : "This selection has no direct children."}</p>
+          </div>
+        ) : (
+          <ul className="inspector-list">
+            {page?.children.map((child) => {
+              const score = child[metric];
+              const openable = canOpen(child);
+              const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
+              return (
+                <li key={child.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(child)}
+                    disabled={previewing}
+                    aria-current={child.id === node.id ? "true" : undefined}
+                    aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
+                  >
+                    <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
+                    <span>{formatBytes(child.total_bytes)}</span>
+                    <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+                    <ChevronIcon className={openable ? "" : "is-hidden"} />
+                  </button>
+                </li>
+              );
+            })}
+            {Array.from({ length: Math.max(0, 6 - (page?.children.length ?? 0)) }, (_, index) => (
+              <li className="inspector-row-placeholder" key={`placeholder-${index}`} aria-hidden="true" />
+            ))}
+          </ul>
+        )}
+        {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading page" />}
+      </div>
+
+      {error && page && (
+        <div className="inspector-inline-error" role="alert">{error} <button type="button" onClick={onRetry}>Try again</button></div>
+      )}
+
+      <footer className="inspector-pagination">
+        <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
+          <ChevronIcon /> Previous
+        </button>
+        <span>{totalChildren > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
+        <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
+          Next <ChevronIcon />
+        </button>
+      </footer>
+    </>
+  );
+}
+
+interface DuplicateListProps {
+  previewing: boolean;
+  page: FileContentMatchesPage | null;
+  loading: boolean;
+  error: string | null;
+  canLoadPrevious: boolean;
+  canLoadNext: boolean;
+  rangeStart: number;
+  rangeEnd: number;
+  onRetry: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+}
+
+function DuplicateList({
+  previewing,
+  page,
+  loading,
+  error,
+  canLoadPrevious,
+  canLoadNext,
+  rangeStart,
+  rangeEnd,
+  onRetry,
+  onPrevious,
+  onNext,
+}: DuplicateListProps) {
+  const totalMatches = page?.total_matches ?? 0;
+
+  return (
+    <>
+      <header>
+        <div>
+          <span className="eyebrow">{previewing ? "PREVIEW DUPLICATES" : "DUPLICATES"}</span>
+          <h3 id="contents-title">Matches in this workspace</h3>
+        </div>
+        <small aria-live="polite">
+          {totalMatches > 0 ? `${rangeStart}–${rangeEnd} of ${totalMatches}` : ""}
+        </small>
+      </header>
+
+      <div className="inspector-list-heading duplicate-list-heading" aria-hidden="true">
+        <span>Location</span><span>Site</span>
+      </div>
+
+      <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
+        {loading && !page ? (
+          <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Finding duplicates…</div>
+        ) : error && !page ? (
+          <div className="inspector-list-state is-error" role="alert">
+            <p>{error}</p>
+            <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Retry</button>
+          </div>
+        ) : page?.status === "not_hashed" ? (
+          <div className="inspector-list-state">
+            <FileIcon />
+            <p>This file has not been hashed yet. Scan its site to find duplicates.</p>
+          </div>
+        ) : page && page.matches.length === 0 ? (
+          <div className="inspector-list-state">
+            <FileIcon />
+            <p>No other indexed file has the same content.</p>
+          </div>
+        ) : (
+          <ul className="inspector-list duplicate-list">
+            {page?.matches.map((match) => {
+              const LocationIcon = match.site_folder_kind === "smb" ? NetworkIcon : DriveIcon;
+              return (
+                <li key={match.file_id}>
+                  <span
+                    className="duplicate-row"
+                    title={match.path}
+                    aria-label={`${match.path}, ${match.site_name} site`}
+                  >
+                    <span className="duplicate-row-path">
+                      <LocationIcon />
+                      <span><strong>{fileName(match.path)}</strong><small>{match.path}</small></span>
+                    </span>
+                    <span className="duplicate-site-name" title={match.site_name}>{match.site_name}</span>
+                  </span>
+                </li>
+              );
+            })}
+            {Array.from({ length: Math.max(0, 6 - (page?.matches.length ?? 0)) }, (_, index) => (
+              <li className="inspector-row-placeholder" key={`duplicate-placeholder-${index}`} aria-hidden="true" />
+            ))}
+          </ul>
+        )}
+        {loading && page && <span className="inspector-page-spinner mini-spinner" role="status" aria-label="Loading duplicate page" />}
+      </div>
+
+      {error && page && (
+        <div className="inspector-inline-error" role="alert">{error} <button type="button" onClick={onRetry}>Try again</button></div>
+      )}
+
+      <footer className="inspector-pagination">
+        <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
+          <ChevronIcon /> Previous
+        </button>
+        <span>{totalMatches > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
+        <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
+          Next <ChevronIcon />
+        </button>
+      </footer>
+    </>
   );
 }

@@ -4,6 +4,7 @@ import type {
   CancelScanReport,
   CleanupPreview,
   Dashboard,
+  FileContentMatchesPage,
   HiddenPolicy,
   ManagementMutationResult,
   ManagementSnapshot,
@@ -129,6 +130,22 @@ export function getStorageChildren(
     nodeId,
     offset,
     limit,
+  });
+}
+
+export function getFileContentMatches(
+  siteId: string,
+  path: string,
+  offset: number,
+  limit: number,
+  expectedWorkspace: string,
+): Promise<FileContentMatchesPage> {
+  return invoke<FileContentMatchesPage>("get_file_content_matches", {
+    siteId,
+    path,
+    offset,
+    limit,
+    expectedWorkspace,
   });
 }
 

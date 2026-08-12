@@ -129,6 +129,26 @@ export interface StorageChildrenPage {
   limit: number;
 }
 
+export type FileContentMatchStatus = "ready" | "not_hashed";
+
+export interface FileContentMatch {
+  file_id: string;
+  site_id: string;
+  site_name: string;
+  site_folder_id: string;
+  site_folder_kind: SiteKind;
+  path: string;
+  size_bytes: number;
+}
+
+export interface FileContentMatchesPage {
+  status: FileContentMatchStatus;
+  matches: FileContentMatch[];
+  total_matches: number;
+  offset: number;
+  limit: number;
+}
+
 export interface ScanSelector {
   site_id?: string;
   all?: boolean;

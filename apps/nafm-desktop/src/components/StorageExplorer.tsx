@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatHealth, healthColor } from "../lib/format";
-import { getStorageChildren } from "../lib/tauri";
+import { getFileContentMatches, getStorageChildren } from "../lib/tauri";
 import type {
+  FileContentMatchesPage,
   HealthMetric,
   SiteOverview,
   StorageChildrenPage,
@@ -14,6 +15,8 @@ import { InspectorPanel } from "./InspectorPanel";
 import { SunburstMap } from "./SunburstMap";
 
 interface StorageExplorerProps {
+  workspaceName: string;
+  contentRevision: number;
   sites: SiteOverview[];
   source: SiteOverview;
   target: SiteOverview | null;
@@ -55,9 +58,24 @@ interface PreviewPageState {
   error: string | null;
 }
 
+interface DuplicatePageState {
+  owner_key: string | null;
+  requested_offset: number;
+  page: FileContentMatchesPage | null;
+  loading: boolean;
+  error: string | null;
+}
+
+interface DuplicateFileIdentity {
+  owner_key: string;
+  path: string;
+}
+
 const PREVIEW_PAGE_SIZE = 6;
+const DUPLICATE_PAGE_SIZE = 6;
 const PREVIEW_RESTORE_DELAY_MS = 100;
 const PREVIEW_CACHE_LIMIT = 128;
+const DUPLICATE_CACHE_LIMIT = 128;
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -74,7 +92,41 @@ function previewKey(
   return `${sourceSiteId}\u0000${targetSiteId ?? ""}\u0000${nodeId}\u0000${offset}`;
 }
 
+function duplicateFileIdentity(
+  workspaceName: string,
+  sourceSiteId: string,
+  node: StorageNode | null,
+): DuplicateFileIdentity | null {
+  if (node?.kind !== "file" || !node.path) return null;
+  return {
+    owner_key: `${workspaceName}\u0000${sourceSiteId}\u0000${node.path}`,
+    path: node.path,
+  };
+}
+
+function duplicatePageKey(identity: DuplicateFileIdentity, offset: number): string {
+  return `${identity.owner_key}\u0000${offset}`;
+}
+
+function emptyDuplicatePageState(): DuplicatePageState {
+  return {
+    owner_key: null,
+    requested_offset: 0,
+    page: null,
+    loading: false,
+    error: null,
+  };
+}
+
+function duplicateErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Unable to load duplicates.";
+}
+
 export function StorageExplorer({
+  workspaceName,
+  contentRevision,
   sites,
   source,
   target,
@@ -122,6 +174,15 @@ export function StorageExplorer({
   const previewRequestRef = useRef(0);
   const restoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewNodeRef = useRef<StorageNode | null>(null);
+  const [selectedDuplicateState, setSelectedDuplicateState] = useState<DuplicatePageState>(emptyDuplicatePageState);
+  const [previewDuplicateState, setPreviewDuplicateState] = useState<DuplicatePageState>(emptyDuplicatePageState);
+  const duplicateCacheRef = useRef<Map<string, FileContentMatchesPage>>(new Map());
+  const duplicateRequestsRef = useRef<Map<string, Promise<FileContentMatchesPage>>>(new Map());
+  const duplicateGenerationRef = useRef(0);
+  const selectedDuplicateRequestRef = useRef(0);
+  const previewDuplicateRequestRef = useRef(0);
+  const selectedDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
+  const previewDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
   const score = tree.root[metric];
   const coverageWithoutTarget = metric === "coverage_health" && !target;
   const previewing = previewNode !== null;
@@ -143,6 +204,34 @@ export function StorageExplorer({
   const previewCanLoadPrevious = Boolean(previewing && inspectedPage && !inspectedLoading && inspectedPage.offset > 0);
   const previewCanLoadNext = Boolean(previewing && inspectedPage && !inspectedLoading
     && inspectedPage.offset + inspectedPage.limit < inspectedPage.total_children);
+  const inspectedDuplicateState = previewing ? previewDuplicateState : selectedDuplicateState;
+  const inspectedDuplicateIdentity = duplicateFileIdentity(workspaceName, source.id, inspectedNode);
+  const inspectedDuplicateStateMatches = inspectedDuplicateIdentity?.owner_key === inspectedDuplicateState.owner_key;
+  const inspectedDuplicatePage = inspectedDuplicateStateMatches ? inspectedDuplicateState.page : null;
+  const inspectedDuplicatesLoading = inspectedNode.kind === "file"
+    && (!inspectedDuplicateStateMatches || inspectedDuplicateState.loading);
+  const inspectedDuplicatesError = inspectedDuplicateStateMatches ? inspectedDuplicateState.error : null;
+  const duplicateRangeStart = inspectedDuplicatePage && inspectedDuplicatePage.total_matches > 0
+    ? inspectedDuplicatePage.offset + 1
+    : 0;
+  const duplicateRangeEnd = inspectedDuplicatePage
+    ? Math.min(
+        inspectedDuplicatePage.offset + inspectedDuplicatePage.matches.length,
+        inspectedDuplicatePage.total_matches,
+      )
+    : 0;
+  const canLoadPreviousDuplicates = Boolean(
+    inspectedNode.kind === "file"
+    && inspectedDuplicatePage
+    && !inspectedDuplicateState.loading
+    && inspectedDuplicatePage.offset > 0,
+  );
+  const canLoadNextDuplicates = Boolean(
+    inspectedNode.kind === "file"
+    && inspectedDuplicatePage
+    && !inspectedDuplicateState.loading
+    && inspectedDuplicatePage.offset + inspectedDuplicatePage.limit < inspectedDuplicatePage.total_matches,
+  );
 
   const cancelPreviewRestore = useCallback(() => {
     if (restoreTimeoutRef.current !== null) {
@@ -154,11 +243,94 @@ export function StorageExplorer({
   const clearPreview = useCallback(() => {
     cancelPreviewRestore();
     previewRequestRef.current += 1;
+    previewDuplicateRequestRef.current += 1;
     previewNodeRef.current = null;
+    previewDuplicateIdentityRef.current = null;
     setPreviewNode(null);
     setPreviewOffset(0);
     setPreviewPageState({ page: null, loading: false, error: null });
+    setPreviewDuplicateState(emptyDuplicatePageState());
   }, [cancelPreviewRestore]);
+
+  const loadDuplicatePage = useCallback(async (
+    owner: "selected" | "preview",
+    identity: DuplicateFileIdentity,
+    offset: number,
+  ) => {
+    const requestRef = owner === "selected" ? selectedDuplicateRequestRef : previewDuplicateRequestRef;
+    const identityRef = owner === "selected" ? selectedDuplicateIdentityRef : previewDuplicateIdentityRef;
+    const updateState = owner === "selected" ? setSelectedDuplicateState : setPreviewDuplicateState;
+    const requestId = requestRef.current + 1;
+    const generation = duplicateGenerationRef.current;
+    const key = duplicatePageKey(identity, offset);
+    requestRef.current = requestId;
+
+    const cachedPage = duplicateCacheRef.current.get(key);
+    if (cachedPage) {
+      if (requestRef.current !== requestId || identityRef.current?.owner_key !== identity.owner_key) return;
+      duplicateCacheRef.current.delete(key);
+      duplicateCacheRef.current.set(key, cachedPage);
+      updateState({
+        owner_key: identity.owner_key,
+        requested_offset: offset,
+        page: cachedPage,
+        loading: false,
+        error: null,
+      });
+      return;
+    }
+
+    let request: Promise<FileContentMatchesPage> | undefined;
+    request = duplicateRequestsRef.current.get(key);
+    updateState((previous) => ({
+      owner_key: identity.owner_key,
+      requested_offset: offset,
+      page: previous.owner_key === identity.owner_key ? previous.page : null,
+      loading: true,
+      error: null,
+    }));
+    try {
+      if (!request) {
+        request = getFileContentMatches(
+          source.id,
+          identity.path,
+          offset,
+          DUPLICATE_PAGE_SIZE,
+          workspaceName,
+        );
+        duplicateRequestsRef.current.set(key, request);
+      }
+      const page = await request;
+      if (duplicateRequestsRef.current.get(key) === request) duplicateRequestsRef.current.delete(key);
+      if (duplicateGenerationRef.current !== generation) return;
+
+      duplicateCacheRef.current.set(key, page);
+      while (duplicateCacheRef.current.size > DUPLICATE_CACHE_LIMIT) {
+        const oldestKey = duplicateCacheRef.current.keys().next().value;
+        if (oldestKey === undefined) break;
+        duplicateCacheRef.current.delete(oldestKey);
+      }
+      if (requestRef.current !== requestId || identityRef.current?.owner_key !== identity.owner_key) return;
+      updateState({
+        owner_key: identity.owner_key,
+        requested_offset: offset,
+        page,
+        loading: false,
+        error: null,
+      });
+    } catch (duplicateError) {
+      if (request && duplicateRequestsRef.current.get(key) === request) duplicateRequestsRef.current.delete(key);
+      if (duplicateGenerationRef.current !== generation) return;
+      if (requestRef.current !== requestId || identityRef.current?.owner_key !== identity.owner_key) return;
+      updateState((previous) => ({
+        owner_key: identity.owner_key,
+        requested_offset: offset,
+        page: previous.owner_key === identity.owner_key ? previous.page : null,
+        loading: false,
+        error: duplicateErrorMessage(duplicateError),
+      }));
+    }
+  }, [source.id, workspaceName]);
 
   const loadPreviewPage = useCallback(async (previewedNode: StorageNode, offset: number) => {
     const key = previewKey(source.id, target?.id ?? null, previewedNode.id, offset);
@@ -214,6 +386,30 @@ export function StorageExplorer({
     clearPreview();
   }, [clearPreview, source.id, target?.id, tree]);
 
+  useEffect(() => {
+    duplicateGenerationRef.current += 1;
+    duplicateCacheRef.current.clear();
+    duplicateRequestsRef.current.clear();
+    selectedDuplicateRequestRef.current += 1;
+    previewDuplicateRequestRef.current += 1;
+    selectedDuplicateIdentityRef.current = null;
+    previewDuplicateIdentityRef.current = null;
+    setSelectedDuplicateState(emptyDuplicatePageState());
+    setPreviewDuplicateState(emptyDuplicatePageState());
+    clearPreview();
+  }, [contentRevision, source.id, tree, workspaceName]);
+
+  useEffect(() => {
+    const identity = duplicateFileIdentity(workspaceName, source.id, node);
+    selectedDuplicateIdentityRef.current = identity;
+    if (!identity) {
+      selectedDuplicateRequestRef.current += 1;
+      setSelectedDuplicateState(emptyDuplicatePageState());
+      return;
+    }
+    void loadDuplicatePage("selected", identity, 0);
+  }, [contentRevision, loadDuplicatePage, node, source.id, tree, workspaceName]);
+
   useEffect(() => clearPreview(), [clearPreview, node.id]);
 
   useEffect(() => clearPreview(), [clearPreview, location.root.id]);
@@ -223,6 +419,10 @@ export function StorageExplorer({
     previewGenerationRef.current += 1;
     previewRequestRef.current += 1;
     previewRequestsRef.current.clear();
+    duplicateGenerationRef.current += 1;
+    selectedDuplicateRequestRef.current += 1;
+    previewDuplicateRequestRef.current += 1;
+    duplicateRequestsRef.current.clear();
   }, [cancelPreviewRestore]);
 
   const preview = useCallback((next: StorageNode) => {
@@ -231,13 +431,26 @@ export function StorageExplorer({
     previewNodeRef.current = next;
     setPreviewNode(next);
     setPreviewOffset(0);
+    const duplicateIdentity = duplicateFileIdentity(workspaceName, source.id, next);
+    previewDuplicateRequestRef.current += 1;
+    previewDuplicateIdentityRef.current = duplicateIdentity;
+    setPreviewDuplicateState(duplicateIdentity
+      ? {
+          owner_key: duplicateIdentity.owner_key,
+          requested_offset: 0,
+          page: null,
+          loading: true,
+          error: null,
+        }
+      : emptyDuplicatePageState());
     if (next.kind === "file" || next.kind === "smaller_items") {
       previewRequestRef.current += 1;
       setPreviewPageState({ page: null, loading: false, error: null });
     } else {
       void loadPreviewPage(next, 0);
     }
-  }, [cancelPreviewRestore, loadPreviewPage]);
+    if (duplicateIdentity) void loadDuplicatePage("preview", duplicateIdentity, 0);
+  }, [cancelPreviewRestore, loadDuplicatePage, loadPreviewPage, source.id, workspaceName]);
 
   const leavePreview = useCallback(() => {
     if (!previewNodeRef.current || restoreTimeoutRef.current !== null) return;
@@ -263,6 +476,37 @@ export function StorageExplorer({
     setPreviewOffset(nextOffset);
     void loadPreviewPage(previewedNode, nextOffset);
   }, [loadPreviewPage, previewCanLoadNext, previewOffset]);
+
+  const activeDuplicateOwner = useCallback(() => {
+    const identity = previewing ? previewDuplicateIdentityRef.current : selectedDuplicateIdentityRef.current;
+    return identity ? { owner: previewing ? "preview" as const : "selected" as const, identity } : null;
+  }, [previewing]);
+
+  const retryDuplicates = useCallback(() => {
+    const active = activeDuplicateOwner();
+    if (!active) return;
+    void loadDuplicatePage(active.owner, active.identity, inspectedDuplicateState.requested_offset);
+  }, [activeDuplicateOwner, inspectedDuplicateState.requested_offset, loadDuplicatePage]);
+
+  const loadPreviousDuplicates = useCallback(() => {
+    const active = activeDuplicateOwner();
+    if (!active || !canLoadPreviousDuplicates || !inspectedDuplicatePage) return;
+    void loadDuplicatePage(
+      active.owner,
+      active.identity,
+      Math.max(0, inspectedDuplicatePage.offset - DUPLICATE_PAGE_SIZE),
+    );
+  }, [activeDuplicateOwner, canLoadPreviousDuplicates, inspectedDuplicatePage, loadDuplicatePage]);
+
+  const loadNextDuplicates = useCallback(() => {
+    const active = activeDuplicateOwner();
+    if (!active || !canLoadNextDuplicates || !inspectedDuplicatePage) return;
+    void loadDuplicatePage(
+      active.owner,
+      active.identity,
+      inspectedDuplicatePage.offset + DUPLICATE_PAGE_SIZE,
+    );
+  }, [activeDuplicateOwner, canLoadNextDuplicates, inspectedDuplicatePage, loadDuplicatePage]);
 
   const selectNode = useCallback((next: StorageNode) => {
     clearPreview();
@@ -392,11 +636,21 @@ export function StorageExplorer({
           canLoadNext={previewing ? previewCanLoadNext : canLoadNext}
           rangeStart={inspectedRangeStart}
           rangeEnd={inspectedRangeEnd}
+          duplicatesPage={inspectedDuplicatePage}
+          duplicatesLoading={inspectedDuplicatesLoading}
+          duplicatesError={inspectedDuplicatesError}
+          canLoadPreviousDuplicates={canLoadPreviousDuplicates}
+          canLoadNextDuplicates={canLoadNextDuplicates}
+          duplicateRangeStart={duplicateRangeStart}
+          duplicateRangeEnd={duplicateRangeEnd}
           onBack={navigateBack}
           onSelect={selectNode}
           onRetry={previewing ? retryPreview : onRetryChildren}
           onPrevious={previewing ? loadPreviousPreview : onLoadPreviousChildren}
           onNext={previewing ? loadNextPreview : onLoadNextChildren}
+          onRetryDuplicates={retryDuplicates}
+          onPreviousDuplicates={loadPreviousDuplicates}
+          onNextDuplicates={loadNextDuplicates}
           onPointerEnter={cancelPreviewRestore}
           onPointerLeave={leavePreview}
           onStage={onStage}

@@ -105,6 +105,33 @@ pub struct StorageChildrenPage {
   pub limit: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileContentMatchStatus {
+  Ready,
+  NotHashed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FileContentMatch {
+  pub file_id: String,
+  pub site_id: String,
+  pub site_name: String,
+  pub site_folder_id: String,
+  pub site_folder_kind: SiteFolderKind,
+  pub path: PathBuf,
+  pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FileContentMatchesPage {
+  pub status: FileContentMatchStatus,
+  pub matches: Vec<FileContentMatch>,
+  pub total_matches: u64,
+  pub offset: u64,
+  pub limit: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct AddSiteFolderRequest {
   pub path: PathBuf,

@@ -15,10 +15,11 @@ use crate::credentials::{CredentialStore, SmbLocation};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
-  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress,
-  ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun,
-  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageLocation, StorageNode, StorageNodeKind, StorageTree,
+  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
+  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress, ScanStarted, ScanSummary, Site,
+  SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
+  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageLocation, StorageNode,
+  StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -26,6 +27,7 @@ type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
 type ScanCancellationCallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
 const MAX_STORAGE_CHILDREN_PAGE_SIZE: u64 = 200;
+const MAX_FILE_CONTENT_MATCHES_PAGE_SIZE: u64 = 200;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -885,6 +887,24 @@ impl Repository {
         None => None,
       };
       find_duplicates(&conn, site_id.as_deref())
+    })
+    .await?
+  }
+
+  pub async fn file_content_matches(
+    &self,
+    site_selector: &str,
+    path: &Path,
+    offset: u64,
+    limit: u64,
+  ) -> Result<FileContentMatchesPage> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+      file_content_matches_page(&conn, &site.id, &path, offset, limit)
     })
     .await?
   }
@@ -1774,6 +1794,100 @@ fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Dupli
     });
   }
   Ok(duplicate_groups)
+}
+
+fn file_content_matches_page(
+  conn: &Connection,
+  source_site_id: &str,
+  path: &Path,
+  offset: u64,
+  limit: u64,
+) -> Result<FileContentMatchesPage> {
+  let limit = limit.clamp(1, MAX_FILE_CONTENT_MATCHES_PAGE_SIZE);
+  let selected = conn
+    .query_row(
+      "select id, hash_algorithm, content_hash, size_bytes
+       from file_records
+       where site_id = ?1 and path = ?2",
+      params![source_site_id, path.to_string_lossy()],
+      |row| {
+        Ok((
+          row.get::<_, String>(0)?,
+          row.get::<_, String>(1)?,
+          row.get::<_, Option<String>>(2)?,
+          row.get::<_, u64>(3)?,
+        ))
+      },
+    )
+    .optional()?
+    .ok_or_else(|| NafmError::TrackedPathNotFound(path.to_path_buf()))?;
+  let (selected_file_id, hash_algorithm, Some(content_hash), size_bytes) = selected else {
+    return Ok(FileContentMatchesPage {
+      status: FileContentMatchStatus::NotHashed,
+      matches: Vec::new(),
+      total_matches: 0,
+      offset,
+      limit,
+    });
+  };
+
+  let total_matches = conn.query_row(
+    "select count(*)
+     from file_records
+     where id <> ?1 and hash_algorithm = ?2 and content_hash = ?3 and size_bytes = ?4",
+    params![selected_file_id, hash_algorithm, content_hash, size_bytes],
+    |row| row.get::<_, u64>(0),
+  )?;
+  let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
+  let mut stmt = conn.prepare(
+    "select file.id, file.site_id, site.name, file.site_folder_id, folder.kind, file.path, file.size_bytes
+     from file_records file
+     join sites site on site.id = file.site_id
+     join site_folders folder on folder.id = file.site_folder_id
+     where file.id <> ?1
+       and file.hash_algorithm = ?2
+       and file.content_hash = ?3
+       and file.size_bytes = ?4
+     order by
+       case when file.site_id = ?5 then 0 else 1 end,
+       site.name,
+       file.path,
+       file.id
+     limit ?6 offset ?7",
+  )?;
+  let matches = stmt
+    .query_map(
+      params![
+        selected_file_id,
+        hash_algorithm,
+        content_hash,
+        size_bytes,
+        source_site_id,
+        limit,
+        sql_offset,
+      ],
+      |row| {
+        let site_folder_kind = row.get::<_, String>(4)?;
+        Ok(FileContentMatch {
+          file_id: row.get(0)?,
+          site_id: row.get(1)?,
+          site_name: row.get(2)?,
+          site_folder_id: row.get(3)?,
+          site_folder_kind: site_folder_kind_from_db(&site_folder_kind),
+          path: PathBuf::from(row.get::<_, String>(5)?),
+          size_bytes: row.get(6)?,
+        })
+      },
+    )?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+  Ok(FileContentMatchesPage {
+    status: FileContentMatchStatus::Ready,
+    matches,
+    total_matches,
+    offset,
+    limit,
+  })
 }
 
 fn duplicate_files(
