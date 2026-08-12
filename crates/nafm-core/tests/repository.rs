@@ -222,6 +222,305 @@ async fn storage_tree_preserves_smb_roots_and_paths() {
 }
 
 #[tokio::test]
+async fn storage_tree_reports_weighted_space_health_for_every_level() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("health-media");
+  let duplicates = media.join("duplicates");
+  let unique = media.join("unique");
+  fs::create_dir(&duplicates).unwrap();
+  fs::create_dir(&unique).unwrap();
+  fs::write(duplicates.join("one.bin"), b"0123456789").unwrap();
+  fs::write(duplicates.join("two.bin"), b"0123456789").unwrap();
+  fs::write(unique.join("only.bin"), b"12345").unwrap();
+
+  fixture.create_site("health").await;
+  fixture.add_site_folder("health", &media, HiddenPolicy::Include).await;
+  fixture.repo.scan_site("health").await.unwrap();
+
+  let tree = fixture.repo.storage_tree("health", 8, 32).await.unwrap();
+  assert!(tree.coverage_target.is_none());
+  assert_health(tree.root.space_health, 60.0);
+  assert_eq!(tree.root.coverage_health, None);
+  let site_folder = &tree.root.children[0];
+  assert_health(site_folder.space_health, 60.0);
+  let duplicates = child_named(site_folder, "duplicates");
+  assert_health(duplicates.space_health, 50.0);
+  assert_health(duplicates.children[0].space_health, 50.0);
+  assert_health(child_named(site_folder, "unique").space_health, 100.0);
+}
+
+#[tokio::test]
+async fn coverage_health_is_directional_and_distinct_content_weighted() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("coverage-source");
+  let source_a = source.join("a");
+  let source_b = source.join("b");
+  let target = fixture.mkdir("coverage-target");
+  fs::create_dir(&source_a).unwrap();
+  fs::create_dir(&source_b).unwrap();
+  fs::write(source_a.join("shared.bin"), b"1234567890").unwrap();
+  fs::write(source_b.join("shared-copy.bin"), b"1234567890").unwrap();
+  fs::write(source_b.join("missing.bin"), b"12345").unwrap();
+  fs::write(target.join("shared.bin"), b"1234567890").unwrap();
+  fs::write(target.join("target-only.bin"), b"12345678901234567890").unwrap();
+
+  fixture.create_site("source-health").await;
+  fixture.create_site("target-health").await;
+  fixture
+    .add_site_folder("source-health", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("target-health", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let forward = fixture
+    .repo
+    .storage_tree_with_coverage("source-health", "target-health", 8, 32)
+    .await
+    .unwrap();
+  assert_eq!(forward.coverage_target.as_ref().unwrap().name, "target-health");
+  assert_health(forward.root.coverage_health, 1000.0 / 15.0);
+  let source_root = &forward.root.children[0];
+  assert_health(child_named(source_root, "a").coverage_health, 100.0);
+  assert_health(child_named(source_root, "b").coverage_health, 1000.0 / 15.0);
+  assert_health(
+    child_named(child_named(source_root, "b"), "missing.bin").coverage_health,
+    0.0,
+  );
+
+  let reverse = fixture
+    .repo
+    .storage_tree_with_coverage("target-health", "source-health", 8, 32)
+    .await
+    .unwrap();
+  assert_health(reverse.root.coverage_health, 1000.0 / 30.0);
+}
+
+#[tokio::test]
+async fn coverage_health_distinguishes_never_scanned_and_scanned_empty_targets() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("scan-state-source");
+  let target = fixture.mkdir("scan-state-target");
+  fs::write(source.join("known.bin"), b"known").unwrap();
+  fixture.create_site("known-source").await;
+  fixture.create_site("empty-target").await;
+  fixture
+    .add_site_folder("known-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("empty-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("known-source").await.unwrap();
+
+  let unknown = fixture
+    .repo
+    .storage_tree_with_coverage("known-source", "empty-target", 4, 32)
+    .await
+    .unwrap();
+  assert_eq!(unknown.root.coverage_health, None);
+  assert_eq!(
+    fixture.repo.site_overview("empty-target").await.unwrap().latest_scan_at,
+    None
+  );
+
+  fixture.repo.scan_site("empty-target").await.unwrap();
+  assert!(
+    fixture
+      .repo
+      .site_overview("empty-target")
+      .await
+      .unwrap()
+      .latest_scan_at
+      .is_some()
+  );
+  let missing = fixture
+    .repo
+    .storage_tree_with_coverage("known-source", "empty-target", 4, 32)
+    .await
+    .unwrap();
+  assert_health(missing.root.coverage_health, 0.0);
+}
+
+#[tokio::test]
+async fn coverage_health_is_unknown_when_sites_use_incompatible_hash_algorithms() {
+  let cache = tempfile::tempdir().unwrap();
+  let source = cache.path().join("algorithm-source");
+  let target = cache.path().join("algorithm-target");
+  fs::create_dir(&source).unwrap();
+  fs::create_dir(&target).unwrap();
+  fs::write(source.join("source.bin"), b"source").unwrap();
+  fs::write(target.join("target.bin"), b"target").unwrap();
+  let cache_path = cache.path().join("algorithm-health.sqlite3");
+
+  let first_byte_repo = Repository::open(RepositoryOptions {
+    cache_path: cache_path.clone(),
+    hash_algorithm: Some(Arc::new(FirstByteHashAlgorithm)),
+  })
+  .await
+  .unwrap();
+  first_byte_repo.create_site("algorithm-source").await.unwrap();
+  first_byte_repo.create_site("algorithm-target").await.unwrap();
+  first_byte_repo
+    .add_site_folder(
+      "algorithm-source",
+      AddSiteFolderRequest {
+        path: source,
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  first_byte_repo
+    .add_site_folder(
+      "algorithm-target",
+      AddSiteFolderRequest {
+        path: target,
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  first_byte_repo.scan_site("algorithm-source").await.unwrap();
+
+  let blake3_repo = Repository::open(RepositoryOptions {
+    cache_path,
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  blake3_repo.scan_site("algorithm-target").await.unwrap();
+
+  let tree = blake3_repo
+    .storage_tree_with_coverage("algorithm-source", "algorithm-target", 4, 32)
+    .await
+    .unwrap();
+  assert_eq!(tree.root.coverage_health, None);
+  assert_eq!(tree.root.children[0].children[0].coverage_health, None);
+}
+
+#[tokio::test]
+async fn cancelled_empty_scan_does_not_mark_site_as_scanned() {
+  let fixture = Fixture::new().await;
+  let empty = fixture.mkdir("cancelled-empty");
+  fixture.create_site("cancelled-empty").await;
+  fixture
+    .add_site_folder("cancelled-empty", &empty, HiddenPolicy::Include)
+    .await;
+
+  let result = fixture
+    .repo
+    .scan_site_with_progress_and_cancellation("cancelled-empty", None, Some(Arc::new(|| true)))
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  assert_eq!(
+    fixture
+      .repo
+      .site_overview("cancelled-empty")
+      .await
+      .unwrap()
+      .latest_scan_at,
+    None
+  );
+}
+
+#[tokio::test]
+async fn opening_an_existing_database_backfills_scan_completion_state() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("backfill-source");
+  fs::write(source.join("known.bin"), b"known").unwrap();
+  fixture.create_site("backfilled").await;
+  fixture
+    .add_site_folder("backfilled", &source, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("backfilled").await.unwrap();
+  let expected = fixture.repo.site_overview("backfilled").await.unwrap().latest_scan_at;
+  let db_path = fixture.repo.db_path().to_path_buf();
+  rusqlite::Connection::open(&db_path)
+    .unwrap()
+    .execute("drop table site_scan_state", [])
+    .unwrap();
+
+  let reopened = Repository::open(RepositoryOptions {
+    cache_path: db_path,
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+
+  assert_eq!(
+    reopened.site_overview("backfilled").await.unwrap().latest_scan_at,
+    expected
+  );
+}
+
+#[tokio::test]
+async fn known_zero_byte_content_uses_count_weighted_health_fallbacks() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("zero-source");
+  let target = fixture.mkdir("zero-target");
+  fs::write(source.join("empty-a.bin"), b"").unwrap();
+  fs::write(source.join("empty-b.bin"), b"").unwrap();
+  fs::write(target.join("empty.bin"), b"").unwrap();
+  fixture.create_site("zero-source").await;
+  fixture.create_site("zero-target").await;
+  fixture
+    .add_site_folder("zero-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("zero-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let tree = fixture
+    .repo
+    .storage_tree_with_coverage("zero-source", "zero-target", 4, 32)
+    .await
+    .unwrap();
+  assert_health(tree.root.space_health, 50.0);
+  assert_health(tree.root.coverage_health, 100.0);
+  assert_health(tree.root.children[0].children[0].space_health, 50.0);
+}
+
+#[tokio::test]
+async fn storage_tree_keeps_health_correct_when_children_are_consolidated() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("bounded-health-source");
+  let target = fixture.mkdir("bounded-health-target");
+  for (directory, contents) in [
+    ("large", b"1234567890".as_slice()),
+    ("small", b"12345".as_slice()),
+    ("tiny", b"12".as_slice()),
+  ] {
+    let folder = source.join(directory);
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("file.bin"), contents).unwrap();
+  }
+  fs::write(target.join("large.bin"), b"1234567890").unwrap();
+  fixture.create_site("bounded-source").await;
+  fixture.create_site("bounded-target").await;
+  fixture
+    .add_site_folder("bounded-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("bounded-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let tree = fixture
+    .repo
+    .storage_tree_with_coverage("bounded-source", "bounded-target", 4, 2)
+    .await
+    .unwrap();
+  assert_health(tree.root.coverage_health, 1000.0 / 17.0);
+  let consolidated = &tree.root.children[0].children[1];
+  assert_eq!(consolidated.kind, StorageNodeKind::SmallerItems);
+  assert_health(consolidated.space_health, 100.0);
+  assert_health(consolidated.coverage_health, 0.0);
+}
+
+#[tokio::test]
 async fn adds_smb_site_folder_with_saved_credentials() {
   let cache = tempfile::tempdir().unwrap();
   let credentials_root = tempfile::tempdir().unwrap();
@@ -1864,6 +2163,22 @@ impl Lcg {
   fn index(&mut self, len: usize) -> usize {
     (self.next_u64() as usize) % len
   }
+}
+
+fn child_named<'a>(node: &'a nafm_core::StorageNode, name: &str) -> &'a nafm_core::StorageNode {
+  node
+    .children
+    .iter()
+    .find(|child| child.name == name)
+    .unwrap_or_else(|| panic!("missing child {name:?} under {:?}", node.name))
+}
+
+fn assert_health(actual: Option<f64>, expected: f64) {
+  let actual = actual.expect("health should be known");
+  assert!(
+    (actual - expected).abs() < 1e-9,
+    "expected health {expected}, got {actual}"
+  );
 }
 
 struct FirstByteHashAlgorithm;

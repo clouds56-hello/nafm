@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use nafm_core::{SiteFolderKind, StageCommitDryRun, StorageNode, StorageTree};
+use nafm_core::{Site, SiteFolderKind, StageCommitDryRun, StorageNode, StorageTree};
 use serde::Serialize;
 use tauri::State;
 
@@ -46,6 +46,7 @@ enum ScanState {
 #[derive(Serialize)]
 pub struct StorageTreeResponse {
   site_id: String,
+  coverage_target: Option<Site>,
   root: StorageNode,
 }
 
@@ -108,13 +109,30 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
 pub async fn get_storage_tree(
   state: State<'_, AppState>,
   site_id: String,
+  target_site_id: Option<String>,
   max_depth: u32,
   max_children: u32,
 ) -> Result<StorageTreeResponse, String> {
-  let StorageTree { site, root, .. } = state
-    .repository
-    .storage_tree(&site_id, max_depth, max_children)
-    .await
-    .map_err(|error| error.to_string())?;
-  Ok(StorageTreeResponse { site_id: site.id, root })
+  let tree = match target_site_id {
+    Some(target_site_id) => {
+      state
+        .repository
+        .storage_tree_with_coverage(&site_id, &target_site_id, max_depth, max_children)
+        .await
+    }
+    None => state.repository.storage_tree(&site_id, max_depth, max_children).await,
+  }
+  .map_err(|error| error.to_string())?;
+  let StorageTree {
+    site,
+    coverage_target,
+    root,
+    ..
+  } = tree;
+
+  Ok(StorageTreeResponse {
+    site_id: site.id,
+    coverage_target,
+    root,
+  })
 }

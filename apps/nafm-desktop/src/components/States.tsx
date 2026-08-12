@@ -38,8 +38,19 @@ export function EmptyMap({ siteName, onScan }: { siteName: string; onScan: () =>
     <section className="empty-map">
       <span className="state-icon"><ScanIcon /></span>
       <h2>Map {siteName}</h2>
-      <p>Scan this site to reveal its storage hierarchy and safely reclaimable copies.</p>
+      <p>Scan this site to calculate space health and reveal its folder hierarchy.</p>
       <button className="primary-button" type="button" onClick={onScan}><ScanIcon />Start scan</button>
+    </section>
+  );
+}
+
+export function MapError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <section className="empty-map map-error" role="alert">
+      <span className="state-icon"><WarningIcon /></span>
+      <h2>Health map unavailable</h2>
+      <p>{message}</p>
+      <button className="secondary-button" type="button" onClick={onRetry}><RefreshIcon />Try map again</button>
     </section>
   );
 }

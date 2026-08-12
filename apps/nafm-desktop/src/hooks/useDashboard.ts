@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelScan,
   getStorageTree,
@@ -13,8 +13,10 @@ import type {
   CleanupPreview,
   Dashboard,
   DuplicateFile,
+  HealthMetric,
   ScanProgressView,
   ScanTaskEvent,
+  SiteOverview,
   StorageNode,
   StorageTree,
 } from "../lib/types";
@@ -25,15 +27,43 @@ function errorMessage(error: unknown): string {
   return "An unexpected error occurred.";
 }
 
+function treeKey(siteId: string, targetSiteId: string | null): string {
+  return `${siteId}\u0000${targetSiteId ?? ""}`;
+}
+
+function findNode(root: StorageNode, nodeId: string | null): StorageNode | null {
+  if (!nodeId || root.id === nodeId) return nodeId ? root : null;
+  for (const child of root.children) {
+    const match = findNode(child, nodeId);
+    if (match) return match;
+  }
+  return null;
+}
+
+function validTarget(
+  sites: SiteOverview[],
+  sourceSiteId: string | null,
+  requestedTargetSiteId: string | null,
+): string | null {
+  if (requestedTargetSiteId && requestedTargetSiteId !== sourceSiteId
+    && sites.some((site) => site.id === requestedTargetSiteId)) {
+    return requestedTargetSiteId;
+  }
+  return sites.find((site) => site.id !== sourceSiteId)?.id ?? null;
+}
+
 export function useDashboard() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
+  const [coverageTargetSiteId, setCoverageTargetSiteId] = useState<string | null>(null);
+  const [healthMetric, setHealthMetric] = useState<HealthMetric>("space_health");
   const [trees, setTrees] = useState<Map<string, StorageTree>>(new Map());
   const [treeLoading, setTreeLoading] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<StorageNode | null>(null);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [progressBySite, setProgressBySite] = useState<Map<string, ScanProgressView>>(new Map());
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
@@ -42,21 +72,45 @@ export function useDashboard() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const selectedSiteRef = useRef<string | null>(null);
+  const targetSiteRef = useRef<string | null>(null);
+  const treeRequestRef = useRef(0);
 
   useEffect(() => {
     selectedSiteRef.current = activeSiteId;
   }, [activeSiteId]);
 
-  const refreshTree = useCallback(async (siteId: string, foreground = false) => {
-    if (foreground) setTreeLoading(true);
+  useEffect(() => {
+    targetSiteRef.current = coverageTargetSiteId;
+  }, [coverageTargetSiteId]);
+
+  const refreshTree = useCallback(async (
+    siteId: string,
+    targetSiteId: string | null,
+    foreground = false,
+  ) => {
+    const requestId = treeRequestRef.current + 1;
+    treeRequestRef.current = requestId;
+    if (foreground) {
+      setTreeLoading(true);
+      setTreeError(null);
+    } else {
+      setTreeLoading(false);
+    }
     try {
-      const tree = await getStorageTree(siteId);
-      setTrees((current) => new Map(current).set(siteId, tree));
-      if (selectedSiteRef.current === siteId) setSelectedNode(tree.root);
-    } catch (treeError) {
-      if (foreground) setNotice(errorMessage(treeError));
+      const tree = await getStorageTree(siteId, targetSiteId);
+      setTrees((current) => new Map(current).set(treeKey(siteId, targetSiteId), tree));
+      if (treeRequestRef.current === requestId
+        && selectedSiteRef.current === siteId
+        && targetSiteRef.current === targetSiteId) {
+        setSelectedNodeId((current) => findNode(tree.root, current)?.id ?? tree.root.id);
+        setTreeError(null);
+      }
+    } catch (treeLoadError) {
+      const message = errorMessage(treeLoadError);
+      if (foreground && treeRequestRef.current === requestId) setTreeError(message);
+      else setNotice(message);
     } finally {
-      if (foreground) setTreeLoading(false);
+      if (foreground && treeRequestRef.current === requestId) setTreeLoading(false);
     }
   }, []);
 
@@ -68,10 +122,15 @@ export function useDashboard() {
       setDashboard(next);
       setActiveRequestIds(new Set(next.active_tasks.map((task) => task.request_id)));
       const requestedSite = selectedSiteRef.current;
-      const nextSite = next.sites.some((site) => site.id === requestedSite) ? requestedSite : next.sites[0]?.id ?? null;
+      const nextSite = next.sites.some((site) => site.id === requestedSite)
+        ? requestedSite
+        : next.sites[0]?.id ?? null;
+      const nextTarget = validTarget(next.sites, nextSite, targetSiteRef.current);
       setActiveSiteId(nextSite);
+      setCoverageTargetSiteId(nextTarget);
       selectedSiteRef.current = nextSite;
-      if (nextSite) await refreshTree(nextSite, false);
+      targetSiteRef.current = nextTarget;
+      if (nextSite) await refreshTree(nextSite, nextTarget, true);
     } catch (loadError) {
       setError(errorMessage(loadError));
     } finally {
@@ -114,7 +173,13 @@ export function useDashboard() {
           next.delete(event.site_id!);
           return next;
         });
-        if (event.kind === "completed") void refreshTree(event.site_id, false);
+        if (event.kind === "completed") {
+          const sourceSiteId = selectedSiteRef.current;
+          const targetSiteId = targetSiteRef.current;
+          if (sourceSiteId && (event.site_id === sourceSiteId || event.site_id === targetSiteId)) {
+            void refreshTree(sourceSiteId, targetSiteId, false);
+          }
+        }
         if (event.kind === "failed") setNotice(event.message ?? "A site scan failed.");
       }
     }
@@ -125,13 +190,12 @@ export function useDashboard() {
         return next;
       });
       setProgressBySite((current) => new Map([...current].filter(([, progress]) => progress.request_id !== event.request_id)));
-      void loadDashboard().then((next) => {
-        setDashboard(next);
-      }).catch(() => undefined);
+      void loadDashboard().then(setDashboard).catch(() => undefined);
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
       if (event.kind === "cancelled") {
         setNotice("Scan cancelled. Completed hashes remain cached.");
-        if (selectedSiteRef.current) void refreshTree(selectedSiteRef.current, false);
+        const sourceSiteId = selectedSiteRef.current;
+        if (sourceSiteId) void refreshTree(sourceSiteId, targetSiteRef.current, false);
       }
     }
   }, [refreshTree]);
@@ -177,12 +241,45 @@ export function useDashboard() {
   }, [dashboard?.active_tasks, dashboard?.sites]);
 
   const selectSite = useCallback(async (siteId: string) => {
+    const sites = dashboard?.sites ?? [];
+    const nextTarget = validTarget(sites, siteId, targetSiteRef.current);
     setActiveSiteId(siteId);
+    setCoverageTargetSiteId(nextTarget);
     selectedSiteRef.current = siteId;
-    const cached = trees.get(siteId);
-    if (cached) setSelectedNode(cached.root);
-    else await refreshTree(siteId, true);
-  }, [refreshTree, trees]);
+    targetSiteRef.current = nextTarget;
+    setSelectedNodeId(null);
+    if (trees.has(treeKey(siteId, nextTarget))) {
+      setTreeLoading(false);
+      setTreeError(null);
+    } else {
+      await refreshTree(siteId, nextTarget, true);
+    }
+  }, [dashboard?.sites, refreshTree, trees]);
+
+  const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
+    const sourceSiteId = selectedSiteRef.current;
+    if (!sourceSiteId || targetSiteId === sourceSiteId) return;
+    setCoverageTargetSiteId(targetSiteId);
+    targetSiteRef.current = targetSiteId;
+    await refreshTree(sourceSiteId, targetSiteId, true);
+  }, [refreshTree]);
+
+  const swapCoverageSites = useCallback(async () => {
+    const previousSourceSiteId = selectedSiteRef.current;
+    const previousTargetSiteId = targetSiteRef.current;
+    if (!previousSourceSiteId || !previousTargetSiteId) return;
+    setActiveSiteId(previousTargetSiteId);
+    setCoverageTargetSiteId(previousSourceSiteId);
+    selectedSiteRef.current = previousTargetSiteId;
+    targetSiteRef.current = previousSourceSiteId;
+    setSelectedNodeId(null);
+    await refreshTree(previousTargetSiteId, previousSourceSiteId, true);
+  }, [refreshTree]);
+
+  const retryTree = useCallback(async () => {
+    const siteId = selectedSiteRef.current;
+    if (siteId) await refreshTree(siteId, targetSiteRef.current, true);
+  }, [refreshTree]);
 
   const scan = useCallback(async (siteId?: string) => {
     setNotice(null);
@@ -203,6 +300,13 @@ export function useDashboard() {
     }
   }, []);
 
+  const activeTree = activeSiteId
+    ? trees.get(treeKey(activeSiteId, coverageTargetSiteId)) ?? null
+    : null;
+  const selectedNode = activeTree
+    ? findNode(activeTree.root, selectedNodeId) ?? activeTree.root
+    : null;
+
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
     setDashboard((current) => current ? {
       ...current,
@@ -212,7 +316,7 @@ export function useDashboard() {
   }, []);
 
   const stageSelected = useCallback(async () => {
-    if (!selectedNode?.path) return;
+    if (!selectedNode?.path || healthMetric !== "space_health") return;
     setStagingBusy(true);
     setNotice(null);
     try {
@@ -223,13 +327,15 @@ export function useDashboard() {
         additions.forEach((file) => byId.set(file.file_id, file));
         return [...byId.values()];
       });
-      if (report.warnings.length > 0) setNotice("Some copies could not be staged because they were unsafe or unavailable.");
+      if (report.warnings.length > 0) {
+        setNotice("Some copies could not be staged because they were unsafe or unavailable.");
+      }
     } catch (stageError) {
       setNotice(errorMessage(stageError));
     } finally {
       setStagingBusy(false);
     }
-  }, [selectedNode, updateStaged]);
+  }, [healthMetric, selectedNode, updateStaged]);
 
   const removeStaged = useCallback(async (path: string) => {
     setStagingBusy(true);
@@ -258,14 +364,14 @@ export function useDashboard() {
   }, []);
 
   const activeSite = dashboard?.sites.find((site) => site.id === activeSiteId) ?? null;
-  const activeTree = activeSiteId ? trees.get(activeSiteId) ?? null : null;
+  const coverageTargetSite = dashboard?.sites.find((site) => site.id === coverageTargetSiteId) ?? null;
   const isSelectedStaged = Boolean(selectedNode?.path && dashboard?.staged.some((file) => {
     const selectedPath = selectedNode.path!;
     const normalized = selectedPath.endsWith("/") ? selectedPath : `${selectedPath}/`;
     return file.path === selectedPath || file.path.startsWith(normalized);
   }));
 
-  return {
+  return useMemo(() => ({
     dashboard,
     loading,
     error,
@@ -275,10 +381,18 @@ export function useDashboard() {
     activeSite,
     activeTree,
     activeSiteId,
-    selectedNode: selectedNode ?? activeTree?.root ?? null,
-    selectNode: setSelectedNode,
+    coverageTargetSite,
+    coverageTargetSiteId,
+    healthMetric,
+    setHealthMetric,
+    selectedNode,
+    selectNode: (node: StorageNode) => setSelectedNodeId(node.id),
     selectSite,
+    selectCoverageTarget,
+    swapCoverageSites,
     treeLoading,
+    treeError,
+    retryTree,
     progressBySite,
     scan,
     cancel,
@@ -293,5 +407,37 @@ export function useDashboard() {
     previewLoading,
     reviewError,
     runPreview,
-  };
+  }), [
+    activeRequestIds.size,
+    activeSite,
+    activeSiteId,
+    activeTree,
+    cancel,
+    coverageTargetSite,
+    coverageTargetSiteId,
+    dashboard,
+    error,
+    healthMetric,
+    isSelectedStaged,
+    loading,
+    notice,
+    preview,
+    previewLoading,
+    progressBySite,
+    refresh,
+    removeStaged,
+    reviewError,
+    reviewOpen,
+    retryTree,
+    runPreview,
+    scan,
+    selectCoverageTarget,
+    selectedNode,
+    selectSite,
+    stageSelected,
+    stagingBusy,
+    swapCoverageSites,
+    treeError,
+    treeLoading,
+  ]);
 }

@@ -16,9 +16,10 @@ export function loadDashboard(): Promise<Dashboard> {
   return invoke<Dashboard>("load_dashboard");
 }
 
-export function getStorageTree(siteId: string): Promise<StorageTree> {
+export function getStorageTree(siteId: string, targetSiteId?: string | null): Promise<StorageTree> {
   return invoke<StorageTree>("get_storage_tree", {
     siteId,
+    targetSiteId: targetSiteId ?? null,
     maxDepth: 5,
     maxChildren: 12,
   });

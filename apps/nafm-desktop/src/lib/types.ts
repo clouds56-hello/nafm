@@ -3,6 +3,7 @@ export type ConnectionState = "connected" | "offline" | "unknown";
 export type ScanState = "idle" | "queued" | "discovering" | "hashing" | "finalizing" | "done" | "failed";
 export type ScanPhase = "discovering" | "hashing" | "finalizing";
 export type ScanTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type HealthMetric = "space_health" | "coverage_health";
 
 export interface SiteOverview {
   id: string;
@@ -35,11 +36,18 @@ export interface StorageNode {
   total_bytes: number;
   duplicate_bytes: number;
   duplicate_file_count: number;
+  space_health: number | null;
+  coverage_health: number | null;
   children: StorageNode[];
 }
 
 export interface StorageTree {
   site_id: string;
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
   root: StorageNode;
 }
 

@@ -1,7 +1,7 @@
 import { AppHeader } from "../components/AppHeader";
 import { ReviewDrawer } from "../components/ReviewDrawer";
 import { SiteGrid } from "../components/SiteGrid";
-import { DashboardSkeleton, EmptyMap, EmptyWorkspace, ErrorState } from "../components/States";
+import { DashboardSkeleton, EmptyMap, EmptyWorkspace, ErrorState, MapError } from "../components/States";
 import { StorageExplorer } from "../components/StorageExplorer";
 import { useDashboard } from "../hooks/useDashboard";
 import { CloseIcon } from "../components/Icons";
@@ -38,13 +38,22 @@ export function DashboardPage() {
         />
         {state.treeLoading ? (
           <div className="map-loading"><div className="skeleton-map"><span /></div></div>
+        ) : state.treeError ? (
+          <MapError message={state.treeError} onRetry={() => void state.retryTree()} />
         ) : state.activeSite && state.activeTree && state.selectedNode && (state.activeTree.root.file_count > 0 || state.activeTree.root.children.length > 0) ? (
           <StorageExplorer
-            siteName={state.activeSite.name}
+            sites={state.dashboard.sites}
+            source={state.activeSite}
+            target={state.coverageTargetSite}
             tree={state.activeTree}
             node={state.selectedNode}
+            metric={state.healthMetric}
             staged={state.isSelectedStaged}
             stagingBusy={state.stagingBusy}
+            onMetricChange={state.setHealthMetric}
+            onTargetChange={(siteId) => void state.selectCoverageTarget(siteId)}
+            onSwap={() => void state.swapCoverageSites()}
+            onScanTarget={() => state.coverageTargetSite && void state.scan(state.coverageTargetSite.id)}
             onSelectNode={state.selectNode}
             onStage={() => void state.stageSelected()}
             onUnstage={() => state.selectedNode?.path && void state.removeStaged(state.selectedNode.path)}

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatBytes, formatCount, percent } from "../lib/format";
-import type { StorageNode } from "../lib/types";
+import { formatBytes, formatCount, formatHealth } from "../lib/format";
+import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
   root: StorageNode;
+  metric: HealthMetric;
   selectedNodeId: string;
   onSelectNode: (node: StorageNode) => void;
 }
@@ -13,12 +14,10 @@ interface ArcDatum {
   depth: number;
   start: number;
   end: number;
-  color: string;
 }
 
 const TAU = Math.PI * 2;
 const GAP = 0.018;
-const PALETTE = [192, 206, 222, 238, 259, 278, 304, 330, 15, 43];
 const MAX_ARCS = 5_000;
 
 function findPath(root: StorageNode, targetId: string, trail: StorageNode[] = []): StorageNode[] | null {
@@ -32,35 +31,43 @@ function findPath(root: StorageNode, targetId: string, trail: StorageNode[] = []
 }
 
 function nodeWeight(node: StorageNode): number {
-  return Math.max(node.total_bytes, node.duplicate_bytes, 1);
+  return Math.max(node.total_bytes, 1);
 }
 
 function layout(root: StorageNode): ArcDatum[] {
   const arcs: ArcDatum[] = [];
-  const walk = (node: StorageNode, depth: number, start: number, end: number, branch: number) => {
+  const walk = (node: StorageNode, depth: number, start: number, end: number) => {
     if (depth > 4 || node.children.length === 0 || arcs.length >= MAX_ARCS) return;
     const total = node.children.reduce((sum, child) => sum + nodeWeight(child), 0);
     let cursor = start;
-    const childArcs: Array<{ child: StorageNode; start: number; end: number; branch: number }> = [];
-    for (const [index, child] of node.children.entries()) {
+    const childArcs: ArcDatum[] = [];
+    for (const child of node.children) {
       if (arcs.length >= MAX_ARCS) break;
       const span = ((end - start) * nodeWeight(child)) / total;
-      const arcStart = cursor;
-      const arcEnd = cursor + span;
-      const childBranch = depth === 1 ? index : branch;
-      const hue = PALETTE[childBranch % PALETTE.length];
-      const saturation = Math.round(48 + percent(child.duplicate_bytes, child.total_bytes) * 0.34);
-      const lightness = Math.max(38, 66 - depth * 5);
-      arcs.push({ node: child, depth, start: arcStart, end: arcEnd, color: `hsl(${hue} ${saturation}% ${lightness}%)` });
-      childArcs.push({ child, start: arcStart, end: arcEnd, branch: childBranch });
-      cursor = arcEnd;
+      const arc = { node: child, depth, start: cursor, end: cursor + span };
+      arcs.push(arc);
+      childArcs.push(arc);
+      cursor += span;
     }
-    for (const childArc of childArcs) {
-      walk(childArc.child, depth + 1, childArc.start, childArc.end, childArc.branch);
-    }
+    for (const arc of childArcs) walk(arc.node, depth + 1, arc.start, arc.end);
   };
-  walk(root, 1, -Math.PI / 2, TAU - Math.PI / 2, 0);
+  walk(root, 1, -Math.PI / 2, TAU - Math.PI / 2);
   return arcs;
+}
+
+function healthColor(value: number | null): string {
+  if (value === null) return "#4b535c";
+  const clamped = Math.min(100, Math.max(0, value));
+  if (clamped <= 50) {
+    const amount = clamped / 50;
+    return mixColor([245, 112, 111], [240, 184, 91], amount);
+  }
+  return mixColor([240, 184, 91], [91, 219, 194], (clamped - 50) / 50);
+}
+
+function mixColor(from: [number, number, number], to: [number, number, number], amount: number): string {
+  const channels = from.map((channel, index) => Math.round(channel + (to[index] - channel) * amount));
+  return `rgb(${channels.join(" ")})`;
 }
 
 function drawArc(
@@ -90,7 +97,34 @@ function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRa
   });
 }
 
-export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapProps) {
+function drawScoreLabel(
+  context: CanvasRenderingContext2D,
+  arc: ArcDatum,
+  value: number | null,
+  center: number,
+  inner: number,
+  outer: number,
+) {
+  if (value === null) return;
+  const angleSpan = arc.end - arc.start;
+  const radius = (inner + outer) / 2;
+  if (angleSpan * radius < 43 || outer - inner < 25) return;
+
+  const angle = (arc.start + arc.end) / 2;
+  let rotation = angle + Math.PI / 2;
+  if (angle > Math.PI / 2 && angle < Math.PI * 1.5) rotation += Math.PI;
+  context.save();
+  context.translate(center + Math.cos(angle) * radius, center + Math.sin(angle) * radius);
+  context.rotate(rotation);
+  context.fillStyle = "rgba(7, 11, 15, .86)";
+  context.font = "700 10px -apple-system, BlinkMacSystemFont, sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(`${Math.round(value)}`, 0, 0);
+  context.restore();
+}
+
+export function SunburstMap({ root, metric, selectedNodeId, onSelectNode }: SunburstMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(560);
@@ -129,31 +163,33 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
     context.clearRect(0, 0, size, size);
 
     const glow = context.createRadialGradient(center, center, innerRadius, center, center, size * 0.48);
-    glow.addColorStop(0, "rgba(71, 217, 224, .06)");
+    glow.addColorStop(0, "rgba(91, 219, 194, .07)");
     glow.addColorStop(1, "rgba(7, 9, 13, 0)");
     context.fillStyle = glow;
     context.fillRect(0, 0, size, size);
 
-    arcs.forEach((arc) => {
+    for (const arc of arcs) {
       const inner = innerRadius + (arc.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
+      const color = healthColor(arc.node[metric]);
       drawArc(context, center, inner, outer, arc.start, arc.end);
       const selected = arc.node.id === selectedNodeId;
       const isHovered = hovered?.node.id === arc.node.id;
-      context.globalAlpha = selected || isHovered ? 1 : 0.8;
-      context.fillStyle = arc.color;
+      context.globalAlpha = selected || isHovered ? 1 : 0.84;
+      context.fillStyle = color;
       context.fill();
       if (selected || isHovered) {
         context.save();
         context.strokeStyle = selected ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.65)";
         context.lineWidth = selected ? 2 : 1;
-        context.shadowColor = arc.color;
+        context.shadowColor = color;
         context.shadowBlur = 12;
         context.stroke();
         context.restore();
       }
-    });
-    context.globalAlpha = 1;
+      context.globalAlpha = 1;
+      drawScoreLabel(context, arc, arc.node[metric], center, inner, outer);
+    }
 
     context.beginPath();
     context.arc(center, center, innerRadius - 7, 0, TAU);
@@ -161,8 +197,7 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
     context.fill();
     context.strokeStyle = "rgba(255,255,255,.07)";
     context.stroke();
-
-  }, [arcs, hovered, innerRadius, ringWidth, selectedNodeId, size]);
+  }, [arcs, hovered, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
     setCurrentRootId(root.id);
@@ -174,6 +209,7 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
   }, [arcs, innerRadius, ringWidth, size]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (arcs.length === 0) return;
     const current = Math.max(0, arcs.findIndex((arc) => arc.node.id === (hovered?.node.id ?? selectedNodeId)));
     if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
       event.preventDefault();
@@ -186,11 +222,16 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
     }
   };
 
+  const score = currentRoot[metric];
+  const metricLabel = metric === "space_health" ? "space health" : "coverage health";
+
   return (
     <div className="sunburst-frame" ref={frameRef}>
       <div className="map-breadcrumb" aria-label="Current map location">
         {rootPath.slice(-3).map((node, index, visible) => (
-          <span key={node.id}>{index > 0 && <i>/</i>}{node.name || "Site"}{index === visible.length - 1 && <b />}</span>
+          <span key={node.id}>
+            {index > 0 && <i>/</i>}{node.name || "Site"}{index === visible.length - 1 && <b />}
+          </span>
         ))}
       </div>
       <canvas
@@ -198,7 +239,7 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
         className="sunburst-canvas"
         role="img"
         tabIndex={0}
-        aria-label={`Radial storage map for ${root.name}. Use arrow keys to explore and Enter to select.`}
+        aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. Use arrow keys to explore and Enter to select.`}
         onPointerMove={(event) => setHovered(getPointerArc(event) ?? null)}
         onPointerLeave={() => setHovered(null)}
         onClick={(event) => {
@@ -211,7 +252,7 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
         onKeyDown={handleKeyDown}
       />
       <button
-        className="map-center-control"
+        className="map-center-control health-center"
         type="button"
         onClick={() => {
           if (!parentRoot) return;
@@ -221,16 +262,19 @@ export function SunburstMap({ root, selectedNodeId, onSelectNode }: SunburstMapP
         disabled={!parentRoot}
         aria-label={parentRoot ? `Return to ${parentRoot.name}` : `${currentRoot.name}, map root`}
       >
-        <small>{parentRoot ? "← BACK TO" : "CURRENT ROOT"}</small>
-        <strong>{currentRoot.name.length > 15 ? `${currentRoot.name.slice(0, 14)}…` : currentRoot.name}</strong>
-        <span>{formatBytes(currentRoot.duplicate_bytes)}</span>
+        <small>{parentRoot ? "← BACK" : metricLabel.toUpperCase()}</small>
+        <strong>{formatHealth(score)}{score === null ? "" : <em>/100</em>}</strong>
+        <span title={currentRoot.name}>{currentRoot.name}</span>
       </button>
-      <div className="map-legend" aria-hidden="true">
-        <span><i className="legend-unique" />Unique</span>
-        <span><i className="legend-duplicate" />Duplicate-heavy</span>
+      <div className="health-legend" aria-label="Health score color scale">
+        <div className="health-gradient" />
+        <div><span>0 unhealthy</span><span>50</span><span>100 healthy</span></div>
+        <small><i /> Gray means not scanned or unavailable</small>
       </div>
       <p className="sr-only" aria-live="polite">
-        {hovered ? `${hovered.node.name}, ${formatCount(hovered.node.file_count)} files, ${formatBytes(hovered.node.duplicate_bytes)} reclaimable` : ""}
+        {hovered
+          ? `${hovered.node.name}, ${formatCount(hovered.node.file_count)} files, ${formatBytes(hovered.node.total_bytes)}, ${formatHealth(hovered.node[metric])} ${metricLabel}`
+          : ""}
       </p>
     </div>
   );

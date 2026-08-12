@@ -33,3 +33,7 @@ export function fileName(path: string): string {
 export function percent(numerator: number, denominator: number): number {
   return denominator > 0 ? Math.min(100, Math.max(0, (numerator / denominator) * 100)) : 0;
 }
+
+export function formatHealth(value: number | null): string {
+  return value === null ? "—" : `${Math.round(Math.min(100, Math.max(0, value)))}`;
+}
