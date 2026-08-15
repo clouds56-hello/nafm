@@ -789,10 +789,11 @@ impl Repository {
       .collect::<Vec<_>>();
     if !local_folders.is_empty() {
       let local_cancellation_callback = cancellation_callback.clone();
-      for file in
+      let local_files =
         task::spawn_blocking(move || discover_site_files(&local_folders, local_cancellation_callback.as_ref()))
-          .await??
-      {
+          .await??;
+      check_scan_cancelled(cancellation_callback.as_ref())?;
+      for file in local_files {
         files_by_path.insert(file.path.clone(), file);
       }
     }
@@ -824,6 +825,7 @@ impl Repository {
       )
     })
     .await??;
+    check_scan_cancelled(cancellation_callback.as_ref())?;
 
     let progress_context = Arc::new(ScanProgressContext {
       site_id: site.id.clone(),
@@ -862,6 +864,7 @@ impl Repository {
         )
       })
       .await??;
+      check_scan_cancelled(cancellation_callback.as_ref())?;
       for (index, content_hash) in hashed_records {
         preparation.pending_records[index].content_hash = Some(content_hash);
       }
@@ -877,37 +880,48 @@ impl Repository {
       }
     }
     for (credential_url, targets) in remote_targets {
+      check_scan_cancelled(cancellation_callback.as_ref())?;
       let credential = self
         .credential_store
         .load_smb_credential(&credential_url)?
         .ok_or_else(|| NafmError::SmbCredentialNotFound(credential_url.clone()))?;
       let location = SmbLocation::parse(&credential.url)?;
       let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
+      check_scan_cancelled(cancellation_callback.as_ref())?;
       let tree = client.connect_share(&location.share).await?;
-      for (index, file) in targets {
+      let hash_result = async {
         check_scan_cancelled(cancellation_callback.as_ref())?;
-        let FileSource::Smb { remote_path, .. } = &file.source else {
-          unreachable!("remote target should have an SMB source");
-        };
-        let content_hash = hash_smb_file(
-          &client,
-          &tree,
-          remote_path,
-          &file,
-          self.hash_algorithm.as_ref(),
-          cancellation_callback.as_ref(),
-        )
-        .await?;
-        cache_hashed_file(&db_path, &site.id, &file, self.hash_algorithm.name(), &content_hash).await?;
-        report_scan_progress(
-          progress_callback.as_ref(),
-          &progress_context,
-          &file.path,
-          &processed_files,
-        );
-        preparation.pending_records[index].content_hash = Some(content_hash);
+        for (index, file) in targets {
+          check_scan_cancelled(cancellation_callback.as_ref())?;
+          let FileSource::Smb { remote_path, .. } = &file.source else {
+            unreachable!("remote target should have an SMB source");
+          };
+          let content_hash = hash_smb_file(
+            &client,
+            &tree,
+            remote_path,
+            &file,
+            self.hash_algorithm.as_ref(),
+            cancellation_callback.as_ref(),
+          )
+          .await?;
+          check_scan_cancelled(cancellation_callback.as_ref())?;
+          cache_hashed_file(&db_path, &site.id, &file, self.hash_algorithm.name(), &content_hash).await?;
+          check_scan_cancelled(cancellation_callback.as_ref())?;
+          report_scan_progress(
+            progress_callback.as_ref(),
+            &progress_context,
+            &file.path,
+            &processed_files,
+          );
+          preparation.pending_records[index].content_hash = Some(content_hash);
+        }
+        Ok::<(), NafmError>(())
       }
+      .await;
       let _ = client.disconnect_share(&tree).await;
+      hash_result?;
+      check_scan_cancelled(cancellation_callback.as_ref())?;
     }
 
     check_scan_cancelled(cancellation_callback.as_ref())?;
@@ -1240,54 +1254,64 @@ async fn discover_smb_files(
     .load_smb_credential(&location_value)?
     .ok_or_else(|| NafmError::SmbCredentialNotFound(location_value.into_owned()))?;
   let mut client = smb2::connect(&location.server_address, &credential.username, &credential.password).await?;
+  check_scan_cancelled(cancellation_callback)?;
   let mut tree = client.connect_share(&location.share).await?;
-  let mut files = Vec::new();
-  let mut directories = vec![(location.relative_path.clone(), Vec::<String>::new())];
-  let mut visited = BTreeSet::new();
-
-  while let Some((remote_directory, relative_segments)) = directories.pop() {
+  let discovery_result = async {
     check_scan_cancelled(cancellation_callback)?;
-    if !visited.insert(remote_directory.clone()) {
-      continue;
-    }
-    let mut entries = client.list_directory(&mut tree, &remote_directory).await?;
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
-    for entry in entries {
+    let mut files = Vec::new();
+    let mut directories = vec![(location.relative_path.clone(), Vec::<String>::new())];
+    let mut visited = BTreeSet::new();
+
+    while let Some((remote_directory, relative_segments)) = directories.pop() {
       check_scan_cancelled(cancellation_callback)?;
-      if entry.name == "." || entry.name == ".." {
+      if !visited.insert(remote_directory.clone()) {
         continue;
       }
-      if site_folder.hidden_policy == HiddenPolicy::Skip && entry.name.starts_with('.') {
-        continue;
-      }
+      let mut entries = client.list_directory(&mut tree, &remote_directory).await?;
+      check_scan_cancelled(cancellation_callback)?;
+      entries.sort_by(|left, right| left.name.cmp(&right.name));
+      for entry in entries {
+        check_scan_cancelled(cancellation_callback)?;
+        if entry.name == "." || entry.name == ".." {
+          continue;
+        }
+        if site_folder.hidden_policy == HiddenPolicy::Skip && entry.name.starts_with('.') {
+          continue;
+        }
 
-      let remote_path = join_smb_path(&remote_directory, &entry.name);
-      let mut child_segments = relative_segments.clone();
-      child_segments.push(entry.name);
-      if entry.is_directory {
-        directories.push((remote_path, child_segments));
-        continue;
-      }
+        let remote_path = join_smb_path(&remote_directory, &entry.name);
+        let mut child_segments = relative_segments.clone();
+        child_segments.push(entry.name);
+        if entry.is_directory {
+          directories.push((remote_path, child_segments));
+          continue;
+        }
 
-      let display_url = location.join_path_segments(&child_segments)?;
-      let modified_unix_nanos = match entry.modified.to_system_time() {
-        Some(time) => modified_unix_nanos(time)?,
-        None => 0,
-      };
-      files.push(FileProbe {
-        site_folder_id: site_folder.id.clone(),
-        path: PathBuf::from(display_url),
-        size_bytes: entry.size,
-        modified_unix_nanos,
-        source: FileSource::Smb {
-          credential_url: credential.url.clone(),
-          remote_path,
-        },
-      });
+        let display_url = location.join_path_segments(&child_segments)?;
+        let modified_unix_nanos = match entry.modified.to_system_time() {
+          Some(time) => modified_unix_nanos(time)?,
+          None => 0,
+        };
+        files.push(FileProbe {
+          site_folder_id: site_folder.id.clone(),
+          path: PathBuf::from(display_url),
+          size_bytes: entry.size,
+          modified_unix_nanos,
+          source: FileSource::Smb {
+            credential_url: credential.url.clone(),
+            remote_path,
+          },
+        });
+      }
     }
+
+    Ok::<_, NafmError>(files)
   }
+  .await;
 
   let _ = client.disconnect_share(&tree).await;
+  let files = discovery_result?;
+  check_scan_cancelled(cancellation_callback)?;
   Ok(files)
 }
 
@@ -1309,28 +1333,38 @@ async fn hash_smb_file(
 ) -> Result<String> {
   const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 
+  check_scan_cancelled(cancellation_callback)?;
   let reader = client.open_file_reader(tree, remote_path).await?;
-  if reader.size() != file.size_bytes {
-    let _ = reader.close().await;
-    return Err(NafmError::SmbFileChanged(file.path.clone()));
-  }
-
-  let mut hasher = hash_algorithm.new_hasher();
-  let mut offset = 0;
-  while offset < file.size_bytes {
+  let hash_result = async {
     check_scan_cancelled(cancellation_callback)?;
-    let bytes = reader.read_at(offset, CHUNK_SIZE.min(file.size_bytes - offset)).await?;
-    if bytes.is_empty() {
-      break;
+    if reader.size() != file.size_bytes {
+      return Err(NafmError::SmbFileChanged(file.path.clone()));
     }
-    offset += bytes.len() as u64;
-    hasher.update(&bytes);
+
+    let mut hasher = hash_algorithm.new_hasher();
+    let mut offset = 0;
+    while offset < file.size_bytes {
+      check_scan_cancelled(cancellation_callback)?;
+      let bytes = reader.read_at(offset, CHUNK_SIZE.min(file.size_bytes - offset)).await?;
+      check_scan_cancelled(cancellation_callback)?;
+      if bytes.is_empty() {
+        break;
+      }
+      offset += bytes.len() as u64;
+      hasher.update(&bytes);
+    }
+    if offset != file.size_bytes {
+      return Err(NafmError::SmbFileChanged(file.path.clone()));
+    }
+    Ok(hasher.finalize())
   }
-  reader.close().await?;
-  if offset != file.size_bytes {
-    return Err(NafmError::SmbFileChanged(file.path.clone()));
-  }
-  Ok(hasher.finalize())
+  .await;
+
+  let close_result = reader.close().await;
+  let content_hash = hash_result?;
+  close_result?;
+  check_scan_cancelled(cancellation_callback)?;
+  Ok(content_hash)
 }
 
 async fn cache_hashed_file(
@@ -1513,7 +1547,10 @@ fn hash_files_in_parallel(
       tasks.push(scope.spawn(move || -> Result<()> {
         for (index, file) in chunk {
           check_scan_cancelled(*cancellation_callback)?;
-          let content_hash = hash_algorithm.hash_file(&file.path)?;
+          let content_hash = match cancellation_callback {
+            Some(is_cancelled) => hash_algorithm.hash_file_with_cancellation(&file.path, is_cancelled.as_ref())?,
+            None => hash_algorithm.hash_file(&file.path)?,
+          };
           check_scan_cancelled(*cancellation_callback)?;
           sender
             .send((*index, file.clone(), content_hash))
