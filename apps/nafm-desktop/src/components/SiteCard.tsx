@@ -1,10 +1,14 @@
 import { formatBytes, formatCount, formatRelativeTime, percent } from "../lib/format";
-import type { ScanProgressView, SiteOverview } from "../lib/types";
-import { ChevronIcon, DriveIcon, MoreIcon, NetworkIcon, ScanIcon } from "./Icons";
+import { isActiveScanState } from "../lib/scanView";
+import type { ScanCompletionView, ScanProgressView, SiteOverview } from "../lib/types";
+import { CheckIcon, ChevronIcon, DriveIcon, MoreIcon, NetworkIcon, ScanIcon } from "./Icons";
 
 interface SiteCardProps {
   site: SiteOverview;
   progress?: ScanProgressView;
+  completion?: ScanCompletionView;
+  backendScanActive: boolean;
+  scanBlocked: boolean;
   active: boolean;
   onSelect: () => void;
   onScan: () => void;
@@ -12,9 +16,26 @@ interface SiteCardProps {
   onManage: () => void;
 }
 
-export function SiteCard({ site, progress, active, onSelect, onScan, onCancel, onManage }: SiteCardProps) {
-  const isScanning = Boolean(progress) || ["queued", "discovering", "hashing", "finalizing"].includes(site.scan_state);
+export function SiteCard({
+  site,
+  progress,
+  completion,
+  backendScanActive,
+  scanBlocked,
+  active,
+  onSelect,
+  onScan,
+  onCancel,
+  onManage,
+}: SiteCardProps) {
+  const backendStateActive = isActiveScanState(site.scan_state);
+  const isScanning = Boolean(progress) || (backendScanActive && backendStateActive);
   const progressValue = progress ? percent(progress.processed_files, progress.total_files) : 0;
+  const completionCopy = completion?.source === "event"
+    ? `${formatCount(completion.hashed_files ?? 0)} hashed · ${formatCount(completion.reused_files ?? 0)} reused`
+    : completion
+      ? `Indexed · ${formatCount(completion.total_files)} files`
+      : null;
   const SiteIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
 
   return (
@@ -35,7 +56,7 @@ export function SiteCard({ site, progress, active, onSelect, onScan, onCancel, o
         <div className="site-progress" aria-live="polite">
           <div className="progress-copy">
             <span><span className="pulse-dot" />{progress?.phase ?? site.scan_state}</span>
-            <strong>{progress ? `${Math.round(progressValue)}%` : "Starting"}</strong>
+            <strong>{progress && progress.total_files > 0 ? `${Math.round(progressValue)}%` : "Starting"}</strong>
           </div>
           <div className="progress-track"><span style={{ width: `${progress ? Math.max(3, progressValue) : 8}%` }} /></div>
           <p>
@@ -45,11 +66,30 @@ export function SiteCard({ site, progress, active, onSelect, onScan, onCancel, o
           </p>
         </div>
       ) : (
-        <div className="site-stats">
-          <span>{formatBytes(site.total_bytes)}</span>
-          <span>{formatCount(site.total_files)} files</span>
-          <strong>{formatBytes(site.duplicate_bytes)} reclaimable</strong>
-        </div>
+        <>
+          <div className="site-stats">
+            <span>{formatBytes(site.total_bytes)}</span>
+            <span>{formatCount(site.total_files)} files</span>
+            <strong>{formatBytes(site.duplicate_bytes)} reclaimable</strong>
+          </div>
+          {completion && completionCopy && (
+            <div
+              className="site-progress site-completion"
+              role={completion.should_announce ? "status" : undefined}
+              aria-atomic={completion.should_announce ? "true" : undefined}
+            >
+              <div className="progress-copy">
+                <span>
+                  {completion.should_announce && <span className="sr-only">{`Scan of ${site.name} `}</span>}
+                  <span className="completion-check"><CheckIcon /></span>Complete
+                </span>
+                <strong>100%</strong>
+              </div>
+              <div className="progress-track"><span /></div>
+              <p>{completionCopy}</p>
+            </div>
+          )}
+        </>
       )}
 
       <footer className="site-card-footer">
@@ -60,7 +100,7 @@ export function SiteCard({ site, progress, active, onSelect, onScan, onCancel, o
             className="icon-text-button"
             type="button"
             onClick={() => progress ? onCancel(progress.request_id) : onScan()}
-            disabled={isScanning && !progress}
+            disabled={!progress && (isScanning || scanBlocked)}
             aria-label={progress ? `Cancel scan of ${site.name}` : `Scan ${site.name}`}
           >
             <ScanIcon /> {progress ? "Cancel" : isScanning ? "Scanning" : "Scan"}

@@ -1,10 +1,13 @@
-import type { ScanProgressView, SiteOverview } from "../lib/types";
+import type { ScanCompletionView, ScanProgressView, SiteOverview } from "../lib/types";
 import { SiteCard } from "./SiteCard";
 
 interface SiteGridProps {
   sites: SiteOverview[];
   activeSiteId: string | null;
   progressBySite: Map<string, ScanProgressView>;
+  completionBySite: Map<string, ScanCompletionView>;
+  backendScanningSiteIds: Set<string>;
+  scanBlockedSiteIds: Set<string>;
   onSelect: (siteId: string) => void;
   onScan: (siteId: string) => void;
   onCancel: (requestId: number) => void;
@@ -12,7 +15,19 @@ interface SiteGridProps {
   onManage: (siteId: string) => void;
 }
 
-export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan, onCancel, onAdd, onManage }: SiteGridProps) {
+export function SiteGrid({
+  sites,
+  activeSiteId,
+  progressBySite,
+  completionBySite,
+  backendScanningSiteIds,
+  scanBlockedSiteIds,
+  onSelect,
+  onScan,
+  onCancel,
+  onAdd,
+  onManage,
+}: SiteGridProps) {
   return (
     <aside className="sites-section" aria-labelledby="sites-title">
       <header className="site-rail-heading">
@@ -25,6 +40,9 @@ export function SiteGrid({ sites, activeSiteId, progressBySite, onSelect, onScan
             key={site.id}
             site={site}
             progress={progressBySite.get(site.id)}
+            completion={completionBySite.get(site.id)}
+            backendScanActive={backendScanningSiteIds.has(site.id)}
+            scanBlocked={scanBlockedSiteIds.has(site.id)}
             active={site.id === activeSiteId}
             onSelect={() => onSelect(site.id)}
             onScan={() => onScan(site.id)}

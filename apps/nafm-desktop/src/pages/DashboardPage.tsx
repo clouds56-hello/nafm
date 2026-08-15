@@ -71,6 +71,9 @@ export function DashboardPage({
           sites={state.dashboard.sites}
           activeSiteId={state.activeSiteId}
           progressBySite={state.progressBySite}
+          completionBySite={state.completionBySite}
+          backendScanningSiteIds={state.backendScanningSiteIds}
+          scanBlockedSiteIds={state.scanBlockedSiteIds}
           onSelect={(siteId) => void state.selectSite(siteId)}
           onScan={(siteId) => void state.scan(siteId)}
           onCancel={(requestId) => void state.cancel(requestId)}

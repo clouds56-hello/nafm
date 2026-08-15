@@ -258,3 +258,13 @@ export interface ScanProgressView {
   reused_files: number;
   current_path: string | null;
 }
+
+export interface ScanCompletionView {
+  request_id: number | null;
+  site_id: string;
+  source: "event" | "snapshot";
+  should_announce: boolean;
+  total_files: number;
+  hashed_files: number | null;
+  reused_files: number | null;
+}
