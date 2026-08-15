@@ -1,12 +1,13 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
-use nafm_core::{ScanEvent, ScanProgress, ScanStarted, ScanSummary};
+use nafm_core::{NafmError, ScanEvent, ScanProgress, ScanStarted, ScanSummary};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::state::{AppState, RunningScanTask, ScanSelector, ScanTask, ScanTaskStatus};
+use crate::state::{
+  AppState, RunningScanTask, ScanCancelMode, ScanCancelOutcome, ScanSelector, ScanTask, ScanTaskControl, ScanTaskStatus,
+};
 
 const SCAN_EVENT_NAME: &str = "task://scan/events";
 
@@ -17,11 +18,12 @@ enum ScanEventScope {
   Task,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ScanEventKind {
   Started,
   Progress,
+  Cancelling,
   Completed,
   Failed,
   Cancelled,
@@ -54,7 +56,9 @@ struct ScanTaskEvent {
 #[derive(Serialize)]
 pub struct CancelScanReport {
   request_id: u64,
-  cancelled: bool,
+  outcome: ScanCancelOutcome,
+  status: Option<ScanTaskStatus>,
+  effective_mode: Option<ScanCancelMode>,
 }
 
 #[tauri::command]
@@ -75,14 +79,13 @@ pub async fn start_scan(
   let transition = state.transition_gate.lock().await;
   let repository = state.repository_for(&expected_workspace).await?;
   let registry = state.scan_tasks.clone();
-  let cancelled = Arc::new(AtomicBool::new(false));
-  let cancelled_for_task = cancelled.clone();
-  let task_cancellation = cancelled.clone();
+  let control = ScanTaskControl::default();
+  let task_control = control.clone();
   let inserted = state
     .scan_tasks
     .insert_if_available(RunningScanTask {
       task: scan_task.clone(),
-      cancelled,
+      control,
     })
     .await;
   if !inserted {
@@ -92,62 +95,52 @@ pub async fn start_scan(
 
   tokio::spawn(async move {
     let result = if selector_value == "all" {
-      scan_all(&app, &repository, request_id, task_cancellation).await
+      scan_all(&app, &repository, request_id, task_control).await
     } else {
-      scan_site(&app, &repository, request_id, &selector_value, task_cancellation).await
+      scan_site(&app, &repository, request_id, &selector_value, task_control).await
     };
 
     registry.remove(request_id).await;
-    if cancelled_for_task.load(Ordering::Acquire) {
-      emit_task_terminal(&app, request_id, ScanEventKind::Cancelled);
-    } else if let Err(message) = result {
-      emit_event(
-        &app,
-        ScanTaskEvent {
-          request_id,
-          scope: ScanEventScope::Task,
-          site_id: None,
-          kind: ScanEventKind::Failed,
-          phase: None,
-          processed_files: None,
-          total_files: None,
-          hashed_files: None,
-          reused_files: None,
-          current_path: None,
-          message: Some(message),
-          summary: None,
-        },
-      );
-    } else {
-      emit_task_terminal(&app, request_id, ScanEventKind::Completed);
-    }
+    emit_task_terminal(&app, request_id, classify_scan_result(result));
   });
   Ok(scan_task)
 }
 
 #[tauri::command]
-pub async fn cancel_scan(state: State<'_, AppState>, request_id: u64) -> Result<CancelScanReport, String> {
-  let cancelled = state.scan_tasks.cancel(request_id).await;
-  Ok(CancelScanReport { request_id, cancelled })
+pub async fn cancel_scan(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  request_id: u64,
+  mode: ScanCancelMode,
+) -> Result<CancelScanReport, String> {
+  let request = state.scan_tasks.request_cancel(request_id, mode).await;
+  if request.outcome == ScanCancelOutcome::Requested {
+    emit_task_event(&app, request_id, ScanEventKind::Cancelling, None);
+  }
+  Ok(CancelScanReport {
+    request_id,
+    outcome: request.outcome,
+    status: request.status,
+    effective_mode: request.effective_mode,
+  })
 }
 
 async fn scan_all(
   app: &AppHandle,
   repository: &nafm_core::Repository,
   request_id: u64,
-  cancellation: Arc<AtomicBool>,
-) -> Result<(), String> {
+  control: ScanTaskControl,
+) -> nafm_core::Result<()> {
   let event_app = app.clone();
   repository
     .scan_all_with_events_and_cancellation(
       Some(Arc::new(move |event| {
         emit_core_event(&event_app, request_id, event);
       })),
-      Some(Arc::new(move || cancellation.load(Ordering::Acquire))),
+      Some(Arc::new(move || control.is_cancel_requested())),
     )
     .await
     .map(|_| ())
-    .map_err(|error| error.to_string())
 }
 
 async fn scan_site(
@@ -155,12 +148,9 @@ async fn scan_site(
   repository: &nafm_core::Repository,
   request_id: u64,
   selector: &str,
-  cancellation: Arc<AtomicBool>,
-) -> Result<(), String> {
-  let site = repository
-    .site_overview(selector)
-    .await
-    .map_err(|error| error.to_string())?;
+  control: ScanTaskControl,
+) -> nafm_core::Result<()> {
+  let site = repository.site_overview(selector).await?;
   emit_started(
     app,
     request_id,
@@ -176,10 +166,9 @@ async fn scan_site(
       Some(Arc::new(move |progress| {
         emit_progress(&event_app, request_id, progress);
       })),
-      Some(Arc::new(move || cancellation.load(Ordering::Acquire))),
+      Some(Arc::new(move || control.is_cancel_requested())),
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
   emit_summary(app, request_id, &summary);
   Ok(())
 }
@@ -252,7 +241,30 @@ fn emit_summary(app: &AppHandle, request_id: u64, summary: &ScanSummary) {
   );
 }
 
-fn emit_task_terminal(app: &AppHandle, request_id: u64, kind: ScanEventKind) {
+#[derive(Debug, Eq, PartialEq)]
+enum ScanTerminal {
+  Completed,
+  Cancelled,
+  Failed(String),
+}
+
+fn classify_scan_result(result: nafm_core::Result<()>) -> ScanTerminal {
+  match result {
+    Ok(()) => ScanTerminal::Completed,
+    Err(NafmError::ScanCancelled) => ScanTerminal::Cancelled,
+    Err(error) => ScanTerminal::Failed(error.to_string()),
+  }
+}
+
+fn emit_task_terminal(app: &AppHandle, request_id: u64, terminal: ScanTerminal) {
+  match terminal {
+    ScanTerminal::Completed => emit_task_event(app, request_id, ScanEventKind::Completed, None),
+    ScanTerminal::Cancelled => emit_task_event(app, request_id, ScanEventKind::Cancelled, None),
+    ScanTerminal::Failed(message) => emit_task_event(app, request_id, ScanEventKind::Failed, Some(message)),
+  }
+}
+
+fn emit_task_event(app: &AppHandle, request_id: u64, kind: ScanEventKind, message: Option<String>) {
   emit_event(
     app,
     ScanTaskEvent {
@@ -266,7 +278,7 @@ fn emit_task_terminal(app: &AppHandle, request_id: u64, kind: ScanEventKind) {
       hashed_files: None,
       reused_files: None,
       current_path: None,
-      message: None,
+      message,
       summary: None,
     },
   );
@@ -274,4 +286,66 @@ fn emit_task_terminal(app: &AppHandle, request_id: u64, kind: ScanEventKind) {
 
 fn emit_event(app: &AppHandle, event: ScanTaskEvent) {
   let _ = app.emit(SCAN_EVENT_NAME, event);
+}
+
+#[cfg(test)]
+mod tests {
+  use nafm_core::NafmError;
+  use serde_json::json;
+
+  use super::{CancelScanReport, ScanTerminal, classify_scan_result};
+  use crate::state::{ScanCancelMode, ScanCancelOutcome, ScanTaskControl, ScanTaskStatus};
+
+  #[test]
+  fn cancel_report_serializes_stable_snake_case_contract() {
+    let report = CancelScanReport {
+      request_id: 7,
+      outcome: ScanCancelOutcome::AlreadyRequested,
+      status: Some(ScanTaskStatus::Cancelling),
+      effective_mode: Some(ScanCancelMode::Graceful),
+    };
+
+    assert_eq!(
+      serde_json::to_value(report).unwrap(),
+      json!({
+        "request_id": 7,
+        "outcome": "already_requested",
+        "status": "cancelling",
+        "effective_mode": "graceful"
+      })
+    );
+
+    let not_found = CancelScanReport {
+      request_id: 8,
+      outcome: ScanCancelOutcome::NotFound,
+      status: None,
+      effective_mode: None,
+    };
+    assert_eq!(
+      serde_json::to_value(not_found).unwrap(),
+      json!({
+        "request_id": 8,
+        "outcome": "not_found",
+        "status": null,
+        "effective_mode": null
+      })
+    );
+  }
+
+  #[test]
+  fn terminal_classification_depends_on_core_result_not_cancel_flag() {
+    let control = ScanTaskControl::default();
+    control.request_cancel(ScanCancelMode::Graceful);
+    assert!(control.is_cancel_requested());
+
+    assert_eq!(classify_scan_result(Ok(())), ScanTerminal::Completed);
+    assert_eq!(
+      classify_scan_result(Err(NafmError::ScanCancelled)),
+      ScanTerminal::Cancelled
+    );
+    assert_eq!(
+      classify_scan_result(Err(NafmError::SiteNotFound("photos".to_owned()))),
+      ScanTerminal::Failed("site not found: photos".to_owned())
+    );
+  }
 }

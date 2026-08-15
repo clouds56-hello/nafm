@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CancelScanReport,
+  CancelScanMode,
   CleanupPreview,
   Dashboard,
   FileContentMatchesPage,
@@ -172,8 +173,11 @@ export function startScan(selector: ScanSelector, expectedWorkspace: string): Pr
   return invoke<ScanTask>("start_scan", { selector, expectedWorkspace });
 }
 
-export function cancelScan(requestId: number): Promise<CancelScanReport> {
-  return invoke<CancelScanReport>("cancel_scan", { requestId });
+export function cancelScan(
+  requestId: number,
+  mode: CancelScanMode = "graceful",
+): Promise<CancelScanReport> {
+  return invoke<CancelScanReport>("cancel_scan", { requestId, mode });
 }
 
 export function stagePath(path: string, expectedWorkspace: string): Promise<StageAddReport> {

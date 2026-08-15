@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, ContentHasher, CredentialStore, FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError,
-  Repository, RepositoryOptions, ScanEvent, SiteFolderKind, StageWarningReason, StorageNodeKind,
+  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, FileContentMatchStatus, HashAlgorithm,
+  HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent, SiteFolderKind, StageWarningReason,
+  StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -2085,6 +2086,131 @@ async fn scan_site_honors_cancellation_before_hashing() {
 }
 
 #[tokio::test]
+async fn scan_site_cancels_during_one_large_local_file_without_publishing_it() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  fs::write(root.path().join("large.bin"), vec![0x5a; 4 * 64 * 1024]).unwrap();
+
+  let hashing_started = Arc::new(AtomicBool::new(false));
+  let hash_cancellation_checks = Arc::new(AtomicUsize::new(0));
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(ChunkCancellationHashAlgorithm {
+      hashing_started: hashing_started.clone(),
+    })),
+  })
+  .await
+  .unwrap();
+  repo.create_site("media").await.unwrap();
+  repo
+    .add_site_folder(
+      "media",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  let hashing_started_for_scan = hashing_started.clone();
+  let hash_cancellation_checks_for_scan = hash_cancellation_checks.clone();
+  let result = repo
+    .scan_site_with_progress_and_cancellation(
+      "media",
+      None,
+      Some(Arc::new(move || {
+        if !hashing_started_for_scan.load(Ordering::SeqCst) {
+          return false;
+        }
+        hash_cancellation_checks_for_scan.fetch_add(1, Ordering::SeqCst) >= 1
+      })),
+    )
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  assert!(hashing_started.load(Ordering::SeqCst));
+  assert_eq!(
+    hash_cancellation_checks.load(Ordering::SeqCst),
+    2,
+    "the first in-file check should continue and the next 64 KiB checkpoint should cancel"
+  );
+  let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
+  assert_eq!(
+    conn
+      .query_row("select count(*) from scan_cache_entries", [], |row| row
+        .get::<_, u64>(0))
+      .unwrap(),
+    0,
+    "a partial file hash must not enter the resume cache"
+  );
+  assert_eq!(
+    conn
+      .query_row("select count(*) from file_records", [], |row| row.get::<_, u64>(0))
+      .unwrap(),
+    0,
+    "a cancelled scan must not publish a partial file set"
+  );
+  drop(conn);
+  assert_eq!(repo.site_overview("media").await.unwrap().latest_scan_at, None);
+
+  let summary = repo.scan_site("media").await.unwrap();
+  assert_eq!(summary.files_seen, 1);
+  assert_eq!(summary.files_hashed, 1);
+  assert!(repo.site_overview("media").await.unwrap().latest_scan_at.is_some());
+  let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
+  assert_eq!(
+    conn
+      .query_row("select count(*) from scan_cache_entries", [], |row| row
+        .get::<_, u64>(0))
+      .unwrap(),
+    0,
+    "a successful publication should clear its resume cache"
+  );
+  assert_eq!(
+    conn
+      .query_row("select count(*) from file_records", [], |row| row.get::<_, u64>(0))
+      .unwrap(),
+    1
+  );
+}
+
+#[tokio::test]
+async fn cancellable_scan_preserves_custom_hash_file_overrides() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  fs::write(root.path().join("custom.bin"), b"content").unwrap();
+  let hash_file_calls = Arc::new(AtomicUsize::new(0));
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(OverrideTrackingHashAlgorithm {
+      hash_file_calls: hash_file_calls.clone(),
+    })),
+  })
+  .await
+  .unwrap();
+  repo.create_site("custom").await.unwrap();
+  repo
+    .add_site_folder(
+      "custom",
+      AddSiteFolderRequest {
+        path: root.path().to_path_buf(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+
+  let summary = repo
+    .scan_site_with_progress_and_cancellation("custom", None, Some(Arc::new(|| false)))
+    .await
+    .unwrap();
+
+  assert_eq!(summary.files_hashed, 1);
+  assert_eq!(hash_file_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn scan_site_honors_cancellation_requested_from_final_progress() {
   let fixture = Fixture::new().await;
   let docs = fixture.mkdir("docs");
@@ -2181,6 +2307,75 @@ async fn scan_all_cancellation_does_not_publish_site_summaries() {
     2
   );
   assert!(!events.iter().any(|event| matches!(event, ScanEvent::Summary(_))));
+}
+
+#[tokio::test]
+async fn scan_all_cancellation_waits_for_every_site_worker_to_finish() {
+  let root = tempfile::tempdir().unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  let cancelling = root.path().join("cancelling");
+  let draining = root.path().join("draining");
+  fs::create_dir(&cancelling).unwrap();
+  fs::create_dir(&draining).unwrap();
+  fs::write(cancelling.join("cancel.bin"), b"cancel").unwrap();
+  fs::write(draining.join("drain.bin"), b"drain").unwrap();
+
+  let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let active = Arc::new(AtomicUsize::new(0));
+  let completed = Arc::new(AtomicUsize::new(0));
+  let cancellation_observations = Arc::new(AtomicUsize::new(0));
+  let repo = Repository::open(RepositoryOptions {
+    cache_path: cache.path().join("nafm.sqlite3"),
+    hash_algorithm: Some(Arc::new(CancellingHashAlgorithm {
+      rendezvous: Arc::new(std::sync::Barrier::new(2)),
+      cancelled: cancelled.clone(),
+      active: active.clone(),
+      completed: completed.clone(),
+      drain_delay: Duration::from_millis(500),
+    })),
+  })
+  .await
+  .unwrap();
+  for (site_name, folder) in [("cancelling", cancelling), ("draining", draining)] {
+    repo.create_site(site_name).await.unwrap();
+    repo
+      .add_site_folder(
+        site_name,
+        AddSiteFolderRequest {
+          path: folder,
+          hidden_policy: HiddenPolicy::Include,
+        },
+      )
+      .await
+      .unwrap();
+  }
+
+  let cancelled_for_scan = cancelled.clone();
+  let cancellation_observations_for_scan = cancellation_observations.clone();
+  let result = repo
+    .scan_all_with_events_and_cancellation(
+      None,
+      Some(Arc::new(move || {
+        let cancelled = cancelled_for_scan.load(Ordering::SeqCst);
+        if cancelled {
+          cancellation_observations_for_scan.fetch_add(1, Ordering::SeqCst);
+        }
+        cancelled
+      })),
+    )
+    .await;
+
+  assert!(matches!(result, Err(NafmError::ScanCancelled)));
+  assert_eq!(active.load(Ordering::SeqCst), 0, "no hash worker may outlive scan all");
+  assert_eq!(
+    completed.load(Ordering::SeqCst),
+    2,
+    "scan all must drain the non-abortable blocking worker before returning"
+  );
+  assert!(
+    cancellation_observations.load(Ordering::SeqCst) >= 2,
+    "each site worker must observe shared cancellation before scan all returns"
+  );
 }
 
 #[tokio::test]
@@ -3231,6 +3426,81 @@ impl HashAlgorithm for SlowHashAlgorithm {
     let bytes = fs::read(path)?;
     self.current.fetch_sub(1, Ordering::SeqCst);
     Ok(bytes.len().to_string())
+  }
+}
+
+struct CancellingHashAlgorithm {
+  rendezvous: Arc<std::sync::Barrier>,
+  cancelled: Arc<std::sync::atomic::AtomicBool>,
+  active: Arc<AtomicUsize>,
+  completed: Arc<AtomicUsize>,
+  drain_delay: Duration,
+}
+
+struct ChunkCancellationHashAlgorithm {
+  hashing_started: Arc<AtomicBool>,
+}
+
+impl HashAlgorithm for ChunkCancellationHashAlgorithm {
+  fn name(&self) -> &'static str {
+    "instrumented_blake3"
+  }
+
+  fn new_hasher(&self) -> Box<dyn ContentHasher> {
+    Blake3HashAlgorithm.new_hasher()
+  }
+
+  fn hash_file_with_cancellation(
+    &self,
+    path: &Path,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+  ) -> nafm_core::Result<String> {
+    self.hashing_started.store(true, Ordering::SeqCst);
+    Blake3HashAlgorithm.hash_file_with_cancellation(path, is_cancelled)
+  }
+}
+
+struct OverrideTrackingHashAlgorithm {
+  hash_file_calls: Arc<AtomicUsize>,
+}
+
+impl HashAlgorithm for OverrideTrackingHashAlgorithm {
+  fn name(&self) -> &'static str {
+    "override_tracking"
+  }
+
+  fn new_hasher(&self) -> Box<dyn ContentHasher> {
+    Box::new(ByteCountContentHasher(0))
+  }
+
+  fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
+    self.hash_file_calls.fetch_add(1, Ordering::SeqCst);
+    Ok(fs::metadata(path)?.len().to_string())
+  }
+}
+
+impl HashAlgorithm for CancellingHashAlgorithm {
+  fn name(&self) -> &'static str {
+    "cancelling_hash"
+  }
+
+  fn new_hasher(&self) -> Box<dyn ContentHasher> {
+    Box::new(ByteCountContentHasher(0))
+  }
+
+  fn hash_file(&self, path: &Path) -> nafm_core::Result<String> {
+    self.active.fetch_add(1, Ordering::SeqCst);
+    self.rendezvous.wait();
+
+    if path.file_name().is_some_and(|name| name == "cancel.bin") {
+      self.cancelled.store(true, Ordering::SeqCst);
+    } else {
+      std::thread::sleep(self.drain_delay);
+    }
+
+    self.active.fetch_sub(1, Ordering::SeqCst);
+    self.completed.fetch_add(1, Ordering::SeqCst);
+    Ok(fs::metadata(path)?.len().to_string())
   }
 }
 
