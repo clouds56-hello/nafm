@@ -244,9 +244,12 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .workspace-shell .explorer-section { display: grid; min-width: 0; min-height: 0; height: 100%; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 0; overflow: hidden; }
 .health-controls { display: grid; grid-template-columns: minmax(420px, .95fr) minmax(460px, 1.05fr); gap: 12px; margin-bottom: 18px; }
 .health-toolbar { display: flex; min-width: 0; min-height: 45px; align-items: stretch; gap: 7px; }
-.health-toolbar-score { display: grid; width: 128px; min-width: 0; align-content: center; padding: 5px 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(10,14,20,.86); }
+.health-toolbar-score { display: grid; width: 148px; min-width: 0; align-content: center; padding: 4px 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(10,14,20,.86); }
 .health-toolbar-score span { overflow: hidden; color: #6e7b84; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .health-toolbar-score strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+.health-toolbar-score strong em { margin-left: 3px; color: #718087; font-size: 7px; font-style: normal; letter-spacing: .04em; }
+.health-toolbar-score > small { overflow: hidden; color: #6c797f; font-size: 7px; font-weight: 720; letter-spacing: .04em; text-overflow: ellipsis; white-space: nowrap; }
+.health-toolbar-score.is-partial { border-color: rgba(151,171,178,.2); background: rgba(116,137,143,.045); }
 .health-toolbar .health-controls { display: flex; min-width: 0; flex: 1; gap: 7px; margin: 0; }
 .health-toolbar .metric-switch { display: flex; flex: 0 0 auto; gap: 2px; padding: 3px; border-radius: 11px; }
 .health-toolbar .metric-switch button { display: block; padding: 7px 11px; border-radius: 8px; white-space: nowrap; }
@@ -262,6 +265,8 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .metric-switch button.is-active { border-color: rgba(118,225,215,.2); color: #edf6f5; background: rgba(118,225,215,.08); box-shadow: inset 0 1px rgba(255,255,255,.04); }
 .metric-switch button.is-unavailable { color: #877d6a; }
 .metric-switch button.is-unavailable.is-active { border-color: rgba(246,195,106,.18); color: #d5c39d; background: rgba(246,195,106,.055); box-shadow: none; }
+.metric-switch button.is-partial { color: #819395; }
+.metric-switch button.is-partial.is-active { border-color: rgba(151,171,178,.22); color: #c3d0d1; background: rgba(151,171,178,.055); box-shadow: none; }
 .metric-switch strong, .metric-switch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .metric-switch strong { font-size: 12px; }
 .metric-switch span { font-size: 9px; }
@@ -282,6 +287,8 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .coverage-freshness-note .secondary-button { min-height: 32px; flex: 0 0 auto; padding-inline: 11px; border-color: rgba(151,163,172,.18); color: #b4bec3; background: rgba(151,163,172,.06); font-size: 10px; }
 .analysis-readiness-note { border-color: rgba(246,195,106,.19); color: #ad9b78; background: rgba(42,33,18,.84); }
 .analysis-readiness-note strong { color: var(--warning); }
+.analysis-readiness-note.is-partial { border-color: rgba(151,171,178,.2); color: #9cabad; background: rgba(25,35,39,.86); }
+.analysis-readiness-note.is-partial strong { color: #c0cdcf; }
 .explorer-workspace { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) clamp(330px, 31%, 390px); gap: 8px; overflow: hidden; }
 .map-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .map-pane > .sunburst-frame { width: 100%; height: 100%; }
@@ -317,7 +324,8 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .map-center-control.health-center strong em { margin-left: 2px; color: #65747d; font-size: .34em; font-style: normal; letter-spacing: 0; }
 .map-center-control.health-center span { display: block; max-width: 92px; overflow: hidden; color: #9eaaaf; font-size: clamp(8px, .9vw, 10px); text-overflow: ellipsis; white-space: nowrap; }
 .health-legend { position: absolute; z-index: 3; bottom: 18px; left: 24px; width: min(300px, calc(100% - 48px)); color: var(--muted); font-size: 9px; }
-.sunburst-frame.is-analysis-suspended .health-legend { opacity: .42; }
+.sunburst-frame.is-analysis-partial .health-legend { opacity: .7; }
+.sunburst-frame.is-analysis-unavailable .health-legend { opacity: .42; }
 .health-gradient { height: 7px; border: 1px solid rgba(255,255,255,.09); border-radius: 99px; background: linear-gradient(90deg, #f5706f, #f0b85b 50%, #5bdbc2); box-shadow: 0 0 16px rgba(91,219,194,.09); }
 .health-legend > div:nth-child(2) { display: flex; justify-content: space-between; margin-top: 5px; }
 .inspector-panel { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(155deg, rgba(17,23,31,.97), rgba(9,13,18,.97)); }
@@ -338,11 +346,14 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 7px 8px 5px; }
 .inspector-score { min-width: 0; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; background: rgba(7,11,16,.48); }
 .inspector-score.is-active { border-color: rgba(118,225,215,.24); background: rgba(118,225,215,.05); }
-.inspector-score.is-unavailable { border-color: rgba(246,195,106,.11); background: rgba(246,195,106,.025); }
-.inspector-score.is-unavailable.is-active { border-color: rgba(246,195,106,.2); }
+.inspector-score.is-unavailable { border-color: rgba(151,163,172,.1); background: rgba(151,163,172,.02); }
+.inspector-score.is-unavailable.is-active { border-color: rgba(151,163,172,.18); }
+.inspector-score.is-partial { border-color: rgba(151,171,178,.14); background: rgba(151,171,178,.025); }
+.inspector-score.is-partial.is-active { border-color: rgba(151,171,178,.24); }
 .inspector-score span, .inspector-score strong, .inspector-score small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-score span { color: #6e7b84; font-size: 9px; }
 .inspector-score strong { margin-top: 1px; font-size: 17px; letter-spacing: -.03em; }
+.inspector-score strong em { margin-left: 3px; color: #718087; font-size: 7px; font-style: normal; letter-spacing: .04em; }
 .inspector-score small { margin-top: 1px; color: #89969d; font-size: 9px; }
 .inspector-facts { display: flex; min-width: 0; align-items: center; gap: 10px; min-height: 37px; padding: 4px 8px 7px; border-bottom: 1px solid var(--line); }
 .inspector-facts > span:not(.inspector-readonly) { display: grid; min-width: 0; }
@@ -374,6 +385,8 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-list li button[aria-current="true"] { color: #dbe5e6; background: rgba(118,225,215,.07); box-shadow: inset 2px 0 var(--accent); }
 .inspector-list li button > span, .inspector-list li button > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-list li button > strong { font-size: 10px; font-variant-numeric: tabular-nums; }
+.inspector-list li button > strong.inspector-row-health { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 2px; }
+.inspector-row-health em { color: #718087; font-size: 5px; font-style: normal; letter-spacing: 0; }
 .inspector-row-name { display: flex; min-width: 0; align-items: center; gap: 6px; color: #dce5e7; }
 .inspector-row-name svg { width: 13px; flex: 0 0 13px; color: #7291a3; }
 .inspector-row-name.is-file svg { color: #69757d; opacity: .7; }
@@ -646,7 +659,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   .dashboard-skeleton { grid-template-columns: 188px minmax(0, 1fr); gap: 7px; padding: 61px 7px 7px; }
   .explorer-workspace { grid-template-columns: minmax(0, 1fr) 330px; gap: 7px; }
   .skeleton-workspace { grid-template-columns: minmax(0, 1fr) 330px; gap: 7px; }
-  .health-toolbar-score { width: 106px; }
+  .health-toolbar-score { width: 118px; }
   .health-toolbar .metric-switch button { padding-inline: 8px; }
   .health-toolbar .coverage-direction { grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr) auto; }
   .workspace-shell .site-stats strong { display: none; }

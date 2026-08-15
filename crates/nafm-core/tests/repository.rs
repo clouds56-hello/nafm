@@ -664,10 +664,12 @@ async fn site_folder_changes_advance_generation_and_suspend_analysis_until_resca
   let fixture = Fixture::new().await;
   let original = fixture.mkdir("generation-original");
   let added = fixture.mkdir("generation-added");
+  let coverage_source = fixture.mkdir("generation-coverage-source");
   let first = original.join("first.bin");
   let second = original.join("second.bin");
   fs::write(&first, b"same-content").unwrap();
   fs::write(&second, b"same-content").unwrap();
+  fs::write(coverage_source.join("same.bin"), b"same-content").unwrap();
   let canonical_first = fs::canonicalize(&first).unwrap();
   fixture.create_site("generation").await;
   let site = fixture.repo.site_overview("generation").await.unwrap().site;
@@ -675,6 +677,11 @@ async fn site_folder_changes_advance_generation_and_suspend_analysis_until_resca
     .add_site_folder(&site.id, &original, HiddenPolicy::Include)
     .await;
   fixture.repo.scan_site(&site.id).await.unwrap();
+  fixture.create_site("generation-coverage-source").await;
+  fixture
+    .add_site_folder("generation-coverage-source", &coverage_source, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("generation-coverage-source").await.unwrap();
   fixture.repo.stage_add_path(&canonical_first).await.unwrap();
 
   let revision_before = site_inventory_revision(&fixture.repo, &site.id);
@@ -701,16 +708,24 @@ async fn site_folder_changes_advance_generation_and_suspend_analysis_until_resca
 
   let overview = fixture.repo.site_overview(&site.id).await.unwrap();
   assert_eq!(overview.hash_status, SiteHashStatus::Pending);
-  assert_eq!(
-    fixture
-      .repo
-      .storage_tree(&site.id, 4, 12)
-      .await
-      .unwrap()
-      .root
-      .space_health,
-    None
-  );
+  assert_eq!(overview.total_file_count, 2);
+  assert_eq!(overview.verified_file_count, 0);
+  assert_eq!(overview.pending_hash_count, 2);
+  assert_eq!(overview.verified_bytes, 0);
+  assert_eq!(overview.duplicate_file_count, 0);
+  assert_eq!(overview.duplicate_bytes, 0);
+  let invalidated_tree = fixture.repo.storage_tree(&site.id, 4, 12).await.unwrap();
+  assert_eq!(invalidated_tree.root.verified_file_count, 0);
+  assert_eq!(invalidated_tree.root.verified_bytes, 0);
+  assert_eq!(invalidated_tree.root.space_health, None);
+  assert_eq!(invalidated_tree.root.estimated_space_health, None);
+  let invalidated_target = fixture
+    .repo
+    .storage_tree_with_coverage("generation-coverage-source", &site.id, 4, 12)
+    .await
+    .unwrap();
+  assert_eq!(invalidated_target.root.coverage_health, None);
+  assert_eq!(invalidated_target.root.estimated_coverage_health, None);
   assert!(matches!(
     fixture.repo.find_duplicates(Some(&site.id)).await,
     Err(NafmError::SiteHashesPending { .. })
@@ -813,6 +828,34 @@ fn site_inventory_revision(repo: &Repository, site_id: &str) -> u64 {
       |row| row.get(0),
     )
     .unwrap()
+}
+
+fn mark_files_pending(repo: &Repository, site_id: &str, paths: &[PathBuf]) {
+  let mut conn = rusqlite::Connection::open(repo.db_path()).unwrap();
+  let transaction = conn.transaction().unwrap();
+  for path in paths {
+    assert_eq!(
+      transaction
+        .execute(
+          "update file_records set hash_revision = null where site_id = ?1 and path = ?2",
+          rusqlite::params![site_id, path.to_string_lossy()],
+        )
+        .unwrap(),
+      1,
+      "pending test file should be tracked: {}",
+      path.display()
+    );
+  }
+  assert_eq!(
+    transaction
+      .execute(
+        "update site_scan_state set hash_completed_at = null where site_id = ?1",
+        rusqlite::params![site_id],
+      )
+      .unwrap(),
+    1
+  );
+  transaction.commit().unwrap();
 }
 
 fn tracked_inventory_row(repo: &Repository, path: &Path) -> (Option<String>, u64, Option<u64>, String) {
@@ -1300,6 +1343,208 @@ async fn storage_nodes_report_comparable_file_counts_without_changing_health_wei
 }
 
 #[tokio::test]
+async fn partial_storage_tree_reports_verified_space_estimates_without_unlocking_exact_analysis() {
+  let fixture = Fixture::new().await;
+  let root = fixture.mkdir("partial-space");
+  let copies = root.join("copies");
+  fs::create_dir(&copies).unwrap();
+  let first = copies.join("first.bin");
+  let second = copies.join("second.bin");
+  let pending = root.join("pending.bin");
+  fs::write(&first, vec![1_u8; 10]).unwrap();
+  fs::write(&second, vec![1_u8; 10]).unwrap();
+  fs::write(&pending, vec![2_u8; 5]).unwrap();
+
+  let site = fixture.repo.create_site("partial-space").await.unwrap();
+  fixture.add_site_folder(&site.id, &root, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+
+  let ready = fixture.repo.storage_tree(&site.id, 8, 32).await.unwrap();
+  assert_health(ready.root.space_health, 60.0);
+  assert_eq!(ready.root.space_health, ready.root.estimated_space_health);
+  assert_eq!(ready.root.verified_bytes, 25);
+  assert_eq!(ready.root.space_healthy_file_equivalents, 2.0);
+  assert_eq!(ready.root.space_total_files, 3);
+
+  let first = fs::canonicalize(first).unwrap();
+  let second = fs::canonicalize(second).unwrap();
+  let pending = fs::canonicalize(pending).unwrap();
+  mark_files_pending(&fixture.repo, &site.id, std::slice::from_ref(&pending));
+
+  let overview = fixture.repo.site_overview(&site.id).await.unwrap();
+  assert_eq!(overview.total_bytes, 25);
+  assert_eq!(overview.verified_bytes, 20);
+  assert_eq!(overview.verified_file_count, 2);
+  assert_eq!(overview.pending_hash_count, 1);
+
+  let partial = fixture.repo.storage_tree(&site.id, 8, 32).await.unwrap();
+  assert_eq!(partial.root.space_health, None);
+  assert_health(partial.root.estimated_space_health, 40.0);
+  assert_eq!(partial.root.verified_bytes, 20);
+  assert_eq!(partial.root.space_healthy_file_equivalents, 1.0);
+  assert_eq!(partial.root.space_total_files, 3);
+  assert_eq!(partial.root.duplicate_file_count, 0);
+  assert_eq!(partial.root.duplicate_bytes, 0);
+  assert_eq!(partial.root.estimated_coverage_health, None);
+
+  let site_folder = &partial.root.children[0];
+  let copies = child_named(site_folder, "copies");
+  assert_eq!(copies.space_health, None);
+  assert_health(copies.estimated_space_health, 50.0);
+  assert_eq!(copies.verified_bytes, 20);
+  let first_node = child_named(copies, "first.bin");
+  assert_eq!(first_node.space_health, None);
+  assert_health(first_node.estimated_space_health, 50.0);
+  assert_eq!(first_node.verified_bytes, 10);
+  let pending_node = child_named(site_folder, "pending.bin");
+  assert_eq!(pending_node.verified_file_count, 0);
+  assert_eq!(pending_node.verified_bytes, 0);
+  assert_eq!(pending_node.estimated_space_health, None);
+
+  let consolidated = fixture.repo.storage_tree(&site.id, 8, 1).await.unwrap();
+  let smaller_items = &consolidated.root.children[0].children[0];
+  assert_eq!(smaller_items.kind, StorageNodeKind::SmallerItems);
+  assert_eq!(smaller_items.total_bytes, 25);
+  assert_eq!(smaller_items.verified_bytes, 20);
+  assert_eq!(smaller_items.space_total_files, 3);
+  assert_health(smaller_items.estimated_space_health, 40.0);
+  assert_eq!(smaller_items.space_health, None);
+
+  mark_files_pending(&fixture.repo, &site.id, &[first, second]);
+  let unverified = fixture.repo.storage_tree(&site.id, 8, 32).await.unwrap();
+  assert_eq!(unverified.root.verified_file_count, 0);
+  assert_eq!(unverified.root.verified_bytes, 0);
+  assert_eq!(unverified.root.estimated_space_health, None);
+}
+
+#[tokio::test]
+async fn partial_coverage_uses_only_verified_target_content() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("partial-coverage-source");
+  let target = fixture.mkdir("partial-coverage-target");
+  fs::write(source.join("shared.bin"), vec![1_u8; 10]).unwrap();
+  fs::write(source.join("missing.bin"), vec![2_u8; 5]).unwrap();
+  fs::write(target.join("shared.bin"), vec![1_u8; 10]).unwrap();
+  let target_pending = target.join("pending.bin");
+  fs::write(&target_pending, vec![2_u8; 5]).unwrap();
+
+  let source_site = fixture.repo.create_site("partial-coverage-source").await.unwrap();
+  let target_site = fixture.repo.create_site("partial-coverage-target").await.unwrap();
+  fixture
+    .add_site_folder(&source_site.id, &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder(&target_site.id, &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let ready = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 32)
+    .await
+    .unwrap();
+  assert_health(ready.root.coverage_health, 100.0);
+  assert_eq!(ready.root.coverage_health, ready.root.estimated_coverage_health);
+
+  let target_pending = fs::canonicalize(target_pending).unwrap();
+  mark_files_pending(&fixture.repo, &target_site.id, std::slice::from_ref(&target_pending));
+  let target_overview = fixture.repo.site_overview(&target_site.id).await.unwrap();
+  assert_eq!(target_overview.verified_bytes, 10);
+  assert_eq!(target_overview.pending_hash_count, 1);
+
+  let partial = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 32)
+    .await
+    .unwrap();
+  assert_eq!(partial.root.coverage_health, None);
+  assert_health(partial.root.estimated_coverage_health, 1000.0 / 15.0);
+  assert_eq!(partial.root.coverage_covered_files, 1);
+  assert_eq!(partial.root.coverage_total_files, 2);
+  let source_root = &partial.root.children[0];
+  assert_health(child_named(source_root, "shared.bin").estimated_coverage_health, 100.0);
+  assert_health(child_named(source_root, "missing.bin").estimated_coverage_health, 0.0);
+
+  let consolidated = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 1)
+    .await
+    .unwrap();
+  let smaller_items = &consolidated.root.children[0].children[0];
+  assert_eq!(smaller_items.kind, StorageNodeKind::SmallerItems);
+  assert_health(smaller_items.estimated_coverage_health, 1000.0 / 15.0);
+  assert_eq!(smaller_items.coverage_health, None);
+
+  let target_shared = fs::canonicalize(target.join("shared.bin")).unwrap();
+  mark_files_pending(&fixture.repo, &target_site.id, &[target_shared]);
+  let no_verified_target = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 32)
+    .await
+    .unwrap();
+  assert_eq!(
+    fixture
+      .repo
+      .site_overview(&target_site.id)
+      .await
+      .unwrap()
+      .verified_file_count,
+    0
+  );
+  assert_health(no_verified_target.root.estimated_coverage_health, 0.0);
+  assert_eq!(no_verified_target.root.coverage_health, None);
+}
+
+#[tokio::test]
+async fn partial_zero_byte_health_uses_verified_content_and_full_inventory_counts() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("partial-zero-source");
+  let target = fixture.mkdir("partial-zero-target");
+  let verified = source.join("verified.empty");
+  fs::write(&verified, []).unwrap();
+  let pending = source.join("pending.empty");
+  fs::write(&pending, []).unwrap();
+  fs::write(target.join("covered.empty"), []).unwrap();
+
+  let source_site = fixture.repo.create_site("partial-zero-source").await.unwrap();
+  let target_site = fixture.repo.create_site("partial-zero-target").await.unwrap();
+  fixture
+    .add_site_folder(&source_site.id, &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder(&target_site.id, &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+  mark_files_pending(&fixture.repo, &source_site.id, &[fs::canonicalize(pending).unwrap()]);
+
+  let tree = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 32)
+    .await
+    .unwrap();
+  assert_eq!(tree.root.total_bytes, 0);
+  assert_eq!(tree.root.verified_bytes, 0);
+  assert_eq!(tree.root.verified_file_count, 1);
+  assert_eq!(tree.root.pending_hash_count, 1);
+  assert_eq!(tree.root.space_total_files, 2);
+  assert_eq!(tree.root.space_healthy_file_equivalents, 1.0);
+  assert_eq!(tree.root.space_health, None);
+  assert_health(tree.root.estimated_space_health, 50.0);
+  assert_eq!(tree.root.coverage_health, None);
+  assert_health(tree.root.estimated_coverage_health, 50.0);
+
+  mark_files_pending(&fixture.repo, &source_site.id, &[fs::canonicalize(verified).unwrap()]);
+  let unverified = fixture
+    .repo
+    .storage_tree_with_coverage(&source_site.id, &target_site.id, 8, 32)
+    .await
+    .unwrap();
+  assert_eq!(unverified.root.verified_file_count, 0);
+  assert_eq!(unverified.root.estimated_space_health, None);
+  assert_eq!(unverified.root.estimated_coverage_health, None);
+}
+
+#[tokio::test]
 async fn coverage_health_is_directional_and_distinct_content_weighted() {
   let fixture = Fixture::new().await;
   let source = fixture.mkdir("coverage-source");
@@ -1446,7 +1691,9 @@ async fn coverage_health_is_unknown_when_sites_use_incompatible_hash_algorithms(
     .await
     .unwrap();
   assert_eq!(tree.root.coverage_health, None);
+  assert_eq!(tree.root.estimated_coverage_health, None);
   assert_eq!(tree.root.children[0].children[0].coverage_health, None);
+  assert_eq!(tree.root.children[0].children[0].estimated_coverage_health, None);
 }
 
 #[tokio::test]
@@ -1783,6 +2030,228 @@ async fn storage_children_pages_direct_items_independently_of_map_bounds() {
     .await
     .unwrap_err();
   assert!(matches!(error, NafmError::StorageNodeNotFound(node_id) if node_id == "storage:unknown"));
+}
+
+#[tokio::test]
+async fn storage_view_snapshot_matches_deep_views_and_clamps_the_page_inside_the_snapshot() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("snapshot-media");
+  let camera = media.join("year/day/camera");
+  fs::create_dir_all(&camera).unwrap();
+  for (name, contents) in [
+    ("largest.bin", b"12345678".as_slice()),
+    ("large.bin", b"123456".as_slice()),
+    ("small.bin", b"123".as_slice()),
+    ("tiny.bin", b"1".as_slice()),
+  ] {
+    fs::write(camera.join(name), contents).unwrap();
+  }
+  fixture.create_site("snapshot-source").await;
+  fixture
+    .add_site_folder("snapshot-source", &media, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("snapshot-source").await.unwrap();
+
+  let complete_tree = fixture.repo.storage_tree("snapshot-source", 8, 20).await.unwrap();
+  let storage_root = &complete_tree.root.children[0];
+  let camera_id = child_named(child_named(child_named(storage_root, "year"), "day"), "camera")
+    .id
+    .clone();
+  let snapshot = fixture
+    .repo
+    .storage_view_snapshot("snapshot-source", &camera_id, 99, 1, 2, 2)
+    .await
+    .unwrap();
+
+  assert_eq!(snapshot.page.total_children, 4);
+  assert_eq!(snapshot.page.offset, 2);
+  assert_eq!(snapshot.page.limit, 2);
+  assert_eq!(
+    snapshot
+      .location
+      .breadcrumbs
+      .iter()
+      .map(|node| node.name.as_str())
+      .collect::<Vec<_>>(),
+    vec!["snapshot-source", "snapshot-media", "year", "day", "camera"]
+  );
+  assert!(find_node(&snapshot.tree.root, &camera_id).is_none());
+  assert_eq!(snapshot.location.root.id, camera_id);
+  assert_eq!(snapshot.page.parent.id, camera_id);
+
+  let expected_tree = fixture.repo.storage_tree("snapshot-source", 1, 2).await.unwrap();
+  let expected_location = fixture
+    .repo
+    .storage_location("snapshot-source", &camera_id, 1, 2)
+    .await
+    .unwrap();
+  let expected_page = fixture
+    .repo
+    .storage_children("snapshot-source", &camera_id, 2, 2)
+    .await
+    .unwrap();
+  assert_eq!(
+    serde_json::to_value(&snapshot.tree).unwrap(),
+    serde_json::to_value(expected_tree).unwrap()
+  );
+  assert_eq!(
+    serde_json::to_value(&snapshot.location).unwrap(),
+    serde_json::to_value(expected_location).unwrap()
+  );
+  assert_eq!(
+    serde_json::to_value(&snapshot.page).unwrap(),
+    serde_json::to_value(expected_page).unwrap()
+  );
+
+  let capped = fixture
+    .repo
+    .storage_view_snapshot("snapshot-source", &camera_id, u64::MAX, 1, 2, u64::MAX)
+    .await
+    .unwrap();
+  assert_eq!(capped.page.limit, 200);
+  assert_eq!(capped.page.offset, 0);
+  assert_eq!(capped.page.children.len(), 4);
+
+  let minimum = fixture
+    .repo
+    .storage_view_snapshot("snapshot-source", &camera_id, u64::MAX, 1, 2, 0)
+    .await
+    .unwrap();
+  assert_eq!(minimum.page.limit, 1);
+  assert_eq!(minimum.page.offset, 3);
+  assert_eq!(minimum.page.children.len(), 1);
+}
+
+#[tokio::test]
+async fn storage_view_snapshot_preserves_coverage_in_every_response_shape() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("snapshot-coverage-source");
+  let target = fixture.mkdir("snapshot-coverage-target");
+  fs::create_dir(source.join("camera")).unwrap();
+  fs::write(source.join("camera/covered.bin"), b"shared").unwrap();
+  fs::write(source.join("camera/missing.bin"), b"missing").unwrap();
+  fs::write(target.join("shared.bin"), b"shared").unwrap();
+  fixture.create_site("snapshot-coverage-source").await;
+  fixture.create_site("snapshot-coverage-target").await;
+  fixture
+    .add_site_folder("snapshot-coverage-source", &source, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder("snapshot-coverage-target", &target, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let complete_tree = fixture
+    .repo
+    .storage_tree_with_coverage("snapshot-coverage-source", "snapshot-coverage-target", 8, 20)
+    .await
+    .unwrap();
+  let camera_id = child_named(&complete_tree.root.children[0], "camera").id.clone();
+  let snapshot = fixture
+    .repo
+    .storage_view_snapshot_with_coverage(
+      "snapshot-coverage-source",
+      "snapshot-coverage-target",
+      &camera_id,
+      0,
+      2,
+      20,
+      1,
+    )
+    .await
+    .unwrap();
+
+  let expected_tree = fixture
+    .repo
+    .storage_tree_with_coverage("snapshot-coverage-source", "snapshot-coverage-target", 2, 20)
+    .await
+    .unwrap();
+  let expected_location = fixture
+    .repo
+    .storage_location_with_coverage(
+      "snapshot-coverage-source",
+      "snapshot-coverage-target",
+      &camera_id,
+      2,
+      20,
+    )
+    .await
+    .unwrap();
+  let expected_page = fixture
+    .repo
+    .storage_children_with_coverage("snapshot-coverage-source", "snapshot-coverage-target", &camera_id, 0, 1)
+    .await
+    .unwrap();
+  assert_eq!(
+    serde_json::to_value(&snapshot.tree).unwrap(),
+    serde_json::to_value(expected_tree).unwrap()
+  );
+  assert_eq!(
+    serde_json::to_value(&snapshot.location).unwrap(),
+    serde_json::to_value(expected_location).unwrap()
+  );
+  assert_eq!(
+    serde_json::to_value(&snapshot.page).unwrap(),
+    serde_json::to_value(expected_page).unwrap()
+  );
+  assert_eq!(
+    snapshot.location.coverage_target.as_ref().unwrap().name,
+    "snapshot-coverage-target"
+  );
+  assert_eq!(
+    snapshot.location.root.coverage_health,
+    snapshot.location.root.estimated_coverage_health
+  );
+  assert_health(snapshot.location.root.coverage_health, 6.0 * 100.0 / 13.0);
+}
+
+#[tokio::test]
+async fn storage_view_snapshot_rejects_missing_and_non_navigable_nodes() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("snapshot-invalid");
+  fs::write(media.join("large.bin"), b"12345678").unwrap();
+  fs::write(media.join("small.bin"), b"123").unwrap();
+  fs::write(media.join("tiny.bin"), b"1").unwrap();
+  fixture.create_site("snapshot-invalid").await;
+  fixture
+    .add_site_folder("snapshot-invalid", &media, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("snapshot-invalid").await.unwrap();
+
+  let complete_tree = fixture.repo.storage_tree("snapshot-invalid", 4, 20).await.unwrap();
+  let file_id = child_named(&complete_tree.root.children[0], "large.bin").id.clone();
+  let file_error = fixture
+    .repo
+    .storage_view_snapshot("snapshot-invalid", &file_id, 0, 2, 20, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    file_error,
+    NafmError::StorageNodeNotNavigable(node_id) if node_id == file_id
+  ));
+
+  let bounded_tree = fixture.repo.storage_tree("snapshot-invalid", 4, 1).await.unwrap();
+  let smaller_items = &bounded_tree.root.children[0].children[0];
+  assert_eq!(smaller_items.kind, StorageNodeKind::SmallerItems);
+  let smaller_error = fixture
+    .repo
+    .storage_view_snapshot("snapshot-invalid", &smaller_items.id, 0, 2, 20, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    smaller_error,
+    NafmError::StorageNodeNotNavigable(node_id) if node_id == smaller_items.id
+  ));
+
+  let missing_error = fixture
+    .repo
+    .storage_view_snapshot("snapshot-invalid", "storage:missing", 0, 2, 20, 20)
+    .await
+    .unwrap_err();
+  assert!(matches!(
+    missing_error,
+    NafmError::StorageNodeNotFound(node_id) if node_id == "storage:missing"
+  ));
 }
 
 #[tokio::test]
@@ -3853,15 +4322,20 @@ fn assert_storage_metrics_equal(left: &nafm_core::StorageNode, right: &nafm_core
   assert_eq!(left.kind, right.kind);
   assert_eq!(left.total_bytes, right.total_bytes);
   assert_eq!(left.file_count, right.file_count);
+  assert_eq!(left.verified_file_count, right.verified_file_count);
+  assert_eq!(left.pending_hash_count, right.pending_hash_count);
+  assert_eq!(left.verified_bytes, right.verified_bytes);
   assert_eq!(left.duplicate_bytes, right.duplicate_bytes);
   assert_eq!(left.duplicate_file_count, right.duplicate_file_count);
   assert_eq!(left.space_health, right.space_health);
+  assert_eq!(left.estimated_space_health, right.estimated_space_health);
   assert_eq!(
     left.space_healthy_file_equivalents,
     right.space_healthy_file_equivalents
   );
   assert_eq!(left.space_total_files, right.space_total_files);
   assert_eq!(left.coverage_health, right.coverage_health);
+  assert_eq!(left.estimated_coverage_health, right.estimated_coverage_health);
   assert_eq!(left.coverage_covered_files, right.coverage_covered_files);
   assert_eq!(left.coverage_total_files, right.coverage_total_files);
 }

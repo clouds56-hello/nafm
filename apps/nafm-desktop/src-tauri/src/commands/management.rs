@@ -46,6 +46,7 @@ pub struct ManagedSite {
   verified_file_count: u64,
   pending_hash_count: u64,
   total_bytes: u64,
+  verified_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -394,6 +395,7 @@ impl From<SiteOverview> for ManagedSite {
       verified_file_count: overview.verified_file_count,
       pending_hash_count: overview.pending_hash_count,
       total_bytes: overview.total_bytes,
+      verified_bytes: overview.verified_bytes,
     }
   }
 }
@@ -442,6 +444,7 @@ mod tests {
       verified_file_count: 7,
       pending_hash_count: 5,
       total_bytes: 128,
+      verified_bytes: 96,
       duplicate_file_count: 0,
       duplicate_bytes: 0,
       hash_status: SiteHashStatus::Pending,
@@ -454,6 +457,8 @@ mod tests {
     assert_eq!(json["total_files"], 12);
     assert_eq!(json["verified_file_count"], 7);
     assert_eq!(json["pending_hash_count"], 5);
+    assert_eq!(json["total_bytes"], 128);
+    assert_eq!(json["verified_bytes"], 96);
     assert!(json["latest_inventory_at"].is_string());
     assert!(json["last_scanned_at"].is_null());
   }

@@ -31,6 +31,7 @@ export interface ManagedSite {
   folders: ManagedSiteFolder[];
   hash_status: SiteHashStatus;
   verified_file_count: number;
+  verified_bytes: number;
   pending_hash_count: number;
   latest_inventory_at: string | null;
   last_scanned_at: string | null;
@@ -65,6 +66,7 @@ export interface SiteOverview {
   scan_state: ScanState;
   hash_status: SiteHashStatus;
   verified_file_count: number;
+  verified_bytes: number;
   pending_hash_count: number;
   latest_inventory_at: string | null;
   last_scanned_at: string | null;
@@ -93,12 +95,15 @@ export interface StorageNode {
   kind: "site" | "local_root" | "smb_root" | "directory" | "file" | "smaller_items";
   file_count: number;
   verified_file_count: number;
+  verified_bytes: number;
   pending_hash_count: number;
   total_bytes: number;
   duplicate_bytes: number;
   duplicate_file_count: number;
   space_health: number | null;
   coverage_health: number | null;
+  estimated_space_health: number | null;
+  estimated_coverage_health: number | null;
   space_healthy_file_equivalents: number;
   space_total_files: number;
   coverage_covered_files: number;
@@ -143,6 +148,12 @@ export interface StorageChildrenPage {
   total_children: number;
   offset: number;
   limit: number;
+}
+
+export interface StorageViewSnapshot {
+  tree: StorageTree;
+  location: StorageLocation;
+  page: StorageChildrenPage;
 }
 
 export interface StorageFileReveal {

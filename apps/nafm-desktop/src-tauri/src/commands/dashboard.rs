@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use nafm_core::{
   FileContentMatchesPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageTree,
+  StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 };
 use serde::Serialize;
 use tauri::State;
@@ -38,6 +38,7 @@ pub struct SiteOverview {
   verified_file_count: u64,
   pending_hash_count: u64,
   total_bytes: u64,
+  verified_bytes: u64,
   duplicate_files: u64,
   duplicate_bytes: u64,
 }
@@ -92,6 +93,33 @@ fn inactive_site_scan_state(hash_status: SiteHashStatus) -> ScanState {
   match hash_status {
     SiteHashStatus::Ready => ScanState::Done,
     SiteHashStatus::Unscanned | SiteHashStatus::Pending => ScanState::Idle,
+  }
+}
+
+fn site_overview_response(overview: nafm_core::SiteOverview, active_tasks: &[ScanTask]) -> SiteOverview {
+  let primary_folder = overview.folders.first();
+  let scan_state = site_scan_state(active_tasks, &overview.site.id, overview.hash_status);
+  SiteOverview {
+    id: overview.site.id,
+    name: overview.site.name,
+    location: primary_folder
+      .map(|folder| folder.path.display().to_string())
+      .unwrap_or_else(|| "No folder configured".to_owned()),
+    kind: primary_folder
+      .map(|folder| folder.kind)
+      .unwrap_or(SiteFolderKind::Local),
+    connection_state: ConnectionState::Unknown,
+    scan_state,
+    hash_status: overview.hash_status,
+    latest_inventory_at: overview.latest_inventory_at,
+    last_scanned_at: overview.latest_scan_at,
+    total_files: overview.total_file_count,
+    verified_file_count: overview.verified_file_count,
+    pending_hash_count: overview.pending_hash_count,
+    total_bytes: overview.total_bytes,
+    verified_bytes: overview.verified_bytes,
+    duplicate_files: overview.duplicate_file_count,
+    duplicate_bytes: overview.duplicate_bytes,
   }
 }
 
@@ -156,6 +184,24 @@ impl From<StorageFileReveal> for StorageFileRevealResponse {
   }
 }
 
+#[derive(Serialize)]
+pub struct StorageViewSnapshotResponse {
+  tree: StorageTreeResponse,
+  location: StorageLocationResponse,
+  page: StorageChildrenPage,
+}
+
+impl From<StorageViewSnapshot> for StorageViewSnapshotResponse {
+  fn from(snapshot: StorageViewSnapshot) -> Self {
+    let StorageViewSnapshot { tree, location, page } = snapshot;
+    Self {
+      tree: StorageTreeResponse::from(tree),
+      location: StorageLocationResponse::from(location),
+      page,
+    }
+  }
+}
+
 #[tauri::command]
 pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
   let workspace = state.active_workspace().await;
@@ -178,31 +224,7 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
   let active_tasks = state.scan_tasks.active_tasks();
   let sites = overviews
     .into_iter()
-    .map(|overview| {
-      let primary_folder = overview.folders.first();
-      let scan_state = site_scan_state(&active_tasks, &overview.site.id, overview.hash_status);
-      SiteOverview {
-        id: overview.site.id,
-        name: overview.site.name,
-        location: primary_folder
-          .map(|folder| folder.path.display().to_string())
-          .unwrap_or_else(|| "No folder configured".to_owned()),
-        kind: primary_folder
-          .map(|folder| folder.kind)
-          .unwrap_or(SiteFolderKind::Local),
-        connection_state: ConnectionState::Unknown,
-        scan_state,
-        hash_status: overview.hash_status,
-        latest_inventory_at: overview.latest_inventory_at,
-        last_scanned_at: overview.latest_scan_at,
-        total_files: overview.total_file_count,
-        verified_file_count: overview.verified_file_count,
-        pending_hash_count: overview.pending_hash_count,
-        total_bytes: overview.total_bytes,
-        duplicate_files: overview.duplicate_file_count,
-        duplicate_bytes: overview.duplicate_bytes,
-      }
-    })
+    .map(|overview| site_overview_response(overview, &active_tasks))
     .collect();
 
   Ok(Dashboard {
@@ -284,6 +306,44 @@ pub async fn get_storage_children(
     None => repository.storage_children(&site_id, &node_id, offset, limit).await,
   }
   .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn get_storage_view_snapshot(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  site_id: String,
+  target_site_id: Option<String>,
+  node_id: String,
+  offset: u64,
+  max_depth: u32,
+  max_children: u32,
+  limit: u64,
+) -> Result<StorageViewSnapshotResponse, String> {
+  let repository = state.repository_for(&expected_workspace).await?;
+  let snapshot = match target_site_id {
+    Some(target_site_id) => {
+      repository
+        .storage_view_snapshot_with_coverage(
+          &site_id,
+          &target_site_id,
+          &node_id,
+          offset,
+          max_depth,
+          max_children,
+          limit,
+        )
+        .await
+    }
+    None => {
+      repository
+        .storage_view_snapshot(&site_id, &node_id, offset, max_depth, max_children, limit)
+        .await
+    }
+  }
+  .map_err(|error| error.to_string())?;
+  Ok(StorageViewSnapshotResponse::from(snapshot))
 }
 
 #[tauri::command]
@@ -415,6 +475,37 @@ mod tests {
   }
 
   #[test]
+  fn dashboard_site_overview_maps_inventory_and_verified_bytes() {
+    let inventory_at = Utc::now();
+    let response = site_overview_response(
+      nafm_core::SiteOverview {
+        site: Site {
+          id: "photos".to_owned(),
+          name: "Photos".to_owned(),
+          added_at: inventory_at,
+        },
+        folders: Vec::new(),
+        total_file_count: 12,
+        verified_file_count: 7,
+        pending_hash_count: 5,
+        total_bytes: 128,
+        verified_bytes: 96,
+        duplicate_file_count: 0,
+        duplicate_bytes: 0,
+        hash_status: SiteHashStatus::Pending,
+        latest_inventory_at: Some(inventory_at),
+        latest_scan_at: None,
+      },
+      &[],
+    );
+    let json = serde_json::to_value(response).unwrap();
+
+    assert_eq!(json["total_bytes"], 128);
+    assert_eq!(json["verified_bytes"], 96);
+    assert_eq!(json["scan_state"], "idle");
+  }
+
+  #[test]
   fn storage_file_reveal_uses_existing_desktop_tree_and_location_shapes() {
     let site = Site {
       id: "source-site".to_owned(),
@@ -427,15 +518,18 @@ mod tests {
       path: Some(PathBuf::from("/source/selected.bin")),
       kind: StorageNodeKind::File,
       total_bytes: 8,
+      verified_bytes: 6,
       file_count: 1,
       verified_file_count: 1,
       pending_hash_count: 0,
       duplicate_bytes: 0,
       duplicate_file_count: 1,
       space_health: Some(50.0),
+      estimated_space_health: Some(62.5),
       space_healthy_file_equivalents: 0.5,
       space_total_files: 1,
       coverage_health: None,
+      estimated_coverage_health: Some(75.0),
       coverage_covered_files: 0,
       coverage_total_files: 0,
       children: Vec::new(),
@@ -446,15 +540,18 @@ mod tests {
       path: Some(PathBuf::from("/source")),
       kind: StorageNodeKind::LocalRoot,
       total_bytes: 8,
+      verified_bytes: 6,
       file_count: 1,
       verified_file_count: 1,
       pending_hash_count: 0,
       duplicate_bytes: 0,
       duplicate_file_count: 1,
       space_health: Some(50.0),
+      estimated_space_health: Some(62.5),
       space_healthy_file_equivalents: 0.5,
       space_total_files: 1,
       coverage_health: None,
+      estimated_coverage_health: Some(75.0),
       coverage_covered_files: 0,
       coverage_total_files: 0,
       children: vec![selected_file.clone()],
@@ -487,6 +584,18 @@ mod tests {
       selected_file,
     };
 
+    let snapshot_json = serde_json::to_value(StorageViewSnapshotResponse::from(StorageViewSnapshot {
+      tree: reveal.tree.clone(),
+      location: reveal.location.clone(),
+      page: reveal.page.clone(),
+    }))
+    .unwrap();
+    assert_eq!(snapshot_json["tree"]["site_id"], "source-site");
+    assert!(snapshot_json["tree"].get("site").is_none());
+    assert_eq!(snapshot_json["location"]["root"]["id"], "parent");
+    assert!(snapshot_json["location"].get("max_depth").is_none());
+    assert_eq!(snapshot_json["page"]["children"][0]["id"], "selected-file");
+
     let json = serde_json::to_value(StorageFileRevealResponse::from(reveal)).unwrap();
     assert_eq!(json["tree"]["site_id"], "source-site");
     assert!(json["tree"].get("site").is_none());
@@ -498,5 +607,8 @@ mod tests {
     assert!(json["location"].get("max_children").is_none());
     assert_eq!(json["page"]["limit"], 6);
     assert_eq!(json["selected_file"]["id"], "selected-file");
+    assert_eq!(json["selected_file"]["verified_bytes"], 6);
+    assert_eq!(json["selected_file"]["estimated_space_health"], 62.5);
+    assert_eq!(json["selected_file"]["estimated_coverage_health"], 75.0);
   }
 }

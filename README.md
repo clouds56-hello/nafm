@@ -133,8 +133,11 @@ stale information but does not use it for duplicate, health, coverage, or
 cleanup decisions until the file is hashed again. A cancellation during
 discovery keeps the previous inventory untouched. A cancellation during
 hashing keeps the newly published inventory and every completed hash, so the
-next scan can reuse that work. The desktop labels such a site as indexed with
-hashes pending and suspends content analysis until verification finishes.
+next scan can reuse that work. While hashes are pending, the desktop shows a
+live health estimate: verified content contributes normally, pending content
+contributes zero, and partially verified folders blend their health color
+toward neutral gray. Fully unverified folders remain gray. Duplicate and
+cleanup actions stay suspended until verification finishes.
 
 JSON mode emits `started`, `progress`, and `summary` events as JSON Lines.
 Progress events identify the current `discovering`, `publishing_metadata`,

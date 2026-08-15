@@ -21,9 +21,11 @@ export function metricAnalysisAvailability(
       available: false,
       pending_hash_count: pending,
       message: pending > 0
-        ? `${pending.toLocaleString()} hashes are pending in ${source.name}. Inventory and size remain available while analysis is suspended.`
+        ? source.verified_file_count > 0
+          ? `${pending.toLocaleString()} hashes are pending in ${source.name}. Estimated health uses verified content; duplicates and cleanup remain suspended until verification completes.`
+          : `${pending.toLocaleString()} hashes are pending in ${source.name}. Health becomes available after the first content is verified.`
         : source.hash_status === "pending"
-          ? `Finish or rescan ${source.name} to finalize analysis.`
+          ? `Finish or rescan ${source.name} to finalize analysis. Duplicate and cleanup actions remain suspended.`
           : `Index and hash ${source.name} to enable health, duplicates, and cleanup.`,
     };
   }
@@ -33,7 +35,9 @@ export function metricAnalysisAvailability(
       available: false,
       pending_hash_count: pending,
       message: pending > 0
-        ? `${pending.toLocaleString()} hashes are pending in ${target.name}. Coverage will resume when the target is ready.`
+        ? target.verified_file_count > 0
+          ? `${pending.toLocaleString()} hashes are pending in ${target.name}. Coverage is estimated from verified content until the target is ready.`
+          : `${pending.toLocaleString()} hashes are pending in ${target.name}. Coverage becomes available after both sites have verified content.`
         : target.hash_status === "pending"
           ? `Finish or rescan ${target.name} to finalize coverage analysis.`
           : `Index and hash ${target.name} to calculate coverage.`,

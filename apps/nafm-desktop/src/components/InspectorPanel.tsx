@@ -5,8 +5,14 @@ import {
   formatCount,
   formatFileEquivalent,
   formatHealth,
-  healthColor,
 } from "../lib/format";
+import {
+  formatCompleteness,
+  healthAriaDescription,
+  nodeCompleteness,
+  nodeHealthPresentation,
+  type HealthPresentation,
+} from "../lib/health";
 import type {
   FileContentMatch,
   FileContentMatchesPage,
@@ -32,8 +38,8 @@ interface InspectorPanelProps {
   previewing: boolean;
   metric: HealthMetric;
   coverageTargetName: string | null;
+  coverageTargetCompleteness: number;
   sourceAnalysisReady: boolean;
-  coverageAnalysisReady: boolean;
   analysisMessage: string | null;
   staged: boolean;
   stagingBusy: boolean;
@@ -71,29 +77,52 @@ interface InspectorPanelProps {
 
 interface HealthScoreProps {
   label: string;
-  value: number | null;
+  presentation: HealthPresentation;
   numerator: number;
   total: number;
   unit: string;
+  hasContent: boolean;
   active: boolean;
-  available: boolean;
+  partialEvidence: string;
+  unavailableEvidence?: string;
 }
 
-function HealthScore({ label, value, numerator, total, unit, active, available }: HealthScoreProps) {
-  const evidence = !available
-    ? "Hashes pending"
-    : total > 0
-      ? `${value === null ? "—" : formatFileEquivalent(numerator)} / ${formatCount(total)} ${unit}`
+function HealthScore({
+  label,
+  presentation,
+  numerator,
+  total,
+  unit,
+  hasContent,
+  active,
+  partialEvidence,
+  unavailableEvidence,
+}: HealthScoreProps) {
+  let evidence: string;
+  if (presentation.state === "unavailable") {
+    evidence = !hasContent
+      ? "No content to compare"
+      : unavailableEvidence
+        ?? (presentation.completeness > 0 ? "No comparable content" : "No verified content");
+  } else if (presentation.state === "partial") {
+    evidence = `PARTIAL · ${partialEvidence}`;
+  } else {
+    evidence = total > 0
+      ? `${formatFileEquivalent(numerator)} / ${formatCount(total)} ${unit}`
       : `No comparable ${unit}`;
+  }
 
   return (
     <div
-      className={`inspector-score ${active ? "is-active" : ""} ${available ? "" : "is-unavailable"}`}
+      className={`inspector-score ${active ? "is-active" : ""} is-${presentation.state}`}
       title="The score is weighted by bytes; the count is supporting context."
     >
       <span>{label}</span>
-      <strong style={{ color: healthColor(available ? value : null) }}>{formatHealth(available ? value : null)}</strong>
-      <small>{evidence}</small>
+      <strong style={{ color: presentation.color }}>
+        {formatHealth(presentation.value)}
+        {presentation.state === "partial" && <em>EST</em>}
+      </strong>
+      <small title={evidence}>{evidence}</small>
     </div>
   );
 }
@@ -118,8 +147,8 @@ export function InspectorPanel({
   previewing,
   metric,
   coverageTargetName,
+  coverageTargetCompleteness,
   sourceAnalysisReady,
-  coverageAnalysisReady,
   analysisMessage,
   staged,
   stagingBusy,
@@ -157,15 +186,25 @@ export function InspectorPanel({
   const titleRef = useRef<HTMLHeadingElement>(null);
   const DetailIcon = node.kind === "file" ? FileIcon : FolderIcon;
   const nodeAnalysisReady = sourceAnalysisReady && node.pending_hash_count === 0;
-  const metricAnalysisReady = metric === "space_health"
-    ? sourceAnalysisReady
-    : coverageAnalysisReady;
+  const spacePresentation = nodeHealthPresentation(node, "space_health");
+  const coveragePresentation = nodeHealthPresentation(
+    node,
+    "coverage_health",
+    coverageTargetCompleteness,
+  );
+  const metricPresentation = metric === "space_health"
+    ? spacePresentation
+    : coveragePresentation;
+  const sourceCompleteness = nodeCompleteness(node);
+  const coverageUnavailableReason = coveragePresentation.state === "unavailable"
+    && (sourceCompleteness === 0 || coverageTargetCompleteness === 0)
+    ? "no verified comparison is available"
+    : undefined;
   const stageable = nodeAnalysisReady
     && Boolean(node.path)
     && node.duplicate_bytes > 0
     && node.kind !== "smaller_items";
   const inspectingFile = node.kind === "file";
-  const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   useEffect(() => {
     if (focusSelectedFileRevision > 0 && !previewing && node.kind === "file") {
@@ -181,8 +220,11 @@ export function InspectorPanel({
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
-      <p id="inspector-selection-status" className="sr-only" aria-live="polite">
-        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files, {formatHealth(metricAnalysisReady ? node[metric] : null)} {metricLabel}.
+      <p id="inspector-selection-status" className="sr-only">
+        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files, {healthAriaDescription(metricPresentation, metric === "space_health" ? "space" : "coverage", node.file_count > 0, metric === "coverage_health" ? coverageUnavailableReason : undefined)}.
+      </p>
+      <p className="sr-only" aria-live="polite">
+        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}.
       </p>
       <header className="inspector-selection">
         {previewing ? (
@@ -205,21 +247,24 @@ export function InspectorPanel({
       <div className="inspector-scores">
         <HealthScore
           label="Space"
-          value={node.space_health}
+          presentation={spacePresentation}
           numerator={node.space_healthy_file_equivalents}
           total={node.space_total_files}
           unit="files"
+          hasContent={node.file_count > 0}
           active={metric === "space_health"}
-          available={sourceAnalysisReady}
+          partialEvidence={`${formatCompleteness(sourceCompleteness)} verified`}
         />
         <HealthScore
           label={coverageTargetName ? `Coverage → ${coverageTargetName}` : "Coverage"}
-          value={node.coverage_health}
+          presentation={coveragePresentation}
           numerator={node.coverage_covered_files}
           total={node.coverage_total_files}
           unit="groups"
+          hasContent={node.file_count > 0}
           active={metric === "coverage_health"}
-          available={coverageAnalysisReady}
+          partialEvidence={`source ${formatCompleteness(sourceCompleteness)} · target ${formatCompleteness(coverageTargetCompleteness)}`}
+          unavailableEvidence={coverageUnavailableReason ? "No verified comparison" : undefined}
         />
       </div>
 
@@ -268,7 +313,7 @@ export function InspectorPanel({
             node={node}
             previewing={previewing}
             metric={metric}
-            analysisAvailable={metricAnalysisReady}
+            coverageTargetCompleteness={coverageTargetCompleteness}
             page={page}
             loading={loading}
             error={error}
@@ -292,7 +337,7 @@ interface FolderContentsProps {
   node: StorageNode;
   previewing: boolean;
   metric: HealthMetric;
-  analysisAvailable: boolean;
+  coverageTargetCompleteness: number;
   page: StorageChildrenPage | null;
   loading: boolean;
   error: string | null;
@@ -311,7 +356,7 @@ function FolderContents({
   node,
   previewing,
   metric,
-  analysisAvailable,
+  coverageTargetCompleteness,
   page,
   loading,
   error,
@@ -362,9 +407,18 @@ function FolderContents({
         ) : (
           <ul className="inspector-list">
             {page?.children.map((child) => {
-              const score = analysisAvailable ? child[metric] : null;
+              const presentation = nodeHealthPresentation(
+                child,
+                metric,
+                coverageTargetCompleteness,
+              );
               const openable = canOpen(child);
               const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
+              const childCoverageUnavailableReason = metric === "coverage_health"
+                && presentation.state === "unavailable"
+                && (nodeCompleteness(child) === 0 || coverageTargetCompleteness === 0)
+                ? "no verified comparison is available"
+                : undefined;
               return (
                 <li key={child.id}>
                   <button
@@ -372,11 +426,14 @@ function FolderContents({
                     onClick={() => onSelect(child)}
                     disabled={previewing}
                     aria-current={child.id === node.id ? "true" : undefined}
-                    aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
+                    aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${healthAriaDescription(presentation, metric === "space_health" ? "space" : "coverage", child.file_count > 0, childCoverageUnavailableReason)}`}
                   >
                     <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
                     <span>{formatBytes(child.total_bytes)}</span>
-                    <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+                    <strong className="inspector-row-health" style={{ color: presentation.color }}>
+                      {formatHealth(presentation.value)}
+                      {presentation.state === "partial" && <em>EST</em>}
+                    </strong>
                     <ChevronIcon className={openable ? "" : "is-hidden"} />
                   </button>
                 </li>

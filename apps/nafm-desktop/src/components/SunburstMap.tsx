@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatHealth, healthColor } from "../lib/format";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { formatHealth } from "../lib/format";
+import {
+  formatHealthForCanvas,
+  healthAriaDescription,
+  nodeCompleteness,
+  nodeHealthPresentation,
+  type HealthPresentation,
+} from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
   root: StorageNode;
   breadcrumbs: StorageNode[];
   metric: HealthMetric;
-  analysisAvailable: boolean;
+  coverageTargetCompleteness: number;
   selectedNodeId: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -91,12 +98,12 @@ function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRa
 function drawScoreLabel(
   context: CanvasRenderingContext2D,
   arc: ArcDatum,
-  value: number | null,
+  presentation: HealthPresentation,
   center: number,
   inner: number,
   outer: number,
 ) {
-  if (value === null) return;
+  if (presentation.value === null) return;
   const angleSpan = arc.end - arc.start;
   const radius = (inner + outer) / 2;
   if (angleSpan * radius < 43 || outer - inner < 25) return;
@@ -111,7 +118,14 @@ function drawScoreLabel(
   context.font = "700 10px -apple-system, BlinkMacSystemFont, sans-serif";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(`${Math.round(value)}`, 0, 0);
+  const scoreOffset = presentation.state === "partial" ? -5 : 0;
+  context.fillText(formatHealthForCanvas(presentation), scoreOffset, 0);
+  if (presentation.state === "partial") {
+    context.fillStyle = "rgba(7, 11, 15, .68)";
+    context.font = "700 5px -apple-system, BlinkMacSystemFont, sans-serif";
+    context.textAlign = "left";
+    context.fillText("EST", 4, 1);
+  }
   context.restore();
 }
 
@@ -119,7 +133,7 @@ export function SunburstMap({
   root,
   breadcrumbs,
   metric,
-  analysisAvailable,
+  coverageTargetCompleteness,
   selectedNodeId,
   canGoBack,
   canGoForward,
@@ -137,6 +151,7 @@ export function SunburstMap({
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const breadcrumbRef = useRef<HTMLOListElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const healthDescriptionId = useId();
   const animationFrameRef = useRef<number | null>(null);
   const hoveredNodeIdRef = useRef<string | null>(null);
   const [size, setSize] = useState(560);
@@ -187,7 +202,11 @@ export function SunburstMap({
       const center = size / 2;
       const inner = innerRadius + (hovered.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = healthColor(analysisAvailable ? hovered.node[metric] : null);
+      const color = nodeHealthPresentation(
+        hovered.node,
+        metric,
+        coverageTargetCompleteness,
+      ).color;
       drawArc(context, center, inner, outer, hovered.start, hovered.end);
       context.save();
       context.strokeStyle = "rgba(255,255,255,.78)";
@@ -218,7 +237,7 @@ export function SunburstMap({
       if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     };
-  }, [analysisAvailable, hovered, innerRadius, metric, ringWidth, size]);
+  }, [coverageTargetCompleteness, hovered, innerRadius, metric, ringWidth, size]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -243,8 +262,12 @@ export function SunburstMap({
     for (const arc of arcs) {
       const inner = innerRadius + (arc.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const score = analysisAvailable ? arc.node[metric] : null;
-      const color = healthColor(score);
+      const presentation = nodeHealthPresentation(
+        arc.node,
+        metric,
+        coverageTargetCompleteness,
+      );
+      const color = presentation.color;
       drawArc(context, center, inner, outer, arc.start, arc.end);
       const selected = arc.node.id === selectedNodeId;
       context.globalAlpha = selected ? 1 : 0.84;
@@ -260,7 +283,7 @@ export function SunburstMap({
         context.restore();
       }
       context.globalAlpha = 1;
-      drawScoreLabel(context, arc, score, center, inner, outer);
+      drawScoreLabel(context, arc, presentation, center, inner, outer);
     }
 
     context.beginPath();
@@ -269,11 +292,23 @@ export function SunburstMap({
     context.fill();
     context.strokeStyle = "rgba(255,255,255,.07)";
     context.stroke();
-  }, [analysisAvailable, arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
+  }, [arcs, coverageTargetCompleteness, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
     previewArc(null);
-  }, [previewArc, root]);
+  }, [root.id]);
+
+  useEffect(() => {
+    const hoveredNodeId = hoveredNodeIdRef.current;
+    if (!hoveredNodeId) return;
+    const rebound = arcs.find((arc) => arc.node.id === hoveredNodeId) ?? null;
+    if (!rebound) {
+      previewArc(null);
+      return;
+    }
+    setHovered(rebound);
+    onPreviewNode(rebound.node);
+  }, [arcs, onPreviewNode, previewArc]);
 
   useEffect(() => {
     const breadcrumb = breadcrumbRef.current;
@@ -306,11 +341,22 @@ export function SunburstMap({
     }
   };
 
-  const score = analysisAvailable ? root[metric] : null;
+  const rootPresentation = nodeHealthPresentation(root, metric, coverageTargetCompleteness);
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
+  const rootCoverageUnavailableReason = metric === "coverage_health"
+    && rootPresentation.state === "unavailable"
+    && (nodeCompleteness(root) === 0 || coverageTargetCompleteness === 0)
+    ? "no verified comparison is available"
+    : undefined;
+  const rootHealthDescription = healthAriaDescription(
+    rootPresentation,
+    metric === "space_health" ? "space" : "coverage",
+    root.file_count > 0,
+    rootCoverageUnavailableReason,
+  );
 
   return (
-    <div className={`sunburst-frame ${analysisAvailable ? "" : "is-analysis-suspended"}`} ref={frameRef}>
+    <div className={`sunburst-frame is-analysis-${rootPresentation.state}`} ref={frameRef}>
       <nav className="map-navigation" aria-label="Folder navigation">
         <div className="map-history-controls" aria-label="History">
           <button
@@ -358,12 +404,20 @@ export function SunburstMap({
       <p className="sr-only" aria-live="polite">
         Opened {breadcrumbs.map((node) => node.name || "Site").join(" / ")}
       </p>
+      <p id={healthDescriptionId} className="sr-only">
+        Arc size is physical storage. The current folder has {rootHealthDescription}. {rootPresentation.state === "partial"
+          ? "Estimated colors are blended with neutral gray according to verified completeness."
+          : rootPresentation.state === "unavailable"
+            ? "Unavailable health is shown in neutral gray."
+            : "Health colors are exact."} Use arrow keys to explore and Enter to select.
+      </p>
       <canvas
         ref={canvasRef}
         className="sunburst-canvas"
         role="img"
         tabIndex={0}
-        aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. ${analysisAvailable ? "Health colors are available." : "Health colors are suspended while hashes are pending."} Use arrow keys to explore and Enter to select.`}
+        aria-label={`Radial ${metricLabel} map for ${root.name}`}
+        aria-describedby={healthDescriptionId}
         onPointerMove={(event) => {
           const next = getPointerArc(event) ?? null;
           previewArc(next, next ? "immediate" : "delayed");
@@ -390,10 +444,14 @@ export function SunburstMap({
         }}
         disabled={!canGoUp || !parentRoot}
         aria-label={parentRoot ? `Up to ${parentRoot.name}` : `${root.name}, map root`}
-        title={parentRoot ? `Up to ${parentRoot.name} (Alt+Up)` : undefined}
+        aria-describedby={healthDescriptionId}
+        title={parentRoot ? `Up to ${parentRoot.name} (Alt+Up)` : `${root.name} is the map root`}
       >
         <small>{parentRoot ? "↑ UP" : metricLabel.toUpperCase()}</small>
-        <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+        <strong style={{ color: rootPresentation.color }}>
+          {formatHealth(rootPresentation.value)}
+          {rootPresentation.state === "partial" && <em>EST</em>}
+        </strong>
         <span title={root.name}>{root.name}</span>
       </button>
       <div className="health-legend" aria-label="Health score color scale">

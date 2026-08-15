@@ -19,7 +19,7 @@ use crate::model::{
   FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
   ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, StageAddReport, StageCommitDryRun,
   StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
+  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -28,6 +28,14 @@ type ScanCancellationCallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
 const MAX_STORAGE_CHILDREN_PAGE_SIZE: u64 = 200;
 const MAX_FILE_CONTENT_MATCHES_PAGE_SIZE: u64 = 200;
+
+#[derive(Clone, Copy)]
+struct StorageViewParameters {
+  offset: u64,
+  max_depth: u32,
+  max_children: u32,
+  page_limit: u64,
+}
 
 #[derive(Clone)]
 pub struct Repository {
@@ -114,13 +122,12 @@ struct StorageNodeBuilder {
   file_count: u64,
   verified_file_count: u64,
   pending_hash_count: u64,
+  verified_bytes: u64,
   analysis_ready: bool,
+  coverage_ready: bool,
   duplicate_bytes: u64,
   duplicate_file_count: u64,
   space_health_weighted_bytes: f64,
-  space_health_bytes: u128,
-  zero_byte_space_health_sum: f64,
-  zero_byte_space_health_count: u64,
   space_healthy_file_equivalents: f64,
   space_total_files: u64,
   coverage_groups: BTreeMap<StorageContentKey, bool>,
@@ -138,13 +145,12 @@ impl StorageNodeBuilder {
       file_count: 0,
       verified_file_count: 0,
       pending_hash_count: 0,
+      verified_bytes: 0,
       analysis_ready: true,
+      coverage_ready: false,
       duplicate_bytes: 0,
       duplicate_file_count: 0,
       space_health_weighted_bytes: 0.0,
-      space_health_bytes: 0,
-      zero_byte_space_health_sum: 0.0,
-      zero_byte_space_health_count: 0,
       space_healthy_file_equivalents: 0.0,
       space_total_files: 0,
       coverage_groups: BTreeMap::new(),
@@ -155,8 +161,10 @@ impl StorageNodeBuilder {
   fn add_file_metrics(&mut self, file: &StorageFileRecord) {
     self.total_bytes = self.total_bytes.saturating_add(file.size_bytes);
     self.file_count = self.file_count.saturating_add(1);
+    self.space_total_files = self.space_total_files.saturating_add(1);
     if file.hash_verified {
       self.verified_file_count = self.verified_file_count.saturating_add(1);
+      self.verified_bytes = self.verified_bytes.saturating_add(file.size_bytes);
     } else {
       self.pending_hash_count = self.pending_hash_count.saturating_add(1);
     }
@@ -169,13 +177,8 @@ impl StorageNodeBuilder {
     if file.source_copy_count > 0 && file.content_key.is_some() {
       let file_health = 100.0 / file.source_copy_count as f64;
       self.space_healthy_file_equivalents += 1.0 / file.source_copy_count as f64;
-      self.space_total_files = self.space_total_files.saturating_add(1);
       if file.size_bytes > 0 {
         self.space_health_weighted_bytes += file.size_bytes as f64 * file_health;
-        self.space_health_bytes += u128::from(file.size_bytes);
-      } else {
-        self.zero_byte_space_health_sum += file_health;
-        self.zero_byte_space_health_count = self.zero_byte_space_health_count.saturating_add(1);
       }
     }
     if let (Some(content_key), Some(covered_by_target)) = (&file.content_key, file.covered_by_target) {
@@ -191,37 +194,34 @@ impl StorageNodeBuilder {
     if !self.analysis_ready || self.pending_hash_count > 0 {
       return None;
     }
-    if self.space_health_bytes > 0 {
-      Some((self.space_health_weighted_bytes / self.space_health_bytes as f64).clamp(0.0, 100.0))
-    } else if self.zero_byte_space_health_count > 0 {
-      Some((self.zero_byte_space_health_sum / self.zero_byte_space_health_count as f64).clamp(0.0, 100.0))
-    } else {
-      None
-    }
+    self.estimated_space_health()
+  }
+
+  fn estimated_space_health(&self) -> Option<f64> {
+    estimated_space_health(
+      self.verified_file_count,
+      self.total_bytes,
+      self.file_count,
+      self.space_health_weighted_bytes,
+      self.space_healthy_file_equivalents,
+    )
   }
 
   fn coverage_health(&self) -> Option<f64> {
-    if !self.analysis_ready || self.pending_hash_count > 0 {
+    if !self.coverage_ready || self.pending_hash_count > 0 {
       return None;
     }
-    let total_bytes = self
-      .coverage_groups
-      .keys()
-      .map(|content_key| u128::from(content_key.size_bytes))
-      .sum::<u128>();
-    if total_bytes == 0 {
-      return (!self.coverage_groups.is_empty()).then(|| {
-        self.coverage_groups.values().filter(|covered| **covered).count() as f64 * 100.0
-          / self.coverage_groups.len() as f64
-      });
-    }
-    let covered_bytes = self
-      .coverage_groups
-      .iter()
-      .filter(|(_, covered)| **covered)
-      .map(|(content_key, _)| u128::from(content_key.size_bytes))
-      .sum::<u128>();
-    Some((covered_bytes as f64 * 100.0 / total_bytes as f64).clamp(0.0, 100.0))
+    self.estimated_coverage_health()
+  }
+
+  fn estimated_coverage_health(&self) -> Option<f64> {
+    estimated_coverage_health(
+      self.verified_file_count,
+      self.total_bytes,
+      self.verified_bytes,
+      self.pending_hash_count,
+      &self.coverage_groups,
+    )
   }
 
   fn coverage_file_counts(&self) -> (u64, u64) {
@@ -231,12 +231,64 @@ impl StorageNodeBuilder {
     )
   }
 
-  fn set_analysis_ready(&mut self, analysis_ready: bool) {
+  fn set_analysis_ready(&mut self, analysis_ready: bool, coverage_ready: bool) {
     self.analysis_ready = analysis_ready;
+    self.coverage_ready = coverage_ready;
     for child in self.children.values_mut() {
-      child.set_analysis_ready(analysis_ready);
+      child.set_analysis_ready(analysis_ready, coverage_ready);
     }
   }
+}
+
+fn estimated_space_health(
+  verified_file_count: u64,
+  total_bytes: u64,
+  file_count: u64,
+  space_health_weighted_bytes: f64,
+  space_healthy_file_equivalents: f64,
+) -> Option<f64> {
+  if verified_file_count == 0 {
+    return None;
+  }
+  if total_bytes > 0 {
+    Some((space_health_weighted_bytes / total_bytes as f64).clamp(0.0, 100.0))
+  } else if file_count > 0 {
+    Some((space_healthy_file_equivalents * 100.0 / file_count as f64).clamp(0.0, 100.0))
+  } else {
+    None
+  }
+}
+
+fn estimated_coverage_health(
+  verified_file_count: u64,
+  total_bytes: u64,
+  verified_bytes: u64,
+  pending_hash_count: u64,
+  coverage_groups: &BTreeMap<StorageContentKey, bool>,
+) -> Option<f64> {
+  if verified_file_count == 0 || coverage_groups.is_empty() {
+    return None;
+  }
+  let verified_content_bytes = coverage_groups
+    .keys()
+    .map(|content_key| u128::from(content_key.size_bytes))
+    .sum::<u128>();
+  let covered_bytes = coverage_groups
+    .iter()
+    .filter(|(_, covered)| **covered)
+    .map(|(content_key, _)| u128::from(content_key.size_bytes))
+    .sum::<u128>();
+  let pending_bytes = u128::from(total_bytes.saturating_sub(verified_bytes));
+  let estimated_content_bytes = verified_content_bytes.saturating_add(pending_bytes);
+  if estimated_content_bytes > 0 {
+    return Some((covered_bytes as f64 * 100.0 / estimated_content_bytes as f64).clamp(0.0, 100.0));
+  }
+
+  let estimated_content_count = coverage_groups.len() as u128 + u128::from(pending_hash_count);
+  (estimated_content_count > 0).then(|| {
+    (coverage_groups.values().filter(|covered| **covered).count() as f64 * 100.0 / estimated_content_count as f64)
+      .clamp(0.0, 100.0)
+  })
 }
 
 #[derive(Clone, Debug)]
@@ -475,10 +527,12 @@ impl Repository {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      list_sites(&conn)?
-        .into_iter()
-        .map(|site| site_overview(&conn, site))
-        .collect()
+      with_deferred_transaction(&conn, || {
+        list_sites(&conn)?
+          .into_iter()
+          .map(|site| site_overview(&conn, site))
+          .collect()
+      })
     })
     .await?
   }
@@ -488,8 +542,10 @@ impl Repository {
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      site_overview(&conn, site)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        site_overview(&conn, site)
+      })
     })
     .await?
   }
@@ -499,8 +555,10 @@ impl Repository {
     let site_selector = site_selector.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      storage_tree(&conn, site, None, max_depth, max_children)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        storage_tree(&conn, site, None, max_depth, max_children)
+      })
     })
     .await?
   }
@@ -517,10 +575,12 @@ impl Repository {
     let target_site_selector = target_site_selector.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      let target_site =
-        find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
-      storage_tree(&conn, site, Some(target_site), max_depth, max_children)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        let target_site =
+          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+        storage_tree(&conn, site, Some(target_site), max_depth, max_children)
+      })
     })
     .await?
   }
@@ -537,8 +597,10 @@ impl Repository {
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      storage_location(&conn, site, None, &node_id, max_depth, max_children)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        storage_location(&conn, site, None, &node_id, max_depth, max_children)
+      })
     })
     .await?
   }
@@ -557,10 +619,12 @@ impl Repository {
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      let target_site =
-        find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
-      storage_location(&conn, site, Some(target_site), &node_id, max_depth, max_children)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        let target_site =
+          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+        storage_location(&conn, site, Some(target_site), &node_id, max_depth, max_children)
+      })
     })
     .await?
   }
@@ -577,8 +641,10 @@ impl Repository {
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      storage_children_page(&conn, site, None, &node_id, offset, limit)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        storage_children_page(&conn, site, None, &node_id, offset, limit)
+      })
     })
     .await?
   }
@@ -597,10 +663,83 @@ impl Repository {
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      let target_site =
-        find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
-      storage_children_page(&conn, site, Some(target_site), &node_id, offset, limit)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        let target_site =
+          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+        storage_children_page(&conn, site, Some(target_site), &node_id, offset, limit)
+      })
+    })
+    .await?
+  }
+
+  pub async fn storage_view_snapshot(
+    &self,
+    site_selector: &str,
+    node_id: &str,
+    offset: u64,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+  ) -> Result<StorageViewSnapshot> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        storage_view_snapshot(
+          &conn,
+          site,
+          None,
+          &node_id,
+          StorageViewParameters {
+            offset,
+            max_depth,
+            max_children,
+            page_limit,
+          },
+        )
+      })
+    })
+    .await?
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_view_snapshot_with_coverage(
+    &self,
+    site_selector: &str,
+    target_site_selector: &str,
+    node_id: &str,
+    offset: u64,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+  ) -> Result<StorageViewSnapshot> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let target_site_selector = target_site_selector.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        let target_site =
+          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+        storage_view_snapshot(
+          &conn,
+          site,
+          Some(target_site),
+          &node_id,
+          StorageViewParameters {
+            offset,
+            max_depth,
+            max_children,
+            page_limit,
+          },
+        )
+      })
     })
     .await?
   }
@@ -618,13 +757,16 @@ impl Repository {
     let target_site_selector = target_site_selector.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let file = reveal_file_record(&conn, &file_id)?.ok_or_else(|| NafmError::TrackedFileNotFound(file_id.clone()))?;
-      let site = find_site(&conn, &file.site_id)?.ok_or_else(|| NafmError::SiteNotFound(file.site_id.clone()))?;
-      let coverage_target = match target_site_selector {
-        Some(selector) => Some(find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector))?),
-        None => None,
-      };
-      storage_file_reveal(&conn, site, coverage_target, &file, max_depth, max_children, page_limit)
+      with_deferred_transaction(&conn, || {
+        let file =
+          reveal_file_record(&conn, &file_id)?.ok_or_else(|| NafmError::TrackedFileNotFound(file_id.clone()))?;
+        let site = find_site(&conn, &file.site_id)?.ok_or_else(|| NafmError::SiteNotFound(file.site_id.clone()))?;
+        let coverage_target = match target_site_selector {
+          Some(selector) => Some(find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector))?),
+          None => None,
+        };
+        storage_file_reveal(&conn, site, coverage_target, &file, max_depth, max_children, page_limit)
+      })
     })
     .await?
   }
@@ -1315,6 +1457,20 @@ fn open_connection(path: impl AsRef<Path>) -> Result<Connection> {
 
 fn with_immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Result<T>) -> Result<T> {
   conn.execute_batch("begin immediate transaction")?;
+  match operation() {
+    Ok(value) => {
+      conn.execute_batch("commit")?;
+      Ok(value)
+    }
+    Err(error) => {
+      let _ = conn.execute_batch("rollback");
+      Err(error)
+    }
+  }
+}
+
+fn with_deferred_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+  conn.execute_batch("begin deferred transaction")?;
   match operation() {
     Ok(value) => {
       conn.execute_batch("commit")?;
@@ -2331,6 +2487,7 @@ fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Dupli
          join site_scan_state state on state.site_id = file.site_id
          where file.content_hash is not null
            and file.hash_revision = file.inventory_revision
+           and state.inventory_completed_at is not null
            and state.hash_completed_at is not null
            and state.inventory_revision = file.inventory_revision
            and file.site_id = ?1
@@ -2354,6 +2511,7 @@ fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Dupli
          join site_scan_state state on state.site_id = file.site_id
          where file.content_hash is not null
            and file.hash_revision = file.inventory_revision
+           and state.inventory_completed_at is not null
            and state.hash_completed_at is not null
            and state.inventory_revision = file.inventory_revision
          group by file.hash_algorithm, file.content_hash, file.size_bytes
@@ -2464,6 +2622,7 @@ fn file_content_matches_page(
      join site_scan_state state on state.site_id = file.site_id
      where file.hash_algorithm = ?1 and file.content_hash = ?2 and file.size_bytes = ?3
        and file.hash_revision = file.inventory_revision
+       and state.inventory_completed_at is not null
        and state.hash_completed_at is not null
        and state.inventory_revision = file.inventory_revision",
     params![hash_algorithm, content_hash, selected_match.size_bytes],
@@ -2480,6 +2639,7 @@ fn file_content_matches_page(
        and file.content_hash = ?2
        and file.size_bytes = ?3
        and file.hash_revision = file.inventory_revision
+       and state.inventory_completed_at is not null
        and state.hash_completed_at is not null
        and state.inventory_revision = file.inventory_revision
      order by
@@ -2542,6 +2702,7 @@ fn duplicate_files(
        join site_scan_state state on state.site_id = file.site_id
        where file.site_id = ?1 and file.hash_algorithm = ?2 and file.content_hash = ?3 and file.size_bytes = ?4
          and file.hash_revision = file.inventory_revision
+         and state.inventory_completed_at is not null
          and state.hash_completed_at is not null
          and state.inventory_revision = file.inventory_revision
        order by file.path",
@@ -2560,6 +2721,7 @@ fn duplicate_files(
        join site_scan_state state on state.site_id = file.site_id
        where file.hash_algorithm = ?1 and file.content_hash = ?2 and file.size_bytes = ?3
          and file.hash_revision = file.inventory_revision
+         and state.inventory_completed_at is not null
          and state.hash_completed_at is not null
          and state.inventory_revision = file.inventory_revision
        order by file.path",
@@ -3100,40 +3262,76 @@ fn tracked_file_exists(conn: &Connection, path: &Path) -> Result<bool> {
     .map_err(Into::into)
 }
 
+struct SiteOverviewScanState {
+  inventory_revision: u64,
+  inventory_completed_at: Option<DateTime<Utc>>,
+  hash_completed_at: Option<DateTime<Utc>>,
+  hash_algorithm: Option<String>,
+}
+
+struct SiteOverviewFileStats {
+  total_file_count: u64,
+  verified_file_count: u64,
+  total_bytes: u64,
+  verified_bytes: u64,
+}
+
 fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
   let folders = list_site_folders(conn, Some(&site.id))?;
-  let files = storage_file_records(conn, &site.id, None)?;
-  let total_file_count = files.len() as u64;
-  let verified_file_count = files.iter().filter(|file| file.hash_verified).count() as u64;
-  let pending_hash_count = total_file_count.saturating_sub(verified_file_count);
-  let total_bytes = files.iter().map(|file| file.size_bytes).sum();
-  let duplicate_file_count = files.iter().filter(|file| file.duplicate).count() as u64;
-  let duplicate_bytes = files
-    .iter()
-    .filter(|file| file.reclaimable)
-    .map(|file| file.size_bytes)
-    .sum();
   let scan_state = conn
     .query_row(
-      "select inventory_completed_at, hash_completed_at, hash_algorithm
+      "select inventory_revision, inventory_completed_at, hash_completed_at, hash_algorithm
        from site_scan_state where site_id = ?1",
       params![site.id],
       |row| {
-        Ok((
-          row.get::<_, Option<DateTime<Utc>>>(0)?,
-          row.get::<_, Option<DateTime<Utc>>>(1)?,
-          row.get::<_, Option<String>>(2)?,
-        ))
+        Ok(SiteOverviewScanState {
+          inventory_revision: row.get(0)?,
+          inventory_completed_at: row.get(1)?,
+          hash_completed_at: row.get(2)?,
+          hash_algorithm: row.get(3)?,
+        })
       },
     )
     .optional()?;
+  let published_inventory_revision = scan_state
+    .as_ref()
+    .and_then(|state| state.inventory_completed_at.as_ref().map(|_| state.inventory_revision));
+  let SiteOverviewFileStats {
+    total_file_count,
+    verified_file_count,
+    total_bytes,
+    verified_bytes,
+  } = site_overview_file_stats(conn, &site.id, published_inventory_revision)?;
+  let pending_hash_count = total_file_count.saturating_sub(verified_file_count);
+  let analysis_ready = scan_state.as_ref().is_some_and(|state| {
+    state.inventory_completed_at.is_some() && state.hash_completed_at.is_some() && pending_hash_count == 0
+  });
+  let (duplicate_file_count, duplicate_bytes) = if analysis_ready {
+    site_overview_duplicate_stats(
+      conn,
+      &site.id,
+      published_inventory_revision.expect("ready analysis should have a published inventory"),
+    )?
+  } else {
+    (0, 0)
+  };
   let (hash_status, latest_inventory_at, latest_scan_at) = match scan_state {
     None => (SiteHashStatus::Unscanned, None, None),
-    Some((None, _, None)) => (SiteHashStatus::Unscanned, None, None),
-    Some((latest_inventory_at, latest_scan_at, _)) if pending_hash_count > 0 || latest_scan_at.is_none() => {
-      (SiteHashStatus::Pending, latest_inventory_at, latest_scan_at)
-    }
-    Some((latest_inventory_at, latest_scan_at, _)) => (SiteHashStatus::Ready, latest_inventory_at, latest_scan_at),
+    Some(SiteOverviewScanState {
+      inventory_completed_at: None,
+      hash_algorithm: None,
+      ..
+    }) => (SiteHashStatus::Unscanned, None, None),
+    Some(state) if pending_hash_count > 0 || state.hash_completed_at.is_none() => (
+      SiteHashStatus::Pending,
+      state.inventory_completed_at,
+      state.hash_completed_at,
+    ),
+    Some(state) => (
+      SiteHashStatus::Ready,
+      state.inventory_completed_at,
+      state.hash_completed_at,
+    ),
   };
 
   Ok(SiteOverview {
@@ -3143,6 +3341,7 @@ fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
     verified_file_count,
     pending_hash_count,
     total_bytes,
+    verified_bytes,
     duplicate_file_count,
     duplicate_bytes,
     hash_status,
@@ -3151,21 +3350,96 @@ fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
   })
 }
 
+fn site_overview_file_stats(
+  conn: &Connection,
+  site_id: &str,
+  published_inventory_revision: Option<u64>,
+) -> Result<SiteOverviewFileStats> {
+  conn
+    .query_row(
+      "select
+         count(*),
+         coalesce(sum(
+           case when ?2 is not null
+             and inventory_revision = ?2
+             and content_hash is not null
+             and hash_revision = inventory_revision
+           then 1 else 0 end
+         ), 0),
+         coalesce(sum(size_bytes), 0),
+         coalesce(sum(
+           case when ?2 is not null
+             and inventory_revision = ?2
+             and content_hash is not null
+             and hash_revision = inventory_revision
+           then size_bytes else 0 end
+         ), 0)
+       from file_records
+       where site_id = ?1",
+      params![site_id, published_inventory_revision],
+      |row| {
+        Ok(SiteOverviewFileStats {
+          total_file_count: row.get(0)?,
+          verified_file_count: row.get(1)?,
+          total_bytes: row.get(2)?,
+          verified_bytes: row.get(3)?,
+        })
+      },
+    )
+    .map_err(Into::into)
+}
+
+fn site_overview_duplicate_stats(conn: &Connection, site_id: &str, inventory_revision: u64) -> Result<(u64, u64)> {
+  let mut stmt = conn.prepare(
+    "select hash_algorithm, content_hash, size_bytes, count(*)
+     from file_records
+     where site_id = ?1
+       and inventory_revision = ?2
+       and content_hash is not null
+       and hash_revision = inventory_revision
+     group by hash_algorithm, content_hash, size_bytes
+     having count(*) > 1",
+  )?;
+  let groups = stmt.query_map(params![site_id, inventory_revision], |row| {
+    Ok((
+      row.get::<_, String>(0)?,
+      row.get::<_, String>(1)?,
+      row.get::<_, u64>(2)?,
+      row.get::<_, u64>(3)?,
+    ))
+  })?;
+  let mut duplicate_file_count = 0_u64;
+  let mut duplicate_bytes = 0_u64;
+  for group in groups {
+    let (_, _, size_bytes, copy_count) = group?;
+    duplicate_file_count = duplicate_file_count.saturating_add(copy_count);
+    duplicate_bytes = duplicate_bytes.saturating_add(size_bytes.saturating_mul(copy_count.saturating_sub(1)));
+  }
+  Ok((duplicate_file_count, duplicate_bytes))
+}
+
 fn storage_file_records(
   conn: &Connection,
   site_id: &str,
   coverage_target_content_keys: Option<&BTreeSet<StorageContentKey>>,
 ) -> Result<Vec<StorageFileRecord>> {
   let analysis_ready = site_has_completed_scan(conn, site_id)?;
+  let published_inventory_revision = site_published_inventory_revision(conn, site_id)?;
   let mut rows = conn
     .prepare(
       "select site_folder_id, path, size_bytes, hash_algorithm, content_hash,
-         coalesce(content_hash is not null and hash_revision = inventory_revision, false)
+         coalesce(
+           ?2 is not null
+             and inventory_revision = ?2
+             and content_hash is not null
+             and hash_revision = inventory_revision,
+           false
+         )
        from file_records
        where site_id = ?1
        order by path",
     )?
-    .query_map(params![site_id], |row| {
+    .query_map(params![site_id, published_inventory_revision], |row| {
       Ok((
         StorageFileRecord {
           site_folder_id: row.get(0)?,
@@ -3186,8 +3460,7 @@ fn storage_file_records(
 
   let mut groups = BTreeMap::<(String, String, u64), Vec<usize>>::new();
   for (index, (file, hash_algorithm, content_hash)) in rows.iter().enumerate() {
-    if analysis_ready
-      && file.hash_verified
+    if file.hash_verified
       && let Some(content_hash) = content_hash
     {
       groups
@@ -3196,32 +3469,23 @@ fn storage_file_records(
         .push(index);
     }
   }
-  for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
-    for (group_index, row_index) in indexes.iter().enumerate() {
-      rows[*row_index].0.duplicate = true;
-      rows[*row_index].0.reclaimable = group_index > 0;
+  if analysis_ready {
+    for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
+      for (group_index, row_index) in indexes.iter().enumerate() {
+        rows[*row_index].0.duplicate = true;
+        rows[*row_index].0.reclaimable = group_index > 0;
+      }
     }
   }
 
-  let target_hash_algorithms = coverage_target_content_keys.map(|content_keys| {
-    content_keys
-      .iter()
-      .map(|content_key| content_key.hash_algorithm.as_str())
-      .collect::<BTreeSet<_>>()
-  });
   for ((hash_algorithm, content_hash, size_bytes), indexes) in &groups {
     let content_key = StorageContentKey {
       hash_algorithm: hash_algorithm.clone(),
       content_hash: content_hash.clone(),
       size_bytes: *size_bytes,
     };
-    let covered_by_target = coverage_target_content_keys.and_then(|target_content_keys| {
-      (target_content_keys.is_empty()
-        || target_hash_algorithms
-          .as_ref()
-          .is_some_and(|algorithms| algorithms.contains(hash_algorithm.as_str())))
-      .then(|| target_content_keys.contains(&content_key))
-    });
+    let covered_by_target =
+      coverage_target_content_keys.map(|target_content_keys| target_content_keys.contains(&content_key));
     for row_index in indexes {
       let file = &mut rows[*row_index].0;
       file.content_key = Some(content_key.clone());
@@ -3236,16 +3500,42 @@ fn storage_file_records(
 fn site_has_completed_scan(conn: &Connection, site_id: &str) -> Result<bool> {
   let state = conn
     .query_row(
-      "select inventory_revision, hash_completed_at is not null
+      "select inventory_revision, inventory_completed_at is not null, hash_completed_at is not null
        from site_scan_state where site_id = ?1",
       params![site_id],
-      |row| Ok((row.get::<_, u64>(0)?, row.get::<_, bool>(1)?)),
+      |row| Ok((row.get::<_, u64>(0)?, row.get::<_, bool>(1)?, row.get::<_, bool>(2)?)),
     )
     .optional()?;
-  let Some((inventory_revision, has_completion)) = state else {
+  let Some((inventory_revision, has_inventory, has_hash_completion)) = state else {
     return Ok(false);
   };
-  Ok(has_completion && site_analysis_pending_count(conn, site_id, inventory_revision)? == 0)
+  Ok(has_inventory && has_hash_completion && site_analysis_pending_count(conn, site_id, inventory_revision)? == 0)
+}
+
+fn site_published_inventory_revision(conn: &Connection, site_id: &str) -> Result<Option<u64>> {
+  conn
+    .query_row(
+      "select inventory_revision
+       from site_scan_state
+       where site_id = ?1 and inventory_completed_at is not null",
+      params![site_id],
+      |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn site_inventory_hash_algorithm(conn: &Connection, site_id: &str) -> Result<Option<String>> {
+  conn
+    .query_row(
+      "select hash_algorithm from site_scan_state
+       where site_id = ?1 and inventory_completed_at is not null",
+      params![site_id],
+      |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(Into::into)
 }
 
 fn site_has_configured_folders(conn: &Connection, site_id: &str) -> Result<bool> {
@@ -3279,7 +3569,9 @@ fn ensure_site_hash_ready(conn: &Connection, site_id: &str) -> Result<()> {
   let inventory_revision = conn
     .query_row(
       "select inventory_revision from site_scan_state
-       where site_id = ?1 and hash_completed_at is not null",
+       where site_id = ?1
+         and inventory_completed_at is not null
+         and hash_completed_at is not null",
       params![site_id],
       |row| row.get::<_, u64>(0),
     )
@@ -3303,21 +3595,16 @@ fn ensure_site_hash_ready(conn: &Connection, site_id: &str) -> Result<()> {
   Ok(())
 }
 
-fn site_has_tracked_files(conn: &Connection, site_id: &str) -> Result<bool> {
-  conn
-    .query_row(
-      "select exists(select 1 from file_records where site_id = ?1)",
-      params![site_id],
-      |row| row.get::<_, bool>(0),
-    )
-    .map_err(Into::into)
-}
-
 fn storage_content_keys(conn: &Connection, site_id: &str) -> Result<BTreeSet<StorageContentKey>> {
   let mut stmt = conn.prepare(
-    "select distinct hash_algorithm, content_hash, size_bytes
-     from file_records
-     where site_id = ?1 and content_hash is not null and hash_revision = inventory_revision",
+    "select distinct file.hash_algorithm, file.content_hash, file.size_bytes
+     from file_records file
+     join site_scan_state state on state.site_id = file.site_id
+     where file.site_id = ?1
+       and state.inventory_completed_at is not null
+       and file.inventory_revision = state.inventory_revision
+       and file.content_hash is not null
+       and file.hash_revision = file.inventory_revision",
   )?;
   stmt
     .query_map(params![site_id], |row| {
@@ -3380,6 +3667,83 @@ fn storage_location(
     max_children,
     breadcrumbs,
     root: finish_storage_node((*selected).clone(), 0, max_depth, max_children),
+  })
+}
+
+fn storage_view_snapshot(
+  conn: &Connection,
+  site: Site,
+  coverage_target: Option<Site>,
+  node_id: &str,
+  parameters: StorageViewParameters,
+) -> Result<StorageViewSnapshot> {
+  let StorageViewParameters {
+    offset,
+    max_depth,
+    max_children,
+    page_limit,
+  } = parameters;
+  if parse_smaller_items_node_id(node_id).is_some() {
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
+  }
+
+  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
+  let node_path =
+    find_storage_node_builder_path(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+  let selected = node_path.last().expect("a storage node path should contain its root");
+  if matches!(selected.kind, StorageNodeKind::File | StorageNodeKind::SmallerItems) {
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
+  }
+
+  let breadcrumbs = node_path
+    .iter()
+    .map(|node| storage_node_without_children(node))
+    .collect();
+  let location_root = finish_storage_node((*selected).clone(), 0, max_depth, max_children);
+  let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
+  let mut child_builders = selected.children.values().collect::<Vec<_>>();
+  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let total_children = child_builders.len() as u64;
+  let page_offset = if total_children == 0 {
+    0
+  } else if offset >= total_children {
+    (total_children - 1) / page_limit * page_limit
+  } else {
+    offset
+  };
+  let page_children = child_builders
+    .into_iter()
+    .skip(usize::try_from(page_offset).unwrap_or(usize::MAX))
+    .take(page_limit as usize)
+    .map(storage_node_without_children)
+    .collect();
+  let page_parent = storage_node_without_children(selected);
+
+  Ok(StorageViewSnapshot {
+    tree: StorageTree {
+      site: site.clone(),
+      coverage_target: coverage_target.clone(),
+      max_depth,
+      max_children,
+      root: finish_storage_node(root, 0, max_depth, max_children),
+    },
+    location: StorageLocation {
+      site: site.clone(),
+      coverage_target: coverage_target.clone(),
+      max_depth,
+      max_children,
+      breadcrumbs,
+      root: location_root,
+    },
+    page: StorageChildrenPage {
+      site,
+      coverage_target,
+      parent: page_parent,
+      children: page_children,
+      total_children,
+      offset: page_offset,
+      limit: page_limit,
+    },
   })
 }
 
@@ -3459,16 +3823,21 @@ fn build_storage_tree_root(
   coverage_target: Option<&Site>,
 ) -> Result<StorageNodeBuilder> {
   let folders = list_site_folders(conn, Some(&site.id))?;
-  let coverage_target_content_keys = match coverage_target {
-    Some(target) if site_has_completed_scan(conn, &target.id)? => {
-      let content_keys = storage_content_keys(conn, &target.id)?;
-      if content_keys.is_empty() && site_has_tracked_files(conn, &target.id)? {
-        None
+  let analysis_ready = site_has_completed_scan(conn, &site.id)?;
+  let source_hash_algorithm = site_inventory_hash_algorithm(conn, &site.id)?;
+  let (coverage_target_content_keys, coverage_ready) = match coverage_target {
+    Some(target) => {
+      let target_hash_algorithm = site_inventory_hash_algorithm(conn, &target.id)?;
+      if source_hash_algorithm.is_some() && source_hash_algorithm == target_hash_algorithm {
+        (
+          Some(storage_content_keys(conn, &target.id)?),
+          analysis_ready && site_has_completed_scan(conn, &target.id)?,
+        )
       } else {
-        Some(content_keys)
+        (None, false)
       }
     }
-    _ => None,
+    None => (None, false),
   };
   let files = storage_file_records(conn, &site.id, coverage_target_content_keys.as_ref())?;
   let mut root = StorageNodeBuilder::new(
@@ -3515,7 +3884,7 @@ fn build_storage_tree_root(
     insert_storage_file(folder_node, folder, &segments, file)?;
   }
 
-  root.set_analysis_ready(site_has_completed_scan(conn, &site.id)?);
+  root.set_analysis_ready(analysis_ready, coverage_ready);
 
   Ok(root)
 }
@@ -3722,7 +4091,9 @@ fn storage_child_path(folder: &SiteFolder, segments: &[String]) -> Result<PathBu
 
 fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, max_children: u32) -> StorageNode {
   let space_health = builder.space_health();
+  let estimated_space_health = builder.estimated_space_health();
   let coverage_health = builder.coverage_health();
+  let estimated_coverage_health = builder.estimated_coverage_health();
   let (coverage_covered_files, coverage_total_files) = builder.coverage_file_counts();
   let mut child_builders = builder.children.into_values().collect::<Vec<_>>();
   sort_storage_node_builders(&mut child_builders);
@@ -3754,12 +4125,15 @@ fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, 
     file_count: builder.file_count,
     verified_file_count: builder.verified_file_count,
     pending_hash_count: builder.pending_hash_count,
+    verified_bytes: builder.verified_bytes,
     duplicate_bytes: builder.duplicate_bytes,
     duplicate_file_count: builder.duplicate_file_count,
     space_health,
+    estimated_space_health,
     space_healthy_file_equivalents: builder.space_healthy_file_equivalents,
     space_total_files: builder.space_total_files,
     coverage_health,
+    estimated_coverage_health,
     coverage_covered_files,
     coverage_total_files,
     children,
@@ -3777,12 +4151,15 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
     file_count: builder.file_count,
     verified_file_count: builder.verified_file_count,
     pending_hash_count: builder.pending_hash_count,
+    verified_bytes: builder.verified_bytes,
     duplicate_bytes: builder.duplicate_bytes,
     duplicate_file_count: builder.duplicate_file_count,
     space_health: builder.space_health(),
+    estimated_space_health: builder.estimated_space_health(),
     space_healthy_file_equivalents: builder.space_healthy_file_equivalents,
     space_total_files: builder.space_total_files,
     coverage_health: builder.coverage_health(),
+    estimated_coverage_health: builder.estimated_coverage_health(),
     coverage_covered_files,
     coverage_total_files,
     children: Vec::new(),
@@ -3791,23 +4168,27 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
 
 fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
   let analysis_ready = nodes.iter().all(|node| node.analysis_ready);
-  let total_space_health_bytes = nodes.iter().map(|node| node.space_health_bytes).sum::<u128>();
-  let zero_byte_space_health_count = nodes.iter().map(|node| node.zero_byte_space_health_count).sum::<u64>();
-  let space_health = if !analysis_ready {
-    None
-  } else if total_space_health_bytes > 0 {
-    Some(
-      (nodes.iter().map(|node| node.space_health_weighted_bytes).sum::<f64>() / total_space_health_bytes as f64)
-        .clamp(0.0, 100.0),
-    )
-  } else if zero_byte_space_health_count > 0 {
-    Some(
-      (nodes.iter().map(|node| node.zero_byte_space_health_sum).sum::<f64>() / zero_byte_space_health_count as f64)
-        .clamp(0.0, 100.0),
-    )
-  } else {
-    None
-  };
+  let coverage_ready = nodes.iter().all(|node| node.coverage_ready);
+  let total_bytes = nodes.iter().map(|node| node.total_bytes).sum::<u64>();
+  let file_count = nodes.iter().map(|node| node.file_count).sum::<u64>();
+  let verified_file_count = nodes.iter().map(|node| node.verified_file_count).sum::<u64>();
+  let pending_hash_count = nodes.iter().map(|node| node.pending_hash_count).sum::<u64>();
+  let verified_bytes = nodes.iter().map(|node| node.verified_bytes).sum::<u64>();
+  let space_health_weighted_bytes = nodes.iter().map(|node| node.space_health_weighted_bytes).sum::<f64>();
+  let space_healthy_file_equivalents = nodes
+    .iter()
+    .map(|node| node.space_healthy_file_equivalents)
+    .sum::<f64>();
+  let estimated_space_health = estimated_space_health(
+    verified_file_count,
+    total_bytes,
+    file_count,
+    space_health_weighted_bytes,
+    space_healthy_file_equivalents,
+  );
+  let space_health = (analysis_ready && pending_hash_count == 0)
+    .then_some(estimated_space_health)
+    .flatten();
   let mut coverage_groups = BTreeMap::<StorageContentKey, bool>::new();
   for node in &nodes {
     for (content_key, covered) in &node.coverage_groups {
@@ -3817,39 +4198,34 @@ fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<
         .or_insert(*covered);
     }
   }
-  let coverage_total_bytes = coverage_groups
-    .keys()
-    .map(|content_key| u128::from(content_key.size_bytes))
-    .sum::<u128>();
-  let coverage_health = if !analysis_ready {
-    None
-  } else if coverage_total_bytes > 0 {
-    let covered_bytes = coverage_groups
-      .iter()
-      .filter(|(_, covered)| **covered)
-      .map(|(content_key, _)| u128::from(content_key.size_bytes))
-      .sum::<u128>();
-    Some((covered_bytes as f64 * 100.0 / coverage_total_bytes as f64).clamp(0.0, 100.0))
-  } else if !coverage_groups.is_empty() {
-    Some(coverage_groups.values().filter(|covered| **covered).count() as f64 * 100.0 / coverage_groups.len() as f64)
-  } else {
-    None
-  };
+  let estimated_coverage_health = estimated_coverage_health(
+    verified_file_count,
+    total_bytes,
+    verified_bytes,
+    pending_hash_count,
+    &coverage_groups,
+  );
+  let coverage_health = (coverage_ready && pending_hash_count == 0)
+    .then_some(estimated_coverage_health)
+    .flatten();
   StorageNode {
     id: format!("smaller_items:{retained_count}:{parent_id}"),
     name: "Smaller items".to_owned(),
     path: None,
     kind: StorageNodeKind::SmallerItems,
-    total_bytes: nodes.iter().map(|node| node.total_bytes).sum(),
-    file_count: nodes.iter().map(|node| node.file_count).sum(),
-    verified_file_count: nodes.iter().map(|node| node.verified_file_count).sum(),
-    pending_hash_count: nodes.iter().map(|node| node.pending_hash_count).sum(),
+    total_bytes,
+    file_count,
+    verified_file_count,
+    pending_hash_count,
+    verified_bytes,
     duplicate_bytes: nodes.iter().map(|node| node.duplicate_bytes).sum(),
     duplicate_file_count: nodes.iter().map(|node| node.duplicate_file_count).sum(),
     space_health,
-    space_healthy_file_equivalents: nodes.iter().map(|node| node.space_healthy_file_equivalents).sum(),
+    estimated_space_health,
+    space_healthy_file_equivalents,
     space_total_files: nodes.iter().map(|node| node.space_total_files).sum(),
     coverage_health,
+    estimated_coverage_health,
     coverage_covered_files: coverage_groups.values().filter(|covered| **covered).count() as u64,
     coverage_total_files: coverage_groups.len() as u64,
     children: Vec::new(),
@@ -4019,5 +4395,43 @@ fn hidden_policy_from_db(value: &str) -> HiddenPolicy {
   match value {
     "skip" => HiddenPolicy::Skip,
     _ => HiddenPolicy::Include,
+  }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+  use super::*;
+
+  #[test]
+  fn deferred_transaction_pins_reads_while_another_connection_commits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("read-snapshot.sqlite3");
+    let setup = Connection::open(&path).unwrap();
+    setup
+      .execute_batch(
+        "pragma journal_mode = wal;
+         create table revision (value integer not null);
+         insert into revision (value) values (1);",
+      )
+      .unwrap();
+    drop(setup);
+
+    let reader = open_connection(&path).unwrap();
+    let writer = open_connection(&path).unwrap();
+    let observed = with_deferred_transaction(&reader, || {
+      let before = reader.query_row("select value from revision", [], |row| row.get::<_, u64>(0))?;
+      writer.execute("update revision set value = 2", [])?;
+      let after = reader.query_row("select value from revision", [], |row| row.get::<_, u64>(0))?;
+      Ok((before, after))
+    })
+    .unwrap();
+
+    assert_eq!(observed, (1, 1));
+    assert_eq!(
+      writer
+        .query_row("select value from revision", [], |row| row.get::<_, u64>(0))
+        .unwrap(),
+      2
+    );
   }
 }

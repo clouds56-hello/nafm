@@ -6,6 +6,7 @@ import {
   getStorageFileReveal,
   getStorageLocation,
   getStorageTree,
+  getStorageViewSnapshot,
   loadDashboard,
   onScanTaskEvent,
   previewCleanup,
@@ -40,9 +41,13 @@ import type {
   StorageChildrenPage,
   StorageLocation,
   StorageTree,
+  StorageViewSnapshot,
 } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
+const ANALYSIS_REFRESH_DELAY_MS = 650;
+const FINAL_ANALYSIS_REFRESH_DELAY_MS = 75;
+const FINAL_ANALYSIS_REFRESH_RETRY_MS = 150;
 
 interface NavigationEntry {
   site_id: string;
@@ -134,6 +139,7 @@ export function useDashboard(expectedWorkspace: string | null) {
   const treeRequestRef = useRef(0);
   const treeRequestByKeyRef = useRef<Map<string, number>>(new Map());
   const treesRef = useRef<Map<string, StorageTree>>(new Map());
+  const treeLoadingRef = useRef(false);
   const locationRequestRef = useRef(0);
   const locationRef = useRef<StorageLocation | null>(null);
   const navigationInProgressRef = useRef(false);
@@ -151,6 +157,12 @@ export function useDashboard(expectedWorkspace: string | null) {
   const terminalRequestIdsRef = useRef<Set<number>>(new Set());
   const cancelRequestsInFlightRef = useRef<Set<number>>(new Set());
   const publishedInventoryKeysRef = useRef<Set<string>>(new Set());
+  const analysisRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const analysisRefreshSitesRef = useRef<Map<string, number>>(new Map());
+  const analysisRefreshInFlightRef = useRef(false);
+  const analysisRefreshGenerationRef = useRef(0);
+  const finalAnalysisRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalAnalysisRefreshSitesRef = useRef<Set<string>>(new Set());
   const cleanupPreviewRequestRef = useRef(0);
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
@@ -171,21 +183,50 @@ export function useDashboard(expectedWorkspace: string | null) {
     setPreviewLoading(false);
   }, []);
 
+  const clearAnalysisRefreshes = useCallback(() => {
+    analysisRefreshGenerationRef.current += 1;
+    if (analysisRefreshTimerRef.current !== null) {
+      clearTimeout(analysisRefreshTimerRef.current);
+      analysisRefreshTimerRef.current = null;
+    }
+    if (finalAnalysisRefreshTimerRef.current !== null) {
+      clearTimeout(finalAnalysisRefreshTimerRef.current);
+      finalAnalysisRefreshTimerRef.current = null;
+    }
+    analysisRefreshSitesRef.current.clear();
+    finalAnalysisRefreshSitesRef.current.clear();
+  }, []);
+
+  const clearAnalysisRefreshRequest = useCallback((requestId: number, siteId?: string) => {
+    for (const [pendingSiteId, pendingRequestId] of analysisRefreshSitesRef.current) {
+      if (pendingRequestId === requestId && (!siteId || pendingSiteId === siteId)) {
+        analysisRefreshSitesRef.current.delete(pendingSiteId);
+      }
+    }
+    if (analysisRefreshSitesRef.current.size === 0 && analysisRefreshTimerRef.current !== null) {
+      clearTimeout(analysisRefreshTimerRef.current);
+      analysisRefreshTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (workspaceNameRef.current !== expectedWorkspace) {
       const dashboardMatchesWorkspace = dashboardRef.current?.workspace_name === expectedWorkspace;
+      clearAnalysisRefreshes();
       locationRequestRef.current += 1;
       childrenRequestRef.current += 1;
       navigationOperationRef.current += 1;
       treeRequestRef.current += 1;
       treeRequestByKeyRef.current.clear();
       treesRef.current = new Map();
+      treeLoadingRef.current = false;
       locationRef.current = null;
       selectedNodeRef.current = null;
       childrenPageRef.current = null;
       backHistoryRef.current = [];
       forwardHistoryRef.current = [];
       setTrees(new Map());
+      setTreeLoading(false);
       setLocation(null);
       setSelectedNodeId(null);
       setSelectedNode(null);
@@ -208,7 +249,7 @@ export function useDashboard(expectedWorkspace: string | null) {
       childrenLoadingRef.current = false;
     }
     workspaceNameRef.current = expectedWorkspace;
-  }, [expectedWorkspace, updateCompletionBySite]);
+  }, [clearAnalysisRefreshes, expectedWorkspace, updateCompletionBySite]);
 
   useEffect(() => {
     selectedNodeRef.current = selectedNode;
@@ -309,17 +350,21 @@ export function useDashboard(expectedWorkspace: string | null) {
     entry: NavigationEntry,
     historyAction: "push" | "back" | "forward" | "reset" | "preserve",
     preserveSelection = false,
+    silent = false,
   ): Promise<LocationLoadResult> => {
     const requestId = locationRequestRef.current + 1;
+    const childrenRequestId = childrenRequestRef.current + 1;
     locationRequestRef.current = requestId;
-    childrenRequestRef.current += 1;
+    childrenRequestRef.current = childrenRequestId;
     const previousLocation = locationRef.current;
     const previousEntry = currentNavigationEntry();
     const requestedWorkspace = workspaceNameRef.current;
-    setChildrenLoading(true);
-    childrenLoadingRef.current = true;
-    setChildrenError(null);
-    childrenRetryRef.current = null;
+    if (!silent) {
+      setChildrenLoading(true);
+      childrenLoadingRef.current = true;
+      setChildrenError(null);
+      childrenRetryRef.current = null;
+    }
 
     try {
       const [nextLocation, initialPage] = await Promise.all([
@@ -333,6 +378,7 @@ export function useDashboard(expectedWorkspace: string | null) {
         ),
       ]);
       if (locationRequestRef.current !== requestId
+        || childrenRequestRef.current !== childrenRequestId
         || workspaceNameRef.current !== requestedWorkspace) {
         return "superseded";
       }
@@ -350,6 +396,7 @@ export function useDashboard(expectedWorkspace: string | null) {
           CHILDREN_PAGE_SIZE,
         );
         if (locationRequestRef.current !== requestId
+          || childrenRequestRef.current !== childrenRequestId
           || workspaceNameRef.current !== requestedWorkspace) {
           return "superseded";
         }
@@ -398,7 +445,9 @@ export function useDashboard(expectedWorkspace: string | null) {
     } catch (locationError) {
       const message = errorMessage(locationError);
       const unavailable = isUnavailableLocationError(message);
-      if (locationRequestRef.current === requestId
+      if (!silent
+        && locationRequestRef.current === requestId
+        && childrenRequestRef.current === childrenRequestId
         && workspaceNameRef.current === requestedWorkspace) {
         if (previousLocation && !(unavailable && (historyAction === "back" || historyAction === "forward"))) {
           setNotice(message);
@@ -409,12 +458,15 @@ export function useDashboard(expectedWorkspace: string | null) {
         }
       }
       if (locationRequestRef.current !== requestId
+        || childrenRequestRef.current !== childrenRequestId
         || workspaceNameRef.current !== requestedWorkspace) {
         return "superseded";
       }
       return unavailable ? "unavailable" : "failed";
     } finally {
-      if (locationRequestRef.current === requestId
+      if (!silent
+        && locationRequestRef.current === requestId
+        && childrenRequestRef.current === childrenRequestId
         && workspaceNameRef.current === requestedWorkspace) {
         childrenLoadingRef.current = false;
         setChildrenLoading(false);
@@ -436,26 +488,135 @@ export function useDashboard(expectedWorkspace: string | null) {
     foreground = false,
     resetChildrenPage = false,
   ) => {
-    navigationOperationRef.current += 1;
-    navigationInProgressRef.current = false;
-    locationRequestRef.current += 1;
+    if (!foreground && (
+      treeLoadingRef.current
+      || navigationInProgressRef.current
+      || childrenLoadingRef.current
+    )) return false;
+    const navigationGeneration = navigationOperationRef.current;
+    const locationGeneration = locationRequestRef.current;
+    const childrenGeneration = childrenRequestRef.current;
+    if (foreground) {
+      navigationOperationRef.current += 1;
+      navigationInProgressRef.current = false;
+      locationRequestRef.current += 1;
+    }
     const requestKey = treeKey(siteId, targetSiteId);
     const requestId = treeRequestRef.current + 1;
     treeRequestRef.current = requestId;
     treeRequestByKeyRef.current.set(requestKey, requestId);
     if (foreground) {
+      treeLoadingRef.current = true;
       setTreeLoading(true);
       setTreeError(null);
-    } else {
-      setTreeLoading(false);
     }
     try {
+      const currentLocation = locationRef.current;
+      const expectedWorkspace = workspaceNameRef.current;
+      if (!foreground && expectedWorkspace && currentLocation?.site_id === siteId) {
+        const currentPage = childrenPageRef.current;
+        const nodeId = currentLocation.root.id;
+        const pageOffset = currentPage?.parent.id === nodeId ? currentPage.offset : 0;
+        let snapshot: StorageViewSnapshot;
+        let fellBackToRoot = false;
+        try {
+          snapshot = await getStorageViewSnapshot(
+            expectedWorkspace,
+            siteId,
+            targetSiteId,
+            nodeId,
+            pageOffset,
+            5,
+            12,
+            CHILDREN_PAGE_SIZE,
+          );
+        } catch (snapshotError) {
+          const rootNodeId = treesRef.current.get(requestKey)?.root.id;
+          if (!rootNodeId
+            || rootNodeId === nodeId
+            || !isUnavailableLocationError(errorMessage(snapshotError))) throw snapshotError;
+          fellBackToRoot = true;
+          snapshot = await getStorageViewSnapshot(
+            expectedWorkspace,
+            siteId,
+            targetSiteId,
+            rootNodeId,
+            0,
+            5,
+            12,
+            CHILDREN_PAGE_SIZE,
+          );
+        }
+
+        if (treeRequestByKeyRef.current.get(requestKey) !== requestId) {
+          // A newer same-key request owns freshness; this caller must stay queued.
+          return false;
+        }
+        const isCurrentRequest = treeRequestRef.current === requestId;
+        const isActiveRequest = selectedSiteRef.current === siteId
+          && targetSiteRef.current === targetSiteId;
+        if (!isActiveRequest) {
+          setTrees((current) => new Map(current).set(requestKey, snapshot.tree));
+          return true;
+        }
+        if (!isCurrentRequest) return false;
+        const navigationSafe = navigationOperationRef.current === navigationGeneration
+          && locationRequestRef.current === locationGeneration
+          && childrenRequestRef.current === childrenGeneration
+          && !navigationInProgressRef.current
+          && !childrenLoadingRef.current;
+        if (!navigationSafe) return false;
+        // Commit an active snapshot only after its navigation guards pass.
+        setTrees((current) => new Map(current).set(requestKey, snapshot.tree));
+        if (isActiveRequest) {
+          const currentSelection = selectedNodeRef.current;
+          const refreshedSelection = currentSelection
+            ? findNode(snapshot.location.root, currentSelection.id)
+              ?? snapshot.page.children.find((child) => child.id === currentSelection.id)
+            : null;
+          const nextSelection = refreshedSelection ?? snapshot.location.root;
+          locationRef.current = snapshot.location;
+          childrenPageRef.current = snapshot.page;
+          selectedNodeRef.current = nextSelection;
+          childrenRetryRef.current = null;
+          if (fellBackToRoot) {
+            backHistoryRef.current = [];
+            forwardHistoryRef.current = [];
+            setBackHistory([]);
+            setForwardHistory([]);
+          }
+          setLocation(snapshot.location);
+          setChildrenPage(snapshot.page);
+          setSelectedNodeId(nextSelection.id);
+          setSelectedNode(nextSelection);
+          setChildrenError(null);
+          setTreeError(null);
+        }
+        return true;
+      }
+
       const tree = await getStorageTree(siteId, targetSiteId);
-      if (treeRequestByKeyRef.current.get(requestKey) !== requestId) return;
+      if (treeRequestByKeyRef.current.get(requestKey) !== requestId) {
+        // A newer same-key request owns freshness; this caller must stay queued.
+        return false;
+      }
       const isCurrentRequest = treeRequestRef.current === requestId;
       const isActiveRequest = selectedSiteRef.current === siteId && targetSiteRef.current === targetSiteId;
+      if (!isActiveRequest) {
+        setTrees((current) => new Map(current).set(requestKey, tree));
+        return true;
+      }
+      if (!isCurrentRequest) return false;
+      const navigationSafe = foreground || (
+        navigationOperationRef.current === navigationGeneration
+        && locationRequestRef.current === locationGeneration
+        && childrenRequestRef.current === childrenGeneration
+        && !navigationInProgressRef.current
+        && !childrenLoadingRef.current
+      );
+      if (!navigationSafe) return false;
       setTrees((current) => new Map(current).set(requestKey, tree));
-      if (isCurrentRequest && isActiveRequest) {
+      if (isActiveRequest) {
         const currentLocation = locationRef.current;
         const currentPage = childrenPageRef.current;
         const nodeId = !resetChildrenPage && currentLocation?.site_id === siteId
@@ -475,6 +636,7 @@ export function useDashboard(expectedWorkspace: string | null) {
           },
           currentLocation && !resetChildrenPage ? "preserve" : "reset",
           Boolean(currentLocation && !resetChildrenPage),
+          !foreground,
         );
         if (locationResult === "unavailable" && locationRequestRef.current === locationRequestId
           && nodeId !== tree.root.id
@@ -488,16 +650,23 @@ export function useDashboard(expectedWorkspace: string | null) {
               selected_node_id: tree.root.id,
             },
             "reset",
+            false,
+            !foreground,
           );
         }
         if (locationResult === "loaded") setTreeError(null);
+        if (!foreground && locationResult === "failed") return false;
       }
+      return true;
     } catch (treeLoadError) {
       const message = errorMessage(treeLoadError);
       if (foreground && treeRequestRef.current === requestId) setTreeError(message);
-      else setNotice(message);
+      return foreground;
     } finally {
-      if (foreground && treeRequestRef.current === requestId) setTreeLoading(false);
+      if (foreground && treeRequestRef.current === requestId) {
+        treeLoadingRef.current = false;
+        setTreeLoading(false);
+      }
     }
   }, [loadFolderLocation]);
 
@@ -505,6 +674,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     const workspaceChanged = dashboardRef.current !== null
       && dashboardRef.current.workspace_name !== next.workspace_name;
     if (workspaceChanged) {
+      clearAnalysisRefreshes();
       terminalRequestIdsRef.current.clear();
       cancelRequestsInFlightRef.current.clear();
       publishedInventoryKeysRef.current.clear();
@@ -537,7 +707,7 @@ export function useDashboard(expectedWorkspace: string | null) {
       next.sites,
       activeTasks,
     ));
-  }, [invalidateCleanupPreview, updateCompletionBySite]);
+  }, [clearAnalysisRefreshes, invalidateCleanupPreview, updateCompletionBySite]);
 
   const refresh = useCallback(async () => {
     const requestId = dashboardRequestRef.current + 1;
@@ -569,8 +739,9 @@ export function useDashboard(expectedWorkspace: string | null) {
 
   const reloadDashboard = useCallback(async () => {
     if (!dashboardRef.current) {
-      void refresh();
-      return;
+      await refresh();
+      const refreshedDashboard = dashboardRef.current as Dashboard | null;
+      return refreshedDashboard?.workspace_name === workspaceNameRef.current;
     }
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
@@ -578,14 +749,112 @@ export function useDashboard(expectedWorkspace: string | null) {
     try {
       const next = await loadDashboard();
       if (dashboardRequestRef.current !== requestId
-        || (requestedWorkspace && next.workspace_name !== requestedWorkspace)) return;
+        || (requestedWorkspace && next.workspace_name !== requestedWorkspace)) return false;
       acceptDashboard(next);
+      return true;
     } catch {
       // Scan completion already has enough event data to stay useful if this refresh fails.
+      return false;
     } finally {
       if (dashboardRequestRef.current === requestId) setLoading(false);
     }
   }, [acceptDashboard, refresh]);
+
+  const scheduleAnalysisRefresh = useCallback((requestId: number, siteId: string) => {
+    analysisRefreshSitesRef.current.set(siteId, requestId);
+    if (analysisRefreshTimerRef.current !== null) return;
+    const generation = analysisRefreshGenerationRef.current;
+
+    const flush = () => {
+      if (analysisRefreshGenerationRef.current !== generation) {
+        analysisRefreshTimerRef.current = null;
+        return;
+      }
+      if (analysisRefreshInFlightRef.current) {
+        analysisRefreshTimerRef.current = setTimeout(flush, ANALYSIS_REFRESH_DELAY_MS);
+        return;
+      }
+
+      const sites = new Map(analysisRefreshSitesRef.current);
+      analysisRefreshSitesRef.current.clear();
+      analysisRefreshTimerRef.current = null;
+      if (sites.size === 0) return;
+
+      const requestedWorkspace = workspaceNameRef.current;
+      analysisRefreshInFlightRef.current = true;
+      void reloadDashboard().then(async (dashboardFresh) => {
+        if (analysisRefreshGenerationRef.current !== generation
+          || workspaceNameRef.current !== requestedWorkspace) return;
+        const sourceSiteId = selectedSiteRef.current;
+        const targetSiteId = targetSiteRef.current;
+        let viewFresh = true;
+        if (sourceSiteId && (sites.has(sourceSiteId) || Boolean(targetSiteId && sites.has(targetSiteId)))) {
+          viewFresh = await refreshTree(sourceSiteId, targetSiteId, false);
+        }
+        if ((!dashboardFresh || !viewFresh)
+          && analysisRefreshGenerationRef.current === generation
+          && workspaceNameRef.current === requestedWorkspace) {
+          for (const [pendingSiteId, pendingRequestId] of sites) {
+            if (terminalRequestIdsRef.current.has(pendingRequestId)) continue;
+            const currentRequestId = analysisRefreshSitesRef.current.get(pendingSiteId);
+            if (currentRequestId === undefined || currentRequestId < pendingRequestId) {
+              analysisRefreshSitesRef.current.set(pendingSiteId, pendingRequestId);
+            }
+          }
+          if (analysisRefreshSitesRef.current.size > 0
+            && analysisRefreshTimerRef.current === null) {
+            analysisRefreshTimerRef.current = setTimeout(flush, ANALYSIS_REFRESH_DELAY_MS);
+          }
+        }
+      }).finally(() => {
+        analysisRefreshInFlightRef.current = false;
+      });
+    };
+
+    analysisRefreshTimerRef.current = setTimeout(flush, ANALYSIS_REFRESH_DELAY_MS);
+  }, [refreshTree, reloadDashboard]);
+
+  const scheduleFinalAnalysisRefresh = useCallback((siteIds: Iterable<string>) => {
+    for (const siteId of siteIds) finalAnalysisRefreshSitesRef.current.add(siteId);
+    if (finalAnalysisRefreshTimerRef.current !== null) return;
+    const generation = analysisRefreshGenerationRef.current;
+
+    const flush = async (retry = 0) => {
+      finalAnalysisRefreshTimerRef.current = null;
+      if (analysisRefreshGenerationRef.current !== generation) return;
+      const sites = new Set(finalAnalysisRefreshSitesRef.current);
+      finalAnalysisRefreshSitesRef.current.clear();
+      const requestedWorkspace = workspaceNameRef.current;
+      const dashboardFresh = await reloadDashboard();
+      if (analysisRefreshGenerationRef.current !== generation
+        || workspaceNameRef.current !== requestedWorkspace) return;
+
+      const sourceSiteId = selectedSiteRef.current;
+      const targetSiteId = targetSiteRef.current;
+      const activeSiteAffected = sites.size === 0
+        || Boolean(sourceSiteId && sites.has(sourceSiteId))
+        || Boolean(targetSiteId && sites.has(targetSiteId));
+      const viewFresh = !sourceSiteId || !activeSiteAffected
+        ? true
+        : await refreshTree(sourceSiteId, targetSiteId, false);
+      if ((!dashboardFresh || !viewFresh)
+        && analysisRefreshGenerationRef.current === generation
+        && workspaceNameRef.current === requestedWorkspace) {
+        for (const siteId of sites) finalAnalysisRefreshSitesRef.current.add(siteId);
+        if (finalAnalysisRefreshTimerRef.current === null) {
+          finalAnalysisRefreshTimerRef.current = setTimeout(
+            () => void flush(retry + 1),
+            Math.min(2_000, FINAL_ANALYSIS_REFRESH_RETRY_MS * 2 ** Math.min(retry, 4)),
+          );
+        }
+      }
+    };
+
+    finalAnalysisRefreshTimerRef.current = setTimeout(
+      () => void flush(),
+      FINAL_ANALYSIS_REFRESH_DELAY_MS,
+    );
+  }, [refreshTree, reloadDashboard]);
 
   useEffect(() => {
     void refresh();
@@ -633,9 +902,13 @@ export function useDashboard(expectedWorkspace: string | null) {
                 }
               });
             }
+            if (progress.phase === "hashing") {
+              scheduleAnalysisRefresh(progress.request_id, progress.site_id);
+            }
           }
         }
       } else if (["completed", "failed", "cancelled"].includes(event.kind)) {
+        clearAnalysisRefreshRequest(event.request_id, event.site_id);
         setProgressBySite((current) => clearScanProgressForSite(
           current,
           event.site_id!,
@@ -651,17 +924,14 @@ export function useDashboard(expectedWorkspace: string | null) {
               return new Map(current).set(completion.site_id, completion);
             });
           }
-          setContentRevision((current) => current + 1);
-          const sourceSiteId = selectedSiteRef.current;
-          const targetSiteId = targetSiteRef.current;
-          if (sourceSiteId && (event.site_id === sourceSiteId || event.site_id === targetSiteId)) {
-            void refreshTree(sourceSiteId, targetSiteId, false);
-          }
         }
+        setContentRevision((current) => current + 1);
+        scheduleFinalAnalysisRefresh([event.site_id]);
         if (event.kind === "failed") setNotice(event.message ?? "A site scan failed.");
       }
     }
     if (event.scope === "task" && ["completed", "failed", "cancelled"].includes(event.kind)) {
+      clearAnalysisRefreshRequest(event.request_id);
       const retainedCompletions = (event.site_states ?? [])
         .map((state) => retainedScanCompletionFromSiteState(event.request_id, state))
         .filter((completion): completion is ScanCompletionView => completion !== null);
@@ -699,15 +969,21 @@ export function useDashboard(expectedWorkspace: string | null) {
       publishedInventoryKeysRef.current.forEach((key) => {
         if (key.startsWith(`${event.request_id}\u0000`)) publishedInventoryKeysRef.current.delete(key);
       });
-      void reloadDashboard();
+      if (event.kind !== "completed") setContentRevision((current) => current + 1);
+      scheduleFinalAnalysisRefresh((event.site_states ?? []).map((state) => state.site_id));
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
       if (event.kind === "cancelled") {
         setNotice("Scan cancelled. Indexed files remain; unfinished hashes will resume on the next scan.");
-        const sourceSiteId = selectedSiteRef.current;
-        if (sourceSiteId) void refreshTree(sourceSiteId, targetSiteRef.current, false);
       }
     }
-  }, [refreshTree, reloadDashboard, updateCompletionBySite]);
+  }, [
+    clearAnalysisRefreshRequest,
+    refreshTree,
+    reloadDashboard,
+    scheduleAnalysisRefresh,
+    scheduleFinalAnalysisRefresh,
+    updateCompletionBySite,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -719,8 +995,9 @@ export function useDashboard(expectedWorkspace: string | null) {
     return () => {
       disposed = true;
       unlisten?.();
+      clearAnalysisRefreshes();
     };
-  }, [handleScanEvent]);
+  }, [clearAnalysisRefreshes, handleScanEvent]);
 
   useEffect(() => {
     const activeTasks = dashboard?.active_tasks ?? [];

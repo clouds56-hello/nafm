@@ -13,7 +13,7 @@ pub use model::{
   FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
   ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, StageAddReport, StageCommitDryRun,
   StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
+  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 pub use repository::{Repository, RepositoryOptions};
 pub use workspace::{DEFAULT_WORKSPACE_NAME, WorkspaceInfo, WorkspaceManager, app_root_dir, normalize_workspace_name};

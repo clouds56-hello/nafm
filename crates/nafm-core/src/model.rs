@@ -42,6 +42,7 @@ pub struct SiteOverview {
   pub verified_file_count: u64,
   pub pending_hash_count: u64,
   pub total_bytes: u64,
+  pub verified_bytes: u64,
   pub duplicate_file_count: u64,
   pub duplicate_bytes: u64,
   pub hash_status: SiteHashStatus,
@@ -78,12 +79,15 @@ pub struct StorageNode {
   pub file_count: u64,
   pub verified_file_count: u64,
   pub pending_hash_count: u64,
+  pub verified_bytes: u64,
   pub duplicate_bytes: u64,
   pub duplicate_file_count: u64,
   pub space_health: Option<f64>,
+  pub estimated_space_health: Option<f64>,
   pub space_healthy_file_equivalents: f64,
   pub space_total_files: u64,
   pub coverage_health: Option<f64>,
+  pub estimated_coverage_health: Option<f64>,
   pub coverage_covered_files: u64,
   pub coverage_total_files: u64,
   pub children: Vec<StorageNode>,
@@ -117,6 +121,13 @@ pub struct StorageChildrenPage {
   pub total_children: u64,
   pub offset: u64,
   pub limit: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageViewSnapshot {
+  pub tree: StorageTree,
+  pub location: StorageLocation,
+  pub page: StorageChildrenPage,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
