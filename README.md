@@ -36,6 +36,35 @@ index and cached scan data; it never deletes source files.
 
 The CLI remains available for the same setup and automation workflows.
 
+## Desktop releases
+
+Pull requests and pushes to `main` run Rust formatting, tests, Clippy, and the
+frontend production build. Pushing a version tag builds native desktop
+installers and attaches them to a draft GitHub Release:
+
+- macOS DMGs for Apple Silicon and Intel
+- a Windows x64 NSIS installer
+- Linux x64 AppImage and Debian packages
+
+Before tagging, keep the version in these files synchronized:
+
+- `apps/nafm-desktop/src-tauri/tauri.conf.json`
+- `apps/nafm-desktop/src-tauri/Cargo.toml`
+- `apps/nafm-desktop/package.json`
+
+Then create and push the matching tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow reruns the CI quality gate and rejects a tag that does not
+match all three application versions before starting native builds. Releases
+remain drafts because the current bundles are not notarized for macOS or signed
+for Windows. Configure platform signing before publishing a release to end
+users.
+
 ## SMB credentials
 
 Save credentials for an SMB share with:

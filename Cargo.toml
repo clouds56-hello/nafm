@@ -9,7 +9,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://example.invalid/nafm"
+repository = "https://github.com/clouds56-hello/nafm"
 rust-version = "1.88"
 
 [workspace.dependencies]

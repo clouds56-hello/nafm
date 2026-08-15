@@ -1,4 +1,5 @@
 /target/
+/.pnpm-store/
 /apps/nafm-desktop/dist/
 /apps/nafm-desktop/node_modules/
 /apps/nafm-desktop/*.tsbuildinfo
