@@ -6,6 +6,7 @@ interface SunburstMapProps {
   root: StorageNode;
   breadcrumbs: StorageNode[];
   metric: HealthMetric;
+  analysisAvailable: boolean;
   selectedNodeId: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -118,6 +119,7 @@ export function SunburstMap({
   root,
   breadcrumbs,
   metric,
+  analysisAvailable,
   selectedNodeId,
   canGoBack,
   canGoForward,
@@ -185,7 +187,7 @@ export function SunburstMap({
       const center = size / 2;
       const inner = innerRadius + (hovered.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = healthColor(hovered.node[metric]);
+      const color = healthColor(analysisAvailable ? hovered.node[metric] : null);
       drawArc(context, center, inner, outer, hovered.start, hovered.end);
       context.save();
       context.strokeStyle = "rgba(255,255,255,.78)";
@@ -216,7 +218,7 @@ export function SunburstMap({
       if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     };
-  }, [hovered, innerRadius, metric, ringWidth, size]);
+  }, [analysisAvailable, hovered, innerRadius, metric, ringWidth, size]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -241,7 +243,8 @@ export function SunburstMap({
     for (const arc of arcs) {
       const inner = innerRadius + (arc.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = healthColor(arc.node[metric]);
+      const score = analysisAvailable ? arc.node[metric] : null;
+      const color = healthColor(score);
       drawArc(context, center, inner, outer, arc.start, arc.end);
       const selected = arc.node.id === selectedNodeId;
       context.globalAlpha = selected ? 1 : 0.84;
@@ -257,7 +260,7 @@ export function SunburstMap({
         context.restore();
       }
       context.globalAlpha = 1;
-      drawScoreLabel(context, arc, arc.node[metric], center, inner, outer);
+      drawScoreLabel(context, arc, score, center, inner, outer);
     }
 
     context.beginPath();
@@ -266,7 +269,7 @@ export function SunburstMap({
     context.fill();
     context.strokeStyle = "rgba(255,255,255,.07)";
     context.stroke();
-  }, [arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
+  }, [analysisAvailable, arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
     previewArc(null);
@@ -303,11 +306,11 @@ export function SunburstMap({
     }
   };
 
-  const score = root[metric];
+  const score = analysisAvailable ? root[metric] : null;
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   return (
-    <div className="sunburst-frame" ref={frameRef}>
+    <div className={`sunburst-frame ${analysisAvailable ? "" : "is-analysis-suspended"}`} ref={frameRef}>
       <nav className="map-navigation" aria-label="Folder navigation">
         <div className="map-history-controls" aria-label="History">
           <button
@@ -360,7 +363,7 @@ export function SunburstMap({
         className="sunburst-canvas"
         role="img"
         tabIndex={0}
-        aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. Use arrow keys to explore and Enter to select.`}
+        aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. ${analysisAvailable ? "Health colors are available." : "Health colors are suspended while hashes are pending."} Use arrow keys to explore and Enter to select.`}
         onPointerMove={(event) => {
           const next = getPointerArc(event) ?? null;
           previewArc(next, next ? "immediate" : "delayed");

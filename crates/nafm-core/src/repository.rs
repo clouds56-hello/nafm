@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -16,10 +16,10 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
-  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanProgress, ScanStarted, ScanSummary, Site,
-  SiteFolder, SiteFolderKind, SiteOverview, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation,
-  StorageNode, StorageNodeKind, StorageTree,
+  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
+  ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, StageAddReport, StageCommitDryRun,
+  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
+  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -62,9 +62,13 @@ enum FileSource {
 
 #[derive(Clone, Debug)]
 struct ExistingRecord {
-  id: String,
+  site_id: String,
+  size_bytes: u64,
+  modified_unix_nanos: i64,
   content_hash: Option<String>,
   hash_algorithm: String,
+  inventory_revision: u64,
+  hash_revision: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -73,16 +77,11 @@ struct CachedScanRecord {
 }
 
 #[derive(Clone, Debug)]
-struct PendingFileRecord {
-  file: FileProbe,
-  content_hash: Option<String>,
-}
-
-#[derive(Clone, Debug)]
 struct StorageFileRecord {
   site_folder_id: String,
   path: PathBuf,
   size_bytes: u64,
+  hash_verified: bool,
   content_key: Option<StorageContentKey>,
   source_copy_count: u64,
   covered_by_target: Option<bool>,
@@ -113,6 +112,9 @@ struct StorageNodeBuilder {
   kind: StorageNodeKind,
   total_bytes: u64,
   file_count: u64,
+  verified_file_count: u64,
+  pending_hash_count: u64,
+  analysis_ready: bool,
   duplicate_bytes: u64,
   duplicate_file_count: u64,
   space_health_weighted_bytes: f64,
@@ -134,6 +136,9 @@ impl StorageNodeBuilder {
       kind,
       total_bytes: 0,
       file_count: 0,
+      verified_file_count: 0,
+      pending_hash_count: 0,
+      analysis_ready: true,
       duplicate_bytes: 0,
       duplicate_file_count: 0,
       space_health_weighted_bytes: 0.0,
@@ -150,6 +155,11 @@ impl StorageNodeBuilder {
   fn add_file_metrics(&mut self, file: &StorageFileRecord) {
     self.total_bytes = self.total_bytes.saturating_add(file.size_bytes);
     self.file_count = self.file_count.saturating_add(1);
+    if file.hash_verified {
+      self.verified_file_count = self.verified_file_count.saturating_add(1);
+    } else {
+      self.pending_hash_count = self.pending_hash_count.saturating_add(1);
+    }
     if file.duplicate {
       self.duplicate_file_count = self.duplicate_file_count.saturating_add(1);
     }
@@ -178,6 +188,9 @@ impl StorageNodeBuilder {
   }
 
   fn space_health(&self) -> Option<f64> {
+    if !self.analysis_ready || self.pending_hash_count > 0 {
+      return None;
+    }
     if self.space_health_bytes > 0 {
       Some((self.space_health_weighted_bytes / self.space_health_bytes as f64).clamp(0.0, 100.0))
     } else if self.zero_byte_space_health_count > 0 {
@@ -188,6 +201,9 @@ impl StorageNodeBuilder {
   }
 
   fn coverage_health(&self) -> Option<f64> {
+    if !self.analysis_ready || self.pending_hash_count > 0 {
+      return None;
+    }
     let total_bytes = self
       .coverage_groups
       .keys()
@@ -214,6 +230,13 @@ impl StorageNodeBuilder {
       self.coverage_groups.len() as u64,
     )
   }
+
+  fn set_analysis_ready(&mut self, analysis_ready: bool) {
+    self.analysis_ready = analysis_ready;
+    for child in self.children.values_mut() {
+      child.set_analysis_ready(analysis_ready);
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -222,6 +245,7 @@ struct ScanProgressContext {
   site_name: String,
   files_reused: u64,
   total_files: u64,
+  total_hash_targets: u64,
 }
 
 struct ScanExecutionContext<'a> {
@@ -231,13 +255,25 @@ struct ScanExecutionContext<'a> {
   cancellation_callback: Option<&'a ScanCancellationCallback>,
 }
 
+struct SiteScanSnapshot<'a> {
+  site: &'a Site,
+  site_folders: &'a [SiteFolder],
+  expected_inventory_revision: u64,
+}
+
 struct ScanPreparation {
-  pending_records: Vec<PendingFileRecord>,
+  inventory_revision: u64,
   hash_targets: Vec<(usize, FileProbe)>,
   files_seen: u64,
   files_hashed: u64,
   files_reused: u64,
   bytes_hashed: u64,
+  files_removed: u64,
+}
+
+struct InventoryHashState {
+  content_hash: Option<String>,
+  hash_revision: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -364,10 +400,7 @@ impl Repository {
         let site_folder = find_site_folder(&conn, &site_folder_id)?
           .ok_or_else(|| NafmError::SiteFolderNotFound(site_folder_id.clone()))?;
         conn.execute("delete from site_folders where id = ?1", params![site_folder.id])?;
-        conn.execute(
-          "delete from site_scan_state where site_id = ?1",
-          params![site_folder.site_id],
-        )?;
+        invalidate_site_scan_state(&conn, &site_folder.site_id)?;
         Ok(site_folder)
       })
     })
@@ -404,10 +437,7 @@ impl Repository {
             site_folder.added_at
           ],
         )?;
-        conn.execute(
-          "delete from site_scan_state where site_id = ?1",
-          params![site_folder.site_id],
-        )?;
+        invalidate_site_scan_state(&conn, &site_folder.site_id)?;
         Ok(site_folder)
       })
     })
@@ -743,17 +773,31 @@ impl Repository {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
     let lookup_db_path = db_path.clone();
-    let (site, site_folders) = task::spawn_blocking(move || {
+    let (site, site_folders, expected_inventory_revision) = task::spawn_blocking(move || {
       let conn = open_connection(&lookup_db_path)?;
       let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
       let site_folders = list_site_folders(&conn, Some(&site.id))?;
-      Ok::<_, NafmError>((site, site_folders))
+      let expected_inventory_revision = conn
+        .query_row(
+          "select inventory_revision from site_scan_state where site_id = ?1",
+          params![site.id],
+          |row| row.get::<_, u64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+      Ok::<_, NafmError>((site, site_folders, expected_inventory_revision))
     })
     .await??;
 
     if site_folders.iter().any(|folder| folder.kind == SiteFolderKind::Smb) {
       return self
-        .scan_site_with_smb(&site, &site_folders, progress_callback, cancellation_callback)
+        .scan_site_with_smb(
+          &site,
+          &site_folders,
+          expected_inventory_revision,
+          progress_callback,
+          cancellation_callback,
+        )
         .await;
     }
 
@@ -763,8 +807,11 @@ impl Repository {
       scan_site_blocking(
         &conn,
         &db_path,
-        &site,
-        &site_folders,
+        &SiteScanSnapshot {
+          site: &site,
+          site_folders: &site_folders,
+          expected_inventory_revision,
+        },
         hash_algorithm.as_ref(),
         progress_callback.as_ref(),
         cancellation_callback.as_ref(),
@@ -777,10 +824,22 @@ impl Repository {
     &self,
     site: &Site,
     site_folders: &[SiteFolder],
+    expected_inventory_revision: u64,
     progress_callback: Option<ScanProgressCallback>,
     cancellation_callback: Option<ScanCancellationCallback>,
   ) -> Result<ScanSummary> {
     check_scan_cancelled(cancellation_callback.as_ref())?;
+    report_scan_phase(
+      progress_callback.as_ref(),
+      site,
+      ScanPhase::Discovering,
+      None,
+      0,
+      None,
+      0,
+      0,
+      0,
+    );
     let mut files_by_path = BTreeMap::new();
     let local_folders = site_folders
       .iter()
@@ -790,11 +849,15 @@ impl Repository {
     if !local_folders.is_empty() {
       let local_cancellation_callback = cancellation_callback.clone();
       let local_files =
-        task::spawn_blocking(move || discover_site_files(&local_folders, local_cancellation_callback.as_ref()))
+        task::spawn_blocking(move || discover_site_files(&local_folders, local_cancellation_callback.as_ref(), None))
           .await??;
       check_scan_cancelled(cancellation_callback.as_ref())?;
       for file in local_files {
         files_by_path.insert(file.path.clone(), file);
+        let discovered_files = files_by_path.len() as u64;
+        if should_report_discovery(discovered_files) {
+          report_discovery_progress(progress_callback.as_ref(), site, discovered_files, None);
+        }
       }
     }
 
@@ -804,36 +867,77 @@ impl Repository {
       .cloned()
       .collect::<Vec<_>>();
     smb_folders.sort_by_key(|folder| std::cmp::Reverse(folder.path.components().count()));
+    let discovered_smb_files = AtomicU64::new(files_by_path.len() as u64);
     for site_folder in &smb_folders {
       check_scan_cancelled(cancellation_callback.as_ref())?;
-      for file in discover_smb_files(site_folder, &self.credential_store, cancellation_callback.as_ref()).await? {
+      for file in discover_smb_files(
+        site_folder,
+        &self.credential_store,
+        cancellation_callback.as_ref(),
+        Some((site, progress_callback.as_ref(), &discovered_smb_files)),
+      )
+      .await?
+      {
         files_by_path.entry(file.path.clone()).or_insert(file);
       }
     }
 
+    check_scan_cancelled(cancellation_callback.as_ref())?;
+    let discovered_count = files_by_path.len() as u64;
+    report_scan_phase(
+      progress_callback.as_ref(),
+      site,
+      ScanPhase::PublishingMetadata,
+      None,
+      0,
+      Some(discovered_count),
+      0,
+      0,
+      0,
+    );
+    check_scan_cancelled(cancellation_callback.as_ref())?;
     let db_path = self.db_path.clone();
     let preparation_db_path = db_path.clone();
     let preparation_site = site.clone();
+    let preparation_site_folders = site_folders.to_vec();
     let hash_algorithm_name = self.hash_algorithm.name().to_owned();
-    let mut preparation = task::spawn_blocking(move || {
+    let scan_time = Utc::now();
+    let preparation = task::spawn_blocking(move || {
       let conn = open_connection(preparation_db_path)?;
-      prepare_scan(
+      publish_inventory_atomically(
         &conn,
         &preparation_site,
+        &preparation_site_folders,
+        expected_inventory_revision,
         files_by_path.into_values().collect(),
         &hash_algorithm_name,
+        scan_time,
       )
     })
     .await??;
-    check_scan_cancelled(cancellation_callback.as_ref())?;
 
     let progress_context = Arc::new(ScanProgressContext {
       site_id: site.id.clone(),
       site_name: site.name.clone(),
       files_reused: preparation.files_reused,
       total_files: preparation.files_seen,
+      total_hash_targets: preparation.files_hashed,
     });
     let processed_files = Arc::new(AtomicU64::new(0));
+    report_scan_phase(
+      progress_callback.as_ref(),
+      site,
+      ScanPhase::Hashing,
+      None,
+      preparation.files_reused,
+      Some(preparation.files_seen),
+      0,
+      preparation.files_reused,
+      preparation.files_hashed,
+    );
+    if preparation.files_hashed > 0 {
+      check_scan_cancelled(cancellation_callback.as_ref())?;
+    }
     let local_targets = preparation
       .hash_targets
       .iter()
@@ -848,7 +952,7 @@ impl Repository {
       let local_progress_context = progress_context.clone();
       let local_processed_files = processed_files.clone();
       let local_cancellation_callback = cancellation_callback.clone();
-      let hashed_records = task::spawn_blocking(move || {
+      task::spawn_blocking(move || {
         let execution = ScanExecutionContext {
           progress_callback: local_progress_callback.as_ref(),
           progress_context: &local_progress_context,
@@ -858,15 +962,19 @@ impl Repository {
         hash_files_in_parallel(
           &local_db_path,
           &local_site,
+          preparation.inventory_revision,
           &local_targets,
           local_hash_algorithm.as_ref(),
           &execution,
         )
       })
       .await??;
-      check_scan_cancelled(cancellation_callback.as_ref())?;
-      for (index, content_hash) in hashed_records {
-        preparation.pending_records[index].content_hash = Some(content_hash);
+      if preparation
+        .hash_targets
+        .iter()
+        .any(|(_, file)| matches!(file.source, FileSource::Smb { .. }))
+      {
+        check_scan_cancelled(cancellation_callback.as_ref())?;
       }
     }
 
@@ -891,7 +999,7 @@ impl Repository {
       let tree = client.connect_share(&location.share).await?;
       let hash_result = async {
         check_scan_cancelled(cancellation_callback.as_ref())?;
-        for (index, file) in targets {
+        for (_, file) in targets {
           check_scan_cancelled(cancellation_callback.as_ref())?;
           let FileSource::Smb { remote_path, .. } = &file.source else {
             unreachable!("remote target should have an SMB source");
@@ -906,33 +1014,53 @@ impl Repository {
           )
           .await?;
           check_scan_cancelled(cancellation_callback.as_ref())?;
-          cache_hashed_file(&db_path, &site.id, &file, self.hash_algorithm.name(), &content_hash).await?;
-          check_scan_cancelled(cancellation_callback.as_ref())?;
+          publish_hashed_file_async(
+            &db_path,
+            &site.id,
+            preparation.inventory_revision,
+            &file,
+            self.hash_algorithm.name(),
+            &content_hash,
+          )
+          .await?;
           report_scan_progress(
             progress_callback.as_ref(),
             &progress_context,
             &file.path,
             &processed_files,
           );
-          preparation.pending_records[index].content_hash = Some(content_hash);
         }
         Ok::<(), NafmError>(())
       }
       .await;
       let _ = client.disconnect_share(&tree).await;
       hash_result?;
-      check_scan_cancelled(cancellation_callback.as_ref())?;
     }
 
-    check_scan_cancelled(cancellation_callback.as_ref())?;
+    report_scan_phase(
+      progress_callback.as_ref(),
+      site,
+      ScanPhase::Finalizing,
+      None,
+      preparation.files_seen,
+      Some(preparation.files_seen),
+      preparation.files_hashed,
+      preparation.files_reused,
+      0,
+    );
     let finalize_db_path = db_path;
     let finalize_site = site.clone();
-    let pending_records = preparation.pending_records;
+    let inventory_revision = preparation.inventory_revision;
     let hash_algorithm_name = self.hash_algorithm.name().to_owned();
-    let scan_time = Utc::now();
-    let (removed, duplicate_groups) = task::spawn_blocking(move || {
+    let duplicate_groups = task::spawn_blocking(move || {
       let conn = open_connection(finalize_db_path)?;
-      replace_site_file_records_atomically(&conn, &finalize_site, &pending_records, &hash_algorithm_name, scan_time)
+      finalize_site_scan(
+        &conn,
+        &finalize_site,
+        inventory_revision,
+        &hash_algorithm_name,
+        Utc::now(),
+      )
     })
     .await??;
     let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
@@ -944,7 +1072,8 @@ impl Repository {
       files_seen: preparation.files_seen,
       files_hashed: preparation.files_hashed,
       files_reused: preparation.files_reused,
-      files_removed: removed,
+      files_pending: 0,
+      files_removed: preparation.files_removed,
       bytes_hashed: preparation.bytes_hashed,
       duplicate_groups: duplicate_groups.len() as u64,
       duplicate_files,
@@ -957,12 +1086,21 @@ impl Repository {
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       let site_id = match site_selector {
-        Some(selector) => Some(
-          find_site(&conn, &selector)?
+        Some(selector) => {
+          let site_id = find_site(&conn, &selector)?
             .ok_or_else(|| NafmError::SiteNotFound(selector))?
-            .id,
-        ),
-        None => None,
+            .id;
+          ensure_site_hash_ready(&conn, &site_id)?;
+          Some(site_id)
+        }
+        None => {
+          for site in list_sites(&conn)? {
+            if site_has_configured_folders(&conn, &site.id)? {
+              ensure_site_hash_ready(&conn, &site.id)?;
+            }
+          }
+          None
+        }
       };
       find_duplicates(&conn, site_id.as_deref())
     })
@@ -1074,6 +1212,7 @@ impl Repository {
       }
 
       let conn = open_connection(db_path)?;
+      conn.pragma_update(None, "journal_mode", "wal")?;
       conn.execute_batch(
         "
         pragma foreign_keys = on;
@@ -1102,6 +1241,8 @@ impl Repository {
           modified_unix_nanos integer not null,
           hash_algorithm text not null,
           content_hash text,
+          inventory_revision integer not null default 0,
+          hash_revision integer,
           last_seen_at text not null
         );
 
@@ -1119,7 +1260,11 @@ impl Repository {
 
         create table if not exists site_scan_state (
           site_id text primary key not null references sites(id) on delete cascade,
-          last_scanned_at text not null
+          last_scanned_at text not null,
+          inventory_revision integer not null default 0,
+          inventory_completed_at text,
+          hash_algorithm text,
+          hash_completed_at text
         );
 
         create index if not exists idx_site_folders_site_id on site_folders(site_id);
@@ -1152,6 +1297,7 @@ impl Repository {
         ",
       )?;
       ensure_site_folder_kind_column(&conn)?;
+      migrate_scan_schema(&conn)?;
       backfill_site_scan_state(&conn)?;
       initialize_stage_history(&conn)?;
       Ok(())
@@ -1162,6 +1308,7 @@ impl Repository {
 
 fn open_connection(path: impl AsRef<Path>) -> Result<Connection> {
   let conn = Connection::open(path)?;
+  conn.busy_timeout(Duration::from_secs(5))?;
   conn.pragma_update(None, "foreign_keys", "on")?;
   Ok(conn)
 }
@@ -1180,16 +1327,112 @@ fn with_immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> 
   }
 }
 
+fn invalidate_site_scan_state(conn: &Connection, site_id: &str) -> Result<()> {
+  conn.execute(
+    "insert into site_scan_state (
+       site_id, last_scanned_at, inventory_revision, inventory_completed_at, hash_algorithm, hash_completed_at
+     ) values (?1, ?2, 1, null, null, null)
+     on conflict(site_id) do update set
+       inventory_revision = site_scan_state.inventory_revision + 1,
+       inventory_completed_at = null,
+       hash_completed_at = null",
+    params![site_id, Utc::now()],
+  )?;
+  Ok(())
+}
+
 fn backfill_site_scan_state(conn: &Connection) -> Result<()> {
   conn.execute(
-    "insert into site_scan_state (site_id, last_scanned_at)
-     select site_id, max(last_seen_at)
+    "insert into site_scan_state (
+       site_id, last_scanned_at, inventory_revision, inventory_completed_at, hash_algorithm, hash_completed_at
+     )
+     select site_id, max(last_seen_at), max(inventory_revision), max(last_seen_at), min(hash_algorithm), max(last_seen_at)
      from file_records
      group by site_id
      on conflict(site_id) do nothing",
     [],
   )?;
   Ok(())
+}
+
+fn migrate_scan_schema(conn: &Connection) -> Result<()> {
+  let user_version = conn.query_row("pragma user_version", [], |row| row.get::<_, u32>(0))?;
+  if user_version >= 1 {
+    return Ok(());
+  }
+
+  with_immediate_transaction(conn, || {
+    let file_columns = table_columns(conn, "file_records")?;
+    if !file_columns.contains("inventory_revision") {
+      conn.execute(
+        "alter table file_records add column inventory_revision integer not null default 0",
+        [],
+      )?;
+    }
+    if !file_columns.contains("hash_revision") {
+      conn.execute("alter table file_records add column hash_revision integer", [])?;
+    }
+
+    let state_columns = table_columns(conn, "site_scan_state")?;
+    if !state_columns.contains("inventory_revision") {
+      conn.execute(
+        "alter table site_scan_state add column inventory_revision integer not null default 0",
+        [],
+      )?;
+    }
+    if !state_columns.contains("inventory_completed_at") {
+      conn.execute("alter table site_scan_state add column inventory_completed_at text", [])?;
+    }
+    if !state_columns.contains("hash_algorithm") {
+      conn.execute("alter table site_scan_state add column hash_algorithm text", [])?;
+    }
+    if !state_columns.contains("hash_completed_at") {
+      conn.execute("alter table site_scan_state add column hash_completed_at text", [])?;
+    }
+
+    conn.execute(
+      "update file_records
+       set inventory_revision = case when inventory_revision = 0 then 1 else inventory_revision end,
+           hash_revision = case
+             when content_hash is not null and hash_revision is null then
+               case when inventory_revision = 0 then 1 else inventory_revision end
+             else hash_revision
+           end",
+      [],
+    )?;
+    conn.execute(
+      "update site_scan_state
+       set inventory_revision = case
+             when inventory_revision = 0 then coalesce(
+               (select max(file.inventory_revision) from file_records file where file.site_id = site_scan_state.site_id),
+               1
+             )
+             else inventory_revision
+           end,
+           inventory_completed_at = coalesce(inventory_completed_at, last_scanned_at),
+           hash_algorithm = coalesce(
+             hash_algorithm,
+             (select min(file.hash_algorithm) from file_records file where file.site_id = site_scan_state.site_id)
+           ),
+           hash_completed_at = coalesce(hash_completed_at, last_scanned_at)",
+      [],
+    )?;
+    conn.execute_batch(
+      "create index if not exists idx_file_records_pending_hash
+         on file_records(site_id, inventory_revision)
+         where content_hash is null or hash_revision is null or hash_revision <> inventory_revision;
+       pragma user_version = 1;",
+    )?;
+    Ok(())
+  })
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<BTreeSet<String>> {
+  let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+  stmt
+    .query_map([], |row| row.get::<_, String>(1))?
+    .collect::<std::result::Result<BTreeSet<_>, _>>()
+    .map_err(Into::into)
 }
 
 fn ensure_site_folder_kind_column(conn: &Connection) -> Result<()> {
@@ -1246,6 +1489,7 @@ async fn discover_smb_files(
   site_folder: &SiteFolder,
   credential_store: &CredentialStore,
   cancellation_callback: Option<&ScanCancellationCallback>,
+  progress: Option<(&Site, Option<&ScanProgressCallback>, &AtomicU64)>,
 ) -> Result<Vec<FileProbe>> {
   check_scan_cancelled(cancellation_callback)?;
   let location_value = site_folder.path.to_string_lossy();
@@ -1292,7 +1536,7 @@ async fn discover_smb_files(
           Some(time) => modified_unix_nanos(time)?,
           None => 0,
         };
-        files.push(FileProbe {
+        let file = FileProbe {
           site_folder_id: site_folder.id.clone(),
           path: PathBuf::from(display_url),
           size_bytes: entry.size,
@@ -1301,7 +1545,14 @@ async fn discover_smb_files(
             credential_url: credential.url.clone(),
             remote_path,
           },
-        });
+        };
+        if let Some((site, progress_callback, discovered_files)) = progress {
+          let discovered_files = discovered_files.fetch_add(1, Ordering::Relaxed) + 1;
+          if should_report_discovery(discovered_files) {
+            report_discovery_progress(progress_callback, site, discovered_files, Some(&file.path));
+          }
+        }
+        files.push(file);
       }
     }
 
@@ -1356,6 +1607,9 @@ async fn hash_smb_file(
     if offset != file.size_bytes {
       return Err(NafmError::SmbFileChanged(file.path.clone()));
     }
+    if reader.size() != file.size_bytes {
+      return Err(NafmError::SmbFileChanged(file.path.clone()));
+    }
     Ok(hasher.finalize())
   }
   .await;
@@ -1367,9 +1621,10 @@ async fn hash_smb_file(
   Ok(content_hash)
 }
 
-async fn cache_hashed_file(
+async fn publish_hashed_file_async(
   db_path: &Path,
   site_id: &str,
+  inventory_revision: u64,
   file: &FileProbe,
   hash_algorithm: &str,
   content_hash: &str,
@@ -1381,7 +1636,14 @@ async fn cache_hashed_file(
   let content_hash = content_hash.to_owned();
   task::spawn_blocking(move || {
     let conn = open_connection(db_path)?;
-    upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm, &content_hash)
+    publish_hashed_file(
+      &conn,
+      &site_id,
+      inventory_revision,
+      &file,
+      &hash_algorithm,
+      &content_hash,
+    )
   })
   .await?
 }
@@ -1389,24 +1651,65 @@ async fn cache_hashed_file(
 fn scan_site_blocking(
   conn: &Connection,
   db_path: &Path,
-  site: &Site,
-  site_folders: &[SiteFolder],
+  scan_snapshot: &SiteScanSnapshot<'_>,
   hash_algorithm: &dyn HashAlgorithm,
   progress_callback: Option<&ScanProgressCallback>,
   cancellation_callback: Option<&ScanCancellationCallback>,
 ) -> Result<ScanSummary> {
+  let SiteScanSnapshot {
+    site,
+    site_folders,
+    expected_inventory_revision,
+  } = scan_snapshot;
   check_scan_cancelled(cancellation_callback)?;
-  let files = discover_site_files(site_folders, cancellation_callback)?;
+  report_scan_phase(progress_callback, site, ScanPhase::Discovering, None, 0, None, 0, 0, 0);
+  let files = discover_site_files(site_folders, cancellation_callback, Some((site, progress_callback)))?;
+  check_scan_cancelled(cancellation_callback)?;
   let scan_time = Utc::now();
   let processed_files = AtomicU64::new(0);
-  let mut preparation = prepare_scan(conn, site, files, hash_algorithm.name())?;
+  report_scan_phase(
+    progress_callback,
+    site,
+    ScanPhase::PublishingMetadata,
+    None,
+    0,
+    Some(files.len() as u64),
+    0,
+    0,
+    0,
+  );
+  check_scan_cancelled(cancellation_callback)?;
+  let preparation = publish_inventory_atomically(
+    conn,
+    site,
+    site_folders,
+    *expected_inventory_revision,
+    files,
+    hash_algorithm.name(),
+    scan_time,
+  )?;
 
   let progress_context = Arc::new(ScanProgressContext {
     site_id: site.id.clone(),
     site_name: site.name.clone(),
     files_reused: preparation.files_reused,
     total_files: preparation.files_seen,
+    total_hash_targets: preparation.files_hashed,
   });
+  report_scan_phase(
+    progress_callback,
+    site,
+    ScanPhase::Hashing,
+    None,
+    preparation.files_reused,
+    Some(preparation.files_seen),
+    0,
+    preparation.files_reused,
+    preparation.files_hashed,
+  );
+  if preparation.files_hashed > 0 {
+    check_scan_cancelled(cancellation_callback)?;
+  }
 
   let execution = ScanExecutionContext {
     progress_callback,
@@ -1414,18 +1717,32 @@ fn scan_site_blocking(
     processed_files: &processed_files,
     cancellation_callback,
   };
-  let hashed_records = hash_files_in_parallel(db_path, site, &preparation.hash_targets, hash_algorithm, &execution)?;
-  for (index, content_hash) in hashed_records {
-    preparation.pending_records[index].content_hash = Some(content_hash);
-  }
+  hash_files_in_parallel(
+    db_path,
+    site,
+    preparation.inventory_revision,
+    &preparation.hash_targets,
+    hash_algorithm,
+    &execution,
+  )?;
 
-  check_scan_cancelled(cancellation_callback)?;
-  let (removed, duplicate_groups) = replace_site_file_records_atomically(
+  report_scan_phase(
+    progress_callback,
+    site,
+    ScanPhase::Finalizing,
+    None,
+    preparation.files_seen,
+    Some(preparation.files_seen),
+    preparation.files_hashed,
+    preparation.files_reused,
+    0,
+  );
+  let duplicate_groups = finalize_site_scan(
     conn,
     site,
-    &preparation.pending_records,
+    preparation.inventory_revision,
     hash_algorithm.name(),
-    scan_time,
+    Utc::now(),
   )?;
   let duplicate_files = duplicate_groups.iter().map(|group| group.files.len() as u64).sum();
 
@@ -1436,76 +1753,130 @@ fn scan_site_blocking(
     files_seen: preparation.files_seen,
     files_hashed: preparation.files_hashed,
     files_reused: preparation.files_reused,
-    files_removed: removed,
+    files_pending: 0,
+    files_removed: preparation.files_removed,
     bytes_hashed: preparation.bytes_hashed,
     duplicate_groups: duplicate_groups.len() as u64,
     duplicate_files,
   })
 }
 
-fn prepare_scan(
+fn publish_inventory_atomically(
   conn: &Connection,
   site: &Site,
+  expected_site_folders: &[SiteFolder],
+  expected_inventory_revision: u64,
   files: Vec<FileProbe>,
   hash_algorithm: &str,
+  scan_time: DateTime<Utc>,
 ) -> Result<ScanPreparation> {
-  let mut preparation = ScanPreparation {
-    pending_records: Vec::with_capacity(files.len()),
-    hash_targets: Vec::new(),
-    files_seen: 0,
-    files_hashed: 0,
-    files_reused: 0,
-    bytes_hashed: 0,
-  };
-  for file in files {
-    preparation.files_seen += 1;
-    let existing = existing_record(conn, &file.path)?;
-    let can_reuse = match existing.as_ref() {
-      Some(record) if record.content_hash.is_some() && record.hash_algorithm == hash_algorithm => record_matches(
-        conn,
-        &record.id,
-        file.size_bytes,
-        file.modified_unix_nanos,
-        hash_algorithm,
-      )?,
-      _ => false,
-    };
-    if can_reuse {
-      preparation.files_reused += 1;
-      preparation.pending_records.push(PendingFileRecord {
-        file,
-        content_hash: existing.and_then(|record| record.content_hash),
-      });
-    } else if let Some(cached_record) = cached_scan_record(conn, &site.id, &file, hash_algorithm)? {
-      preparation.files_reused += 1;
-      preparation.pending_records.push(PendingFileRecord {
-        file,
-        content_hash: Some(cached_record.content_hash),
-      });
-    } else {
-      preparation.files_hashed += 1;
-      preparation.bytes_hashed += file.size_bytes;
-      preparation
-        .hash_targets
-        .push((preparation.pending_records.len(), file.clone()));
-      preparation.pending_records.push(PendingFileRecord {
-        file,
-        content_hash: None,
-      });
+  with_immediate_transaction(conn, || {
+    let previous_revision = conn
+      .query_row(
+        "select inventory_revision from site_scan_state where site_id = ?1",
+        params![site.id],
+        |row| row.get::<_, u64>(0),
+      )
+      .optional()?
+      .unwrap_or(0);
+    let current_site_folders = list_site_folders(conn, Some(&site.id))?;
+    if previous_revision != expected_inventory_revision
+      || !site_folder_configuration_matches(expected_site_folders, &current_site_folders)
+    {
+      return Err(NafmError::ScanSuperseded(site.id.clone()));
     }
-  }
-  Ok(preparation)
+    let inventory_revision = previous_revision.saturating_add(1).max(1);
+    let mut preparation = ScanPreparation {
+      inventory_revision,
+      hash_targets: Vec::new(),
+      files_seen: files.len() as u64,
+      files_hashed: 0,
+      files_reused: 0,
+      bytes_hashed: 0,
+      files_removed: 0,
+    };
+
+    for (index, file) in files.into_iter().enumerate() {
+      let existing = existing_record(conn, &file.path)?;
+      let cached = cached_scan_record(conn, &site.id, &file, hash_algorithm)?;
+      let exact_verified = existing.as_ref().is_some_and(|record| {
+        record.site_id == site.id
+          && record.hash_algorithm == hash_algorithm
+          && record.content_hash.is_some()
+          && record.hash_revision == Some(record.inventory_revision)
+          && record.size_bytes == file.size_bytes
+          && record.modified_unix_nanos == file.modified_unix_nanos
+          && matches!(file.source, FileSource::Local)
+      });
+      let (content_hash, hash_revision) = if exact_verified {
+        preparation.files_reused += 1;
+        (
+          existing.as_ref().and_then(|record| record.content_hash.clone()),
+          Some(inventory_revision),
+        )
+      } else if matches!(file.source, FileSource::Local)
+        && let Some(cached) = cached
+      {
+        preparation.files_reused += 1;
+        (Some(cached.content_hash), Some(inventory_revision))
+      } else {
+        let retained_stale_hash = existing.as_ref().and_then(|record| {
+          (record.site_id == site.id && record.hash_algorithm == hash_algorithm && record.size_bytes == file.size_bytes)
+            .then(|| record.content_hash.clone())
+            .flatten()
+        });
+        preparation.files_hashed += 1;
+        preparation.bytes_hashed = preparation.bytes_hashed.saturating_add(file.size_bytes);
+        preparation.hash_targets.push((index, file.clone()));
+        let retained_hash_revision = retained_stale_hash
+          .as_ref()
+          .and_then(|_| existing.as_ref().and_then(|record| record.hash_revision));
+        (retained_stale_hash, retained_hash_revision)
+      };
+      upsert_inventory_file(
+        conn,
+        site,
+        &file,
+        hash_algorithm,
+        &InventoryHashState {
+          content_hash,
+          hash_revision,
+        },
+        inventory_revision,
+        scan_time,
+      )?;
+    }
+
+    preparation.files_removed = conn.execute(
+      "delete from file_records where site_id = ?1 and inventory_revision <> ?2",
+      params![site.id, inventory_revision],
+    )? as u64;
+    conn.execute("delete from scan_cache_entries where site_id = ?1", params![site.id])?;
+    conn.execute(
+      "insert into site_scan_state (
+         site_id, last_scanned_at, inventory_revision, inventory_completed_at, hash_algorithm, hash_completed_at
+       ) values (?1, ?2, ?3, ?2, ?4, null)
+       on conflict(site_id) do update set
+         inventory_revision = excluded.inventory_revision,
+         inventory_completed_at = excluded.inventory_completed_at,
+         hash_algorithm = excluded.hash_algorithm,
+         hash_completed_at = null",
+      params![site.id, scan_time, inventory_revision, hash_algorithm],
+    )?;
+    Ok(preparation)
+  })
 }
 
 fn hash_files_in_parallel(
   db_path: &Path,
   site: &Site,
+  inventory_revision: u64,
   hash_targets: &[(usize, FileProbe)],
   hash_algorithm: &dyn HashAlgorithm,
   execution: &ScanExecutionContext<'_>,
-) -> Result<Vec<(usize, String)>> {
+) -> Result<u64> {
   if hash_targets.is_empty() {
-    return Ok(Vec::new());
+    return Ok(0);
   }
 
   let worker_count = std::thread::available_parallelism()
@@ -1523,21 +1894,28 @@ fn hash_files_in_parallel(
     cancellation_callback,
   } = execution;
 
-  std::thread::scope(|scope| -> Result<Vec<(usize, String)>> {
-    let (sender, receiver) = mpsc::channel::<(usize, FileProbe, String)>();
+  std::thread::scope(|scope| -> Result<u64> {
+    let (sender, receiver) = mpsc::channel::<(FileProbe, String)>();
     let writer_progress_context = Arc::clone(progress_context);
-    let writer = scope.spawn(move || -> Result<Vec<(usize, String)>> {
+    let writer = scope.spawn(move || -> Result<u64> {
       let conn = open_connection(writer_db_path)?;
-      let mut hashed_records = Vec::with_capacity(hash_targets.len());
-      for (index, file, content_hash) in receiver {
-        upsert_scan_cache_entry(&conn, &site_id, &file, &hash_algorithm_name, &content_hash)?;
+      let mut hashed_records = 0_u64;
+      for (file, content_hash) in receiver {
+        publish_hashed_file(
+          &conn,
+          &site_id,
+          inventory_revision,
+          &file,
+          &hash_algorithm_name,
+          &content_hash,
+        )?;
         report_scan_progress(
           *progress_callback,
           writer_progress_context.as_ref(),
           &file.path,
           processed_files,
         );
-        hashed_records.push((index, content_hash));
+        hashed_records += 1;
       }
       Ok(hashed_records)
     });
@@ -1545,15 +1923,17 @@ fn hash_files_in_parallel(
     for chunk in hash_targets.chunks(chunk_size) {
       let sender = sender.clone();
       tasks.push(scope.spawn(move || -> Result<()> {
-        for (index, file) in chunk {
+        for (_, file) in chunk {
           check_scan_cancelled(*cancellation_callback)?;
+          verify_local_probe(file)?;
           let content_hash = match cancellation_callback {
             Some(is_cancelled) => hash_algorithm.hash_file_with_cancellation(&file.path, is_cancelled.as_ref())?,
             None => hash_algorithm.hash_file(&file.path)?,
           };
+          verify_local_probe(file)?;
           check_scan_cancelled(*cancellation_callback)?;
           sender
-            .send((*index, file.clone(), content_hash))
+            .send((file.clone(), content_hash))
             .map_err(|err| std::io::Error::other(err.to_string()))?;
         }
         Ok(())
@@ -1594,19 +1974,75 @@ fn report_scan_progress(
   let Some(progress_callback) = progress_callback else {
     return;
   };
+  let hashed_files = processed_files.fetch_add(1, Ordering::Relaxed) + 1;
   progress_callback(&ScanProgress {
     site_id: progress_context.site_id.clone(),
     site_name: progress_context.site_name.clone(),
-    current_path: current_path.to_path_buf(),
-    files_scanned: processed_files.fetch_add(1, Ordering::Relaxed) + 1,
-    files_reused: progress_context.files_reused,
-    total_files: progress_context.total_files,
+    phase: ScanPhase::Hashing,
+    current_path: Some(current_path.to_path_buf()),
+    processed_files: progress_context.files_reused + hashed_files,
+    total_files: Some(progress_context.total_files),
+    hashed_files,
+    reused_files: progress_context.files_reused,
+    hashes_pending: progress_context.total_hash_targets.saturating_sub(hashed_files),
   });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_scan_phase(
+  progress_callback: Option<&ScanProgressCallback>,
+  site: &Site,
+  phase: ScanPhase,
+  current_path: Option<&Path>,
+  processed_files: u64,
+  total_files: Option<u64>,
+  hashed_files: u64,
+  reused_files: u64,
+  hashes_pending: u64,
+) {
+  let Some(progress_callback) = progress_callback else {
+    return;
+  };
+  progress_callback(&ScanProgress {
+    site_id: site.id.clone(),
+    site_name: site.name.clone(),
+    phase,
+    current_path: current_path.map(Path::to_path_buf),
+    processed_files,
+    total_files,
+    hashed_files,
+    reused_files,
+    hashes_pending,
+  });
+}
+
+fn report_discovery_progress(
+  progress_callback: Option<&ScanProgressCallback>,
+  site: &Site,
+  discovered_files: u64,
+  current_path: Option<&Path>,
+) {
+  report_scan_phase(
+    progress_callback,
+    site,
+    ScanPhase::Discovering,
+    current_path,
+    discovered_files,
+    None,
+    0,
+    0,
+    0,
+  );
+}
+
+fn should_report_discovery(discovered_files: u64) -> bool {
+  discovered_files == 1 || discovered_files.is_multiple_of(128)
 }
 
 fn discover_site_files(
   site_folders: &[SiteFolder],
   cancellation_callback: Option<&ScanCancellationCallback>,
+  progress: Option<(&Site, Option<&ScanProgressCallback>)>,
 ) -> Result<Vec<FileProbe>> {
   let mut files_by_path = BTreeMap::new();
   let mut sorted_site_folders = site_folders.to_vec();
@@ -1633,12 +2069,18 @@ fn discover_site_files(
         path.clone(),
         FileProbe {
           site_folder_id: site_folder.id.clone(),
-          path,
+          path: path.clone(),
           size_bytes: metadata.len(),
           modified_unix_nanos: modified_unix_nanos(metadata.modified()?)?,
           source: FileSource::Local,
         },
       );
+      if let Some((site, progress_callback)) = progress {
+        let discovered_files = files_by_path.len() as u64;
+        if should_report_discovery(discovered_files) {
+          report_discovery_progress(progress_callback, site, discovered_files, Some(&path));
+        }
+      }
     }
   }
 
@@ -1662,16 +2104,33 @@ fn modified_unix_nanos(time: SystemTime) -> Result<i64> {
   Ok((duration.as_secs() as i64 * 1_000_000_000) + duration.subsec_nanos() as i64)
 }
 
+fn verify_local_probe(file: &FileProbe) -> Result<()> {
+  let metadata = std::fs::metadata(&file.path)?;
+  let matches = metadata.is_file()
+    && metadata.len() == file.size_bytes
+    && modified_unix_nanos(metadata.modified()?)? == file.modified_unix_nanos;
+  if !matches {
+    return Err(NafmError::FileChanged(file.path.clone()));
+  }
+  Ok(())
+}
+
 fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingRecord>> {
   conn
     .query_row(
-      "select id, content_hash, hash_algorithm from file_records where path = ?1",
+      "select site_id, size_bytes, modified_unix_nanos, content_hash, hash_algorithm,
+         inventory_revision, hash_revision
+       from file_records where path = ?1",
       params![path.to_string_lossy()],
       |row| {
         Ok(ExistingRecord {
-          id: row.get(0)?,
-          content_hash: row.get(1)?,
-          hash_algorithm: row.get(2)?,
+          site_id: row.get(0)?,
+          size_bytes: row.get(1)?,
+          modified_unix_nanos: row.get(2)?,
+          content_hash: row.get(3)?,
+          hash_algorithm: row.get(4)?,
+          inventory_revision: row.get(5)?,
+          hash_revision: row.get(6)?,
         })
       },
     )
@@ -1729,37 +2188,21 @@ fn cached_scan_record(
     .map_err(Into::into)
 }
 
-fn record_matches(
-  conn: &Connection,
-  id: &str,
-  size_bytes: u64,
-  modified_unix_nanos: i64,
-  hash_algorithm: &str,
-) -> Result<bool> {
-  let found = conn.query_row(
-    "select exists(
-      select 1 from file_records
-      where id = ?1 and size_bytes = ?2 and modified_unix_nanos = ?3 and hash_algorithm = ?4
-    )",
-    params![id, size_bytes, modified_unix_nanos, hash_algorithm],
-    |row| row.get::<_, bool>(0),
-  )?;
-  Ok(found)
-}
-
-fn upsert_file(
+fn upsert_inventory_file(
   conn: &Connection,
   site: &Site,
   file: &FileProbe,
   hash_algorithm: &str,
-  content_hash: Option<&str>,
+  hash_state: &InventoryHashState,
+  inventory_revision: u64,
   last_seen_at: DateTime<Utc>,
 ) -> Result<()> {
   conn.execute(
     "insert into file_records (
-      id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, last_seen_at
+      id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash,
+      inventory_revision, hash_revision, last_seen_at
     )
-    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
     on conflict(path) do update set
       site_id = excluded.site_id,
       site_folder_id = excluded.site_folder_id,
@@ -1767,6 +2210,8 @@ fn upsert_file(
       modified_unix_nanos = excluded.modified_unix_nanos,
       hash_algorithm = excluded.hash_algorithm,
       content_hash = excluded.content_hash,
+      inventory_revision = excluded.inventory_revision,
+      hash_revision = excluded.hash_revision,
       last_seen_at = excluded.last_seen_at",
     params![
       Uuid::new_v4().to_string(),
@@ -1776,102 +2221,122 @@ fn upsert_file(
       file.size_bytes,
       file.modified_unix_nanos,
       hash_algorithm,
-      content_hash,
+      hash_state.content_hash,
+      inventory_revision,
+      hash_state.hash_revision,
       last_seen_at,
     ],
   )?;
   Ok(())
 }
 
-fn upsert_scan_cache_entry(
+fn publish_hashed_file(
   conn: &Connection,
   site_id: &str,
+  inventory_revision: u64,
   file: &FileProbe,
   hash_algorithm: &str,
   content_hash: &str,
 ) -> Result<()> {
-  conn.execute(
-    "insert into scan_cache_entries (
-      site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash, cached_at
-    )
-    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-    on conflict(site_id, path) do update set
-      site_folder_id = excluded.site_folder_id,
-      size_bytes = excluded.size_bytes,
-      modified_unix_nanos = excluded.modified_unix_nanos,
-      hash_algorithm = excluded.hash_algorithm,
-      content_hash = excluded.content_hash,
-      cached_at = excluded.cached_at",
+  let updated = conn.execute(
+    "update file_records
+     set content_hash = ?1, hash_revision = inventory_revision
+     where site_id = ?2
+       and path = ?3
+       and site_folder_id = ?4
+       and size_bytes = ?5
+       and modified_unix_nanos = ?6
+       and hash_algorithm = ?7
+       and inventory_revision = ?8",
     params![
+      content_hash,
       site_id,
-      file.site_folder_id,
       file.path.to_string_lossy(),
+      file.site_folder_id,
       file.size_bytes,
       file.modified_unix_nanos,
       hash_algorithm,
-      content_hash,
-      Utc::now(),
+      inventory_revision,
     ],
   )?;
+  if updated != 1 {
+    return Err(NafmError::ScanSuperseded(site_id.to_owned()));
+  }
   Ok(())
 }
 
-fn replace_site_file_records_atomically(
+fn finalize_site_scan(
   conn: &Connection,
   site: &Site,
-  pending_records: &[PendingFileRecord],
+  inventory_revision: u64,
   hash_algorithm: &str,
-  scan_time: DateTime<Utc>,
-) -> Result<(u64, Vec<DuplicateGroup>)> {
-  conn.execute_batch("begin immediate transaction")?;
-  let result = (|| -> Result<(u64, Vec<DuplicateGroup>)> {
-    for pending_record in pending_records {
-      upsert_file(
-        conn,
-        site,
-        &pending_record.file,
-        hash_algorithm,
-        pending_record.content_hash.as_deref(),
-        scan_time,
-      )?;
+  completed_at: DateTime<Utc>,
+) -> Result<Vec<DuplicateGroup>> {
+  with_immediate_transaction(conn, || {
+    let current_revision = conn
+      .query_row(
+        "select inventory_revision from site_scan_state where site_id = ?1",
+        params![site.id],
+        |row| row.get::<_, u64>(0),
+      )
+      .optional()?;
+    if current_revision != Some(inventory_revision) {
+      return Err(NafmError::ScanSuperseded(site.id.clone()));
     }
-
-    let removed = conn.execute(
-      "delete from file_records where site_id = ?1 and last_seen_at <> ?2",
-      params![site.id, scan_time],
-    )? as u64;
-    conn.execute("delete from scan_cache_entries where site_id = ?1", params![site.id])?;
+    let pending_hashes = pending_hash_count(conn, &site.id, inventory_revision)?;
+    if pending_hashes > 0 {
+      return Err(NafmError::SiteHashesPending {
+        site_id: site.id.clone(),
+        pending_hashes,
+      });
+    }
     conn.execute(
-      "insert into site_scan_state (site_id, last_scanned_at) values (?1, ?2)
-       on conflict(site_id) do update set last_scanned_at = excluded.last_scanned_at",
-      params![site.id, scan_time],
+      "update file_records set last_seen_at = ?1
+       where site_id = ?2 and inventory_revision = ?3",
+      params![completed_at, site.id, inventory_revision],
     )?;
-    let duplicate_groups = find_duplicates(conn, Some(&site.id))?;
-    Ok((removed, duplicate_groups))
-  })();
+    let updated = conn.execute(
+      "update site_scan_state
+       set last_scanned_at = ?1, hash_completed_at = ?1, hash_algorithm = ?2
+       where site_id = ?3 and inventory_revision = ?4",
+      params![completed_at, hash_algorithm, site.id, inventory_revision],
+    )?;
+    if updated != 1 {
+      return Err(NafmError::ScanSuperseded(site.id.clone()));
+    }
+    find_duplicates(conn, Some(&site.id))
+  })
+}
 
-  match result {
-    Ok(value) => {
-      conn.execute_batch("commit")?;
-      Ok(value)
-    }
-    Err(error) => {
-      let _ = conn.execute_batch("rollback");
-      Err(error)
-    }
-  }
+fn pending_hash_count(conn: &Connection, site_id: &str, inventory_revision: u64) -> Result<u64> {
+  conn
+    .query_row(
+      "select count(*)
+       from file_records
+       where site_id = ?1
+         and inventory_revision = ?2
+         and (content_hash is null or hash_revision is null or hash_revision <> inventory_revision)",
+      params![site_id, inventory_revision],
+      |row| row.get::<_, u64>(0),
+    )
+    .map_err(Into::into)
 }
 
 fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<DuplicateGroup>> {
   let groups = if let Some(site_id) = site_id {
     conn
       .prepare(
-        "select hash_algorithm, content_hash, size_bytes
-         from file_records
-         where content_hash is not null and site_id = ?1
-         group by hash_algorithm, content_hash, size_bytes
+        "select file.hash_algorithm, file.content_hash, file.size_bytes
+         from file_records file
+         join site_scan_state state on state.site_id = file.site_id
+         where file.content_hash is not null
+           and file.hash_revision = file.inventory_revision
+           and state.hash_completed_at is not null
+           and state.inventory_revision = file.inventory_revision
+           and file.site_id = ?1
+         group by file.hash_algorithm, file.content_hash, file.size_bytes
          having count(*) > 1
-         order by size_bytes desc, content_hash",
+         order by file.size_bytes desc, file.content_hash",
       )?
       .query_map(params![site_id], |row| {
         Ok((
@@ -1884,12 +2349,16 @@ fn find_duplicates(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Dupli
   } else {
     conn
       .prepare(
-        "select hash_algorithm, content_hash, size_bytes
-         from file_records
-         where content_hash is not null
-         group by hash_algorithm, content_hash, size_bytes
+        "select file.hash_algorithm, file.content_hash, file.size_bytes
+         from file_records file
+         join site_scan_state state on state.site_id = file.site_id
+         where file.content_hash is not null
+           and file.hash_revision = file.inventory_revision
+           and state.hash_completed_at is not null
+           and state.inventory_revision = file.inventory_revision
+         group by file.hash_algorithm, file.content_hash, file.size_bytes
          having count(*) > 1
-         order by size_bytes desc, content_hash",
+         order by file.size_bytes desc, file.content_hash",
       )?
       .query_map([], |row| {
         Ok((
@@ -1923,10 +2392,22 @@ fn file_content_matches_page(
   limit: u64,
 ) -> Result<FileContentMatchesPage> {
   let limit = limit.clamp(1, MAX_FILE_CONTENT_MATCHES_PAGE_SIZE);
+  let selected_site_ready = site_has_completed_scan(conn, source_site_id)?;
+  let workspace_pending_hash_count = conn.query_row(
+    "select count(*) from file_records
+     where content_hash is null or hash_revision is null or hash_revision <> inventory_revision",
+    [],
+    |row| row.get::<_, u64>(0),
+  )?;
+  let workspace_incomplete_site_count = list_sites(conn)?.into_iter().try_fold(0_u64, |count, site| {
+    let incomplete = site_has_configured_folders(conn, &site.id)? && !site_has_completed_scan(conn, &site.id)?;
+    Ok::<_, NafmError>(count + u64::from(incomplete))
+  })?;
   let selected = conn
     .query_row(
       "select file.id, file.site_id, site.name, file.site_folder_id, folder.kind, file.path, file.size_bytes,
-         file.hash_algorithm, file.content_hash
+         file.hash_algorithm, file.content_hash,
+         coalesce(file.content_hash is not null and file.hash_revision = file.inventory_revision, false)
        from file_records file
        join sites site on site.id = file.site_id
        join site_folders folder on folder.id = file.site_folder_id
@@ -1947,26 +2428,44 @@ fn file_content_matches_page(
           },
           row.get::<_, String>(7)?,
           row.get::<_, Option<String>>(8)?,
+          row.get::<_, bool>(9)?,
         ))
       },
     )
     .optional()?
     .ok_or_else(|| NafmError::TrackedPathNotFound(path.to_path_buf()))?;
-  let (selected_match, hash_algorithm, content_hash) = selected;
+  let (selected_match, hash_algorithm, content_hash, hash_verified) = selected;
   let Some(content_hash) = content_hash else {
     return Ok(FileContentMatchesPage {
       status: FileContentMatchStatus::NotHashed,
+      workspace_pending_hash_count,
+      workspace_incomplete_site_count,
       matches: (offset == 0).then_some(selected_match).into_iter().collect(),
       total_matches: 1,
       offset,
       limit,
     });
   };
+  if !hash_verified || !selected_site_ready {
+    return Ok(FileContentMatchesPage {
+      status: FileContentMatchStatus::NeedsVerification,
+      workspace_pending_hash_count,
+      workspace_incomplete_site_count,
+      matches: (offset == 0).then_some(selected_match).into_iter().collect(),
+      total_matches: 1,
+      offset,
+      limit,
+    });
+  }
 
   let total_matches = conn.query_row(
     "select count(*)
-     from file_records
-     where hash_algorithm = ?1 and content_hash = ?2 and size_bytes = ?3",
+     from file_records file
+     join site_scan_state state on state.site_id = file.site_id
+     where file.hash_algorithm = ?1 and file.content_hash = ?2 and file.size_bytes = ?3
+       and file.hash_revision = file.inventory_revision
+       and state.hash_completed_at is not null
+       and state.inventory_revision = file.inventory_revision",
     params![hash_algorithm, content_hash, selected_match.size_bytes],
     |row| row.get::<_, u64>(0),
   )?;
@@ -1976,9 +2475,13 @@ fn file_content_matches_page(
      from file_records file
      join sites site on site.id = file.site_id
      join site_folders folder on folder.id = file.site_folder_id
+     join site_scan_state state on state.site_id = file.site_id
      where file.hash_algorithm = ?1
        and file.content_hash = ?2
        and file.size_bytes = ?3
+       and file.hash_revision = file.inventory_revision
+       and state.hash_completed_at is not null
+       and state.inventory_revision = file.inventory_revision
      order by
        case when file.id = ?4 then 0 when file.site_id = ?5 then 1 else 2 end,
        site.name,
@@ -2016,6 +2519,8 @@ fn file_content_matches_page(
 
   Ok(FileContentMatchesPage {
     status: FileContentMatchStatus::Ready,
+    workspace_pending_hash_count,
+    workspace_incomplete_site_count,
     matches,
     total_matches,
     offset,
@@ -2032,10 +2537,14 @@ fn duplicate_files(
 ) -> Result<Vec<DuplicateFile>> {
   if let Some(site_id) = site_id {
     let mut stmt = conn.prepare(
-      "select id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos
-       from file_records
-       where site_id = ?1 and hash_algorithm = ?2 and content_hash = ?3 and size_bytes = ?4
-       order by path",
+      "select file.id, file.site_id, file.site_folder_id, file.path, file.size_bytes, file.modified_unix_nanos
+       from file_records file
+       join site_scan_state state on state.site_id = file.site_id
+       where file.site_id = ?1 and file.hash_algorithm = ?2 and file.content_hash = ?3 and file.size_bytes = ?4
+         and file.hash_revision = file.inventory_revision
+         and state.hash_completed_at is not null
+         and state.inventory_revision = file.inventory_revision
+       order by file.path",
     )?;
     stmt
       .query_map(
@@ -2046,10 +2555,14 @@ fn duplicate_files(
       .map_err(Into::into)
   } else {
     let mut stmt = conn.prepare(
-      "select id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos
-       from file_records
-       where hash_algorithm = ?1 and content_hash = ?2 and size_bytes = ?3
-       order by path",
+      "select file.id, file.site_id, file.site_folder_id, file.path, file.size_bytes, file.modified_unix_nanos
+       from file_records file
+       join site_scan_state state on state.site_id = file.site_id
+       where file.hash_algorithm = ?1 and file.content_hash = ?2 and file.size_bytes = ?3
+         and file.hash_revision = file.inventory_revision
+         and state.hash_completed_at is not null
+         and state.inventory_revision = file.inventory_revision
+       order by file.path",
     )?;
     stmt
       .query_map(params![hash_algorithm, hash, size_bytes], duplicate_file_from_row)?
@@ -2059,12 +2572,15 @@ fn duplicate_files(
 }
 
 fn find_missing(conn: &Connection, source_site_id: &str, target_site_id: &str) -> Result<Vec<MissingContentGroup>> {
+  ensure_site_hash_ready(conn, source_site_id)?;
+  ensure_site_hash_ready(conn, target_site_id)?;
   let groups = conn
     .prepare(
       "select distinct source.hash_algorithm, source.content_hash, source.size_bytes
        from file_records source
        where source.site_id = ?1
          and source.content_hash is not null
+         and source.hash_revision = source.inventory_revision
          and not exists (
            select 1
            from file_records target
@@ -2072,6 +2588,7 @@ fn find_missing(conn: &Connection, source_site_id: &str, target_site_id: &str) -
              and target.hash_algorithm = source.hash_algorithm
              and target.content_hash = source.content_hash
              and target.size_bytes = source.size_bytes
+             and target.hash_revision = target.inventory_revision
          )
        order by source.size_bytes desc, source.content_hash",
     )?
@@ -2334,6 +2851,20 @@ fn stage_redo(conn: &Connection) -> Result<StageHistoryReport> {
 }
 
 fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
+  conn.execute_batch("begin deferred transaction")?;
+  match stage_commit_dry_run_snapshot(conn) {
+    Ok(report) => {
+      conn.execute_batch("commit")?;
+      Ok(report)
+    }
+    Err(error) => {
+      let _ = conn.execute_batch("rollback");
+      Err(error)
+    }
+  }
+}
+
+fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun> {
   let tracked_file_count_before = total_file_record_count(conn)?;
   let duplicate_groups_before = find_duplicates(conn, None)?;
   let duplicate_group_count_before = duplicate_groups_before.len() as u64;
@@ -2345,10 +2876,51 @@ fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
     .into_iter()
     .map(|record| record.file)
     .collect::<Vec<_>>();
-  let staged_ids = staged_files
+  let duplicate_group_by_file_id = duplicate_groups_before
+    .iter()
+    .flat_map(|group| group.files.iter().map(move |file| (file.file_id.as_str(), group)))
+    .collect::<BTreeMap<_, _>>();
+  let mut warnings = Vec::new();
+  let hashes_pending = staged_files.iter().try_fold(0_u64, |count, file| {
+    let pending = conn.query_row(
+      "select content_hash is null or hash_revision is null or hash_revision <> inventory_revision
+       from file_records where id = ?1",
+      params![file.file_id],
+      |row| row.get::<_, bool>(0),
+    )?;
+    if pending || !duplicate_group_by_file_id.contains_key(file.file_id.as_str()) {
+      warnings.push(StageWarning {
+        path: file.path.clone(),
+        reason: StageWarningReason::NotDuplicate,
+      });
+    }
+    Ok::<_, NafmError>(count + u64::from(pending))
+  })?;
+  let all_staged_ids = staged_files
     .iter()
     .map(|file| file.file_id.clone())
     .collect::<std::collections::HashSet<_>>();
+  for group in &duplicate_groups_before {
+    let staged_in_group = group
+      .files
+      .iter()
+      .filter(|file| all_staged_ids.contains(&file.file_id))
+      .collect::<Vec<_>>();
+    if staged_in_group.len() == group.files.len()
+      && let Some(file) = staged_in_group.last()
+    {
+      warnings.push(StageWarning {
+        path: file.path.clone(),
+        reason: StageWarningReason::WouldRemoveLastCopy,
+      });
+    }
+  }
+  let cleanup_ready = warnings.is_empty();
+  let staged_ids = if cleanup_ready {
+    all_staged_ids
+  } else {
+    std::collections::HashSet::new()
+  };
 
   let duplicate_groups_after = duplicate_groups_before
     .iter()
@@ -2377,11 +2949,14 @@ fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
     .iter()
     .map(|group| group.files.len() as u64)
     .sum();
-  let tracked_file_count_after = tracked_file_count_before.saturating_sub(staged_files.len() as u64);
+  let tracked_file_count_after = tracked_file_count_before.saturating_sub(staged_ids.len() as u64);
   let db_entry_count_stable = tracked_file_count_before == total_file_record_count(conn)?;
 
   Ok(StageCommitDryRun {
     staged_files,
+    hashes_pending,
+    cleanup_ready,
+    warnings,
     tracked_file_count_before,
     tracked_file_count_after,
     duplicate_group_count_before,
@@ -2529,6 +3104,8 @@ fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
   let folders = list_site_folders(conn, Some(&site.id))?;
   let files = storage_file_records(conn, &site.id, None)?;
   let total_file_count = files.len() as u64;
+  let verified_file_count = files.iter().filter(|file| file.hash_verified).count() as u64;
+  let pending_hash_count = total_file_count.saturating_sub(verified_file_count);
   let total_bytes = files.iter().map(|file| file.size_bytes).sum();
   let duplicate_file_count = files.iter().filter(|file| file.duplicate).count() as u64;
   let duplicate_bytes = files
@@ -2536,21 +3113,40 @@ fn site_overview(conn: &Connection, site: Site) -> Result<SiteOverview> {
     .filter(|file| file.reclaimable)
     .map(|file| file.size_bytes)
     .sum();
-  let latest_scan_at = conn
+  let scan_state = conn
     .query_row(
-      "select last_scanned_at from site_scan_state where site_id = ?1",
+      "select inventory_completed_at, hash_completed_at, hash_algorithm
+       from site_scan_state where site_id = ?1",
       params![site.id],
-      |row| row.get::<_, DateTime<Utc>>(0),
+      |row| {
+        Ok((
+          row.get::<_, Option<DateTime<Utc>>>(0)?,
+          row.get::<_, Option<DateTime<Utc>>>(1)?,
+          row.get::<_, Option<String>>(2)?,
+        ))
+      },
     )
     .optional()?;
+  let (hash_status, latest_inventory_at, latest_scan_at) = match scan_state {
+    None => (SiteHashStatus::Unscanned, None, None),
+    Some((None, _, None)) => (SiteHashStatus::Unscanned, None, None),
+    Some((latest_inventory_at, latest_scan_at, _)) if pending_hash_count > 0 || latest_scan_at.is_none() => {
+      (SiteHashStatus::Pending, latest_inventory_at, latest_scan_at)
+    }
+    Some((latest_inventory_at, latest_scan_at, _)) => (SiteHashStatus::Ready, latest_inventory_at, latest_scan_at),
+  };
 
   Ok(SiteOverview {
     site,
     folders,
     total_file_count,
+    verified_file_count,
+    pending_hash_count,
     total_bytes,
     duplicate_file_count,
     duplicate_bytes,
+    hash_status,
+    latest_inventory_at,
     latest_scan_at,
   })
 }
@@ -2560,9 +3156,11 @@ fn storage_file_records(
   site_id: &str,
   coverage_target_content_keys: Option<&BTreeSet<StorageContentKey>>,
 ) -> Result<Vec<StorageFileRecord>> {
+  let analysis_ready = site_has_completed_scan(conn, site_id)?;
   let mut rows = conn
     .prepare(
-      "select site_folder_id, path, size_bytes, hash_algorithm, content_hash
+      "select site_folder_id, path, size_bytes, hash_algorithm, content_hash,
+         coalesce(content_hash is not null and hash_revision = inventory_revision, false)
        from file_records
        where site_id = ?1
        order by path",
@@ -2573,6 +3171,7 @@ fn storage_file_records(
           site_folder_id: row.get(0)?,
           path: PathBuf::from(row.get::<_, String>(1)?),
           size_bytes: row.get(2)?,
+          hash_verified: row.get(5)?,
           content_key: None,
           source_copy_count: 0,
           covered_by_target: None,
@@ -2587,7 +3186,10 @@ fn storage_file_records(
 
   let mut groups = BTreeMap::<(String, String, u64), Vec<usize>>::new();
   for (index, (file, hash_algorithm, content_hash)) in rows.iter().enumerate() {
-    if let Some(content_hash) = content_hash {
+    if analysis_ready
+      && file.hash_verified
+      && let Some(content_hash) = content_hash
+    {
       groups
         .entry((hash_algorithm.clone(), content_hash.clone(), file.size_bytes))
         .or_default()
@@ -2632,13 +3234,73 @@ fn storage_file_records(
 }
 
 fn site_has_completed_scan(conn: &Connection, site_id: &str) -> Result<bool> {
+  let state = conn
+    .query_row(
+      "select inventory_revision, hash_completed_at is not null
+       from site_scan_state where site_id = ?1",
+      params![site_id],
+      |row| Ok((row.get::<_, u64>(0)?, row.get::<_, bool>(1)?)),
+    )
+    .optional()?;
+  let Some((inventory_revision, has_completion)) = state else {
+    return Ok(false);
+  };
+  Ok(has_completion && site_analysis_pending_count(conn, site_id, inventory_revision)? == 0)
+}
+
+fn site_has_configured_folders(conn: &Connection, site_id: &str) -> Result<bool> {
   conn
     .query_row(
-      "select exists(select 1 from site_scan_state where site_id = ?1)",
+      "select exists(select 1 from site_folders where site_id = ?1)",
       params![site_id],
       |row| row.get::<_, bool>(0),
     )
     .map_err(Into::into)
+}
+
+fn site_analysis_pending_count(conn: &Connection, site_id: &str, inventory_revision: u64) -> Result<u64> {
+  conn
+    .query_row(
+      "select count(*) from file_records
+       where site_id = ?1
+         and (
+           inventory_revision <> ?2
+           or content_hash is null
+           or hash_revision is null
+           or hash_revision <> inventory_revision
+         )",
+      params![site_id, inventory_revision],
+      |row| row.get::<_, u64>(0),
+    )
+    .map_err(Into::into)
+}
+
+fn ensure_site_hash_ready(conn: &Connection, site_id: &str) -> Result<()> {
+  let inventory_revision = conn
+    .query_row(
+      "select inventory_revision from site_scan_state
+       where site_id = ?1 and hash_completed_at is not null",
+      params![site_id],
+      |row| row.get::<_, u64>(0),
+    )
+    .optional()?;
+  let pending_hashes = match inventory_revision {
+    Some(inventory_revision) => site_analysis_pending_count(conn, site_id, inventory_revision)?,
+    None => conn.query_row(
+      "select count(*) from file_records
+       where site_id = ?1
+         and (content_hash is null or hash_revision is null or hash_revision <> inventory_revision)",
+      params![site_id],
+      |row| row.get::<_, u64>(0),
+    )?,
+  };
+  if inventory_revision.is_none() || pending_hashes > 0 {
+    return Err(NafmError::SiteHashesPending {
+      site_id: site_id.to_owned(),
+      pending_hashes,
+    });
+  }
+  Ok(())
 }
 
 fn site_has_tracked_files(conn: &Connection, site_id: &str) -> Result<bool> {
@@ -2655,7 +3317,7 @@ fn storage_content_keys(conn: &Connection, site_id: &str) -> Result<BTreeSet<Sto
   let mut stmt = conn.prepare(
     "select distinct hash_algorithm, content_hash, size_bytes
      from file_records
-     where site_id = ?1 and content_hash is not null",
+     where site_id = ?1 and content_hash is not null and hash_revision = inventory_revision",
   )?;
   stmt
     .query_map(params![site_id], |row| {
@@ -2852,6 +3514,8 @@ fn build_storage_tree_root(
     folder_node.add_file_metrics(file);
     insert_storage_file(folder_node, folder, &segments, file)?;
   }
+
+  root.set_analysis_ready(site_has_completed_scan(conn, &site.id)?);
 
   Ok(root)
 }
@@ -3088,6 +3752,8 @@ fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, 
     kind: builder.kind,
     total_bytes: builder.total_bytes,
     file_count: builder.file_count,
+    verified_file_count: builder.verified_file_count,
+    pending_hash_count: builder.pending_hash_count,
     duplicate_bytes: builder.duplicate_bytes,
     duplicate_file_count: builder.duplicate_file_count,
     space_health,
@@ -3109,6 +3775,8 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
     kind: builder.kind,
     total_bytes: builder.total_bytes,
     file_count: builder.file_count,
+    verified_file_count: builder.verified_file_count,
+    pending_hash_count: builder.pending_hash_count,
     duplicate_bytes: builder.duplicate_bytes,
     duplicate_file_count: builder.duplicate_file_count,
     space_health: builder.space_health(),
@@ -3122,9 +3790,12 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
 }
 
 fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
+  let analysis_ready = nodes.iter().all(|node| node.analysis_ready);
   let total_space_health_bytes = nodes.iter().map(|node| node.space_health_bytes).sum::<u128>();
   let zero_byte_space_health_count = nodes.iter().map(|node| node.zero_byte_space_health_count).sum::<u64>();
-  let space_health = if total_space_health_bytes > 0 {
+  let space_health = if !analysis_ready {
+    None
+  } else if total_space_health_bytes > 0 {
     Some(
       (nodes.iter().map(|node| node.space_health_weighted_bytes).sum::<f64>() / total_space_health_bytes as f64)
         .clamp(0.0, 100.0),
@@ -3150,7 +3821,9 @@ fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<
     .keys()
     .map(|content_key| u128::from(content_key.size_bytes))
     .sum::<u128>();
-  let coverage_health = if coverage_total_bytes > 0 {
+  let coverage_health = if !analysis_ready {
+    None
+  } else if coverage_total_bytes > 0 {
     let covered_bytes = coverage_groups
       .iter()
       .filter(|(_, covered)| **covered)
@@ -3169,6 +3842,8 @@ fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<
     kind: StorageNodeKind::SmallerItems,
     total_bytes: nodes.iter().map(|node| node.total_bytes).sum(),
     file_count: nodes.iter().map(|node| node.file_count).sum(),
+    verified_file_count: nodes.iter().map(|node| node.verified_file_count).sum(),
+    pending_hash_count: nodes.iter().map(|node| node.pending_hash_count).sum(),
     duplicate_bytes: nodes.iter().map(|node| node.duplicate_bytes).sum(),
     duplicate_file_count: nodes.iter().map(|node| node.duplicate_file_count).sum(),
     space_health,
@@ -3216,6 +3891,17 @@ fn list_site_folders(conn: &Connection, site_id: Option<&str>) -> Result<Vec<Sit
       .collect::<std::result::Result<Vec<_>, _>>()
       .map_err(Into::into)
   }
+}
+
+fn site_folder_configuration_matches(expected: &[SiteFolder], current: &[SiteFolder]) -> bool {
+  expected.len() == current.len()
+    && expected.iter().zip(current).all(|(expected, current)| {
+      expected.id == current.id
+        && expected.site_id == current.site_id
+        && expected.kind == current.kind
+        && expected.path == current.path
+        && expected.hidden_policy == current.hidden_policy
+    })
 }
 
 fn file_counts_by_parent_folder(conn: &Connection, site_id: Option<&str>) -> Result<BTreeMap<String, u64>> {

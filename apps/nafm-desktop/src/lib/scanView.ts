@@ -4,11 +4,12 @@ import type {
   ScanState,
   ScanTask,
   ScanTaskEvent,
+  ScanTaskSiteState,
   SiteOverview,
 } from "./types";
 
 export function isActiveScanState(scanState: ScanState): boolean {
-  return ["queued", "discovering", "hashing", "finalizing", "cancelling"].includes(scanState);
+  return ["queued", "discovering", "publishing_metadata", "hashing", "finalizing", "cancelling"].includes(scanState);
 }
 
 export function initialScanProgress(requestId: number, siteId: string): ScanProgressView {
@@ -17,9 +18,10 @@ export function initialScanProgress(requestId: number, siteId: string): ScanProg
     site_id: siteId,
     phase: "discovering",
     processed_files: 0,
-    total_files: 0,
+    total_files: null,
     hashed_files: 0,
     reused_files: 0,
+    hashes_pending: 0,
     current_path: null,
   };
 }
@@ -31,34 +33,66 @@ export function scanProgressFromEvent(event: ScanTaskEvent): ScanProgressView | 
     site_id: event.site_id,
     phase: event.phase ?? (event.kind === "started" ? "discovering" : "hashing"),
     processed_files: event.processed_files ?? 0,
-    total_files: event.total_files ?? 0,
+    total_files: event.total_files,
     hashed_files: event.hashed_files ?? 0,
     reused_files: event.reused_files ?? 0,
+    hashes_pending: event.hashes_pending ?? 0,
     current_path: event.current_path ?? null,
   };
 }
 
 export function scanCompletionFromEvent(event: ScanTaskEvent): ScanCompletionView | null {
   if (!event.site_id || event.kind !== "completed") return null;
+  const pendingFiles = event.summary?.files_pending ?? event.hashes_pending ?? 0;
+  const status = pendingFiles === 0 ? "complete" : "indexed";
   return {
     request_id: event.request_id,
     site_id: event.site_id,
     source: "event",
-    should_announce: true,
+    status,
+    should_announce: status === "complete",
     total_files: event.summary?.files_seen ?? event.total_files ?? event.processed_files ?? 0,
+    pending_files: pendingFiles,
     hashed_files: event.summary?.files_hashed ?? event.hashed_files ?? 0,
     reused_files: event.summary?.files_reused ?? event.reused_files ?? 0,
   };
 }
 
+export function retainedScanCompletionFromSiteState(
+  requestId: number,
+  state: ScanTaskSiteState,
+): ScanCompletionView | null {
+  const published = state.phase === "hashing" || state.phase === "finalizing";
+  if (state.status !== "completed" && !published) return null;
+  const status = state.status === "completed" && state.hashes_pending === 0
+    ? "complete"
+    : "indexed";
+  return {
+    request_id: requestId,
+    site_id: state.site_id,
+    source: "snapshot",
+    status,
+    should_announce: false,
+    total_files: state.total_files ?? state.processed_files,
+    pending_files: state.hashes_pending,
+    hashed_files: state.hashed_files,
+    reused_files: state.reused_files,
+  };
+}
+
 export function snapshotScanCompletion(site: SiteOverview): ScanCompletionView | null {
-  if (!site.last_scanned_at) return null;
+  if (!site.latest_inventory_at && !site.last_scanned_at) return null;
+  const status = site.hash_status === "ready" && site.pending_hash_count === 0
+    ? "complete"
+    : "indexed";
   return {
     request_id: null,
     site_id: site.id,
     source: "snapshot",
+    status,
     should_announce: false,
     total_files: site.total_files,
+    pending_files: site.pending_hash_count,
     hashed_files: null,
     reused_files: null,
   };
@@ -97,6 +131,12 @@ export function reconcileScanCompletions(
   for (const site of sites) {
     const existing = current.get(site.id);
     const snapshot = snapshotScanCompletion(site);
+    const completedSiteState = [...activeTasks]
+      .sort((left, right) => right.request_id - left.request_id)
+      .flatMap((task) => task.site_states
+        .filter((state) => state.site_id === site.id && state.status === "completed")
+        .map((state) => ({ task, state })))
+      .at(0);
     const lastScannedAt = site.last_scanned_at
       ? rfc3339Nanoseconds(site.last_scanned_at)
       : null;
@@ -106,7 +146,30 @@ export function reconcileScanCompletions(
           .filter((task) => (task.selector.all || task.selector.site_id === site.id)
             && (rfc3339Nanoseconds(task.created_at) ?? lastScannedAt + 1n) <= lastScannedAt)
           .sort((left, right) => right.request_id - left.request_id)[0] ?? null;
-    if (snapshot && completedTask && existing?.request_id !== completedTask.request_id) {
+    const existingTaskIsActive = existing?.request_id != null && activeTasks.some((task) => (
+      task.request_id === existing.request_id
+      && (task.site_states.some((state) => state.site_id === site.id)
+        || task.selector.all
+        || task.selector.site_id === site.id)
+    ));
+    if (existing?.source === "event" && existingTaskIsActive) {
+      next.set(site.id, existing);
+    } else if (snapshot?.status === "indexed") {
+      next.set(site.id, snapshot);
+    } else if (completedSiteState) {
+      const pendingFiles = completedSiteState.state.hashes_pending;
+      next.set(site.id, {
+        request_id: completedSiteState.task.request_id,
+        site_id: site.id,
+        source: "snapshot",
+        status: pendingFiles === 0 ? "complete" : "indexed",
+        should_announce: false,
+        total_files: completedSiteState.state.total_files ?? site.total_files,
+        pending_files: pendingFiles,
+        hashed_files: completedSiteState.state.hashed_files,
+        reused_files: completedSiteState.state.reused_files,
+      });
+    } else if (snapshot && completedTask && existing?.request_id !== completedTask.request_id) {
       next.set(site.id, { ...snapshot, request_id: completedTask.request_id });
     } else if (existing && (snapshot || isActiveScanState(site.scan_state))) {
       next.set(site.id, existing);

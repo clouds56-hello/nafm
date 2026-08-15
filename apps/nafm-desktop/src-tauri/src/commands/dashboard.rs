@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  FileContentMatchesPage, Site, SiteFolderKind, StageCommitDryRun, StorageChildrenPage, StorageFileReveal,
-  StorageLocation, StorageNode, StorageTree,
+  FileContentMatchesPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage,
+  StorageFileReveal, StorageLocation, StorageNode, StorageTree,
 };
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::{AppState, ScanTask, ScanTaskStatus};
+use crate::state::{AppState, ScanTask, ScanTaskSiteStatus, ScanTaskStatus};
 
 #[derive(Serialize)]
 pub struct Dashboard {
@@ -17,6 +17,9 @@ pub struct Dashboard {
   sites: Vec<SiteOverview>,
   active_tasks: Vec<ScanTask>,
   staged: Vec<nafm_core::DuplicateFile>,
+  staged_hashes_pending: u64,
+  staged_cleanup_ready: bool,
+  staged_warnings: Vec<nafm_core::StageWarning>,
   last_updated_at: DateTime<Utc>,
 }
 
@@ -28,8 +31,12 @@ pub struct SiteOverview {
   kind: SiteFolderKind,
   connection_state: ConnectionState,
   scan_state: ScanState,
+  hash_status: SiteHashStatus,
+  latest_inventory_at: Option<DateTime<Utc>>,
   last_scanned_at: Option<DateTime<Utc>>,
   total_files: u64,
+  verified_file_count: u64,
+  pending_hash_count: u64,
   total_bytes: u64,
   duplicate_files: u64,
   duplicate_bytes: u64,
@@ -45,21 +52,46 @@ enum ConnectionState {
 #[serde(rename_all = "snake_case")]
 enum ScanState {
   Idle,
+  Queued,
+  Discovering,
+  PublishingMetadata,
   Hashing,
+  Finalizing,
   Cancelling,
   Done,
 }
 
-fn site_scan_state(active_tasks: &[ScanTask], site_id: &str, has_completed_scan: bool) -> ScanState {
-  let active_status = active_tasks
-    .iter()
-    .find(|task| task.selector.includes_site(site_id))
-    .map(|task| task.status);
-  match active_status {
-    Some(ScanTaskStatus::Running) => ScanState::Hashing,
-    Some(ScanTaskStatus::Cancelling) => ScanState::Cancelling,
-    None if has_completed_scan => ScanState::Done,
-    None => ScanState::Idle,
+fn site_scan_state(active_tasks: &[ScanTask], site_id: &str, hash_status: SiteHashStatus) -> ScanState {
+  let active_task = active_tasks.iter().find(|task| task.selector.includes_site(site_id));
+  let Some(task) = active_task else {
+    return inactive_site_scan_state(hash_status);
+  };
+  let site_state = task.site_states.iter().find(|state| state.site_id == site_id);
+  if task.status == ScanTaskStatus::Cancelling
+    && site_state.is_none_or(|state| state.status != ScanTaskSiteStatus::Completed)
+  {
+    return ScanState::Cancelling;
+  }
+  let Some(site_state) = site_state else {
+    return ScanState::Queued;
+  };
+  match site_state.status {
+    ScanTaskSiteStatus::Queued => ScanState::Queued,
+    ScanTaskSiteStatus::Running => match site_state.phase {
+      None => ScanState::Queued,
+      Some(ScanPhase::Discovering) => ScanState::Discovering,
+      Some(ScanPhase::PublishingMetadata) => ScanState::PublishingMetadata,
+      Some(ScanPhase::Hashing) => ScanState::Hashing,
+      Some(ScanPhase::Finalizing) => ScanState::Finalizing,
+    },
+    ScanTaskSiteStatus::Completed => inactive_site_scan_state(hash_status),
+  }
+}
+
+fn inactive_site_scan_state(hash_status: SiteHashStatus) -> ScanState {
+  match hash_status {
+    SiteHashStatus::Ready => ScanState::Done,
+    SiteHashStatus::Unscanned | SiteHashStatus::Pending => ScanState::Idle,
   }
 }
 
@@ -132,17 +164,23 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     .site_overviews()
     .await
     .map_err(|error| error.to_string())?;
-  let StageCommitDryRun { staged_files, .. } = workspace
+  let StageCommitDryRun {
+    staged_files,
+    hashes_pending: staged_hashes_pending,
+    cleanup_ready: staged_cleanup_ready,
+    warnings: staged_warnings,
+    ..
+  } = workspace
     .repository
     .stage_commit_dry_run()
     .await
     .map_err(|error| error.to_string())?;
-  let active_tasks = state.scan_tasks.active_tasks().await;
+  let active_tasks = state.scan_tasks.active_tasks();
   let sites = overviews
     .into_iter()
     .map(|overview| {
       let primary_folder = overview.folders.first();
-      let scan_state = site_scan_state(&active_tasks, &overview.site.id, overview.latest_scan_at.is_some());
+      let scan_state = site_scan_state(&active_tasks, &overview.site.id, overview.hash_status);
       SiteOverview {
         id: overview.site.id,
         name: overview.site.name,
@@ -154,8 +192,12 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
           .unwrap_or(SiteFolderKind::Local),
         connection_state: ConnectionState::Unknown,
         scan_state,
+        hash_status: overview.hash_status,
+        latest_inventory_at: overview.latest_inventory_at,
         last_scanned_at: overview.latest_scan_at,
         total_files: overview.total_file_count,
+        verified_file_count: overview.verified_file_count,
+        pending_hash_count: overview.pending_hash_count,
         total_bytes: overview.total_bytes,
         duplicate_files: overview.duplicate_file_count,
         duplicate_bytes: overview.duplicate_bytes,
@@ -169,6 +211,9 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     sites,
     active_tasks,
     staged: staged_files,
+    staged_hashes_pending,
+    staged_cleanup_ready,
+    staged_warnings,
     last_updated_at: Utc::now(),
   })
 }
@@ -283,14 +328,34 @@ mod tests {
   use nafm_core::{StorageNodeKind, StorageTree};
 
   use super::*;
-  use crate::state::{ScanSelector, ScanTaskStatus};
+  use crate::state::{ScanSelector, ScanTaskSiteState, ScanTaskSiteStatus, ScanTaskStatus};
 
-  fn scan_task(request_id: u64, selector: ScanSelector, status: ScanTaskStatus) -> ScanTask {
+  fn scan_task(
+    request_id: u64,
+    selector: ScanSelector,
+    status: ScanTaskStatus,
+    site_states: Vec<ScanTaskSiteState>,
+  ) -> ScanTask {
     ScanTask {
       request_id,
       selector,
       status,
       created_at: Utc::now(),
+      site_states,
+    }
+  }
+
+  fn site_state(site_id: &str, status: ScanTaskSiteStatus, phase: Option<ScanPhase>) -> ScanTaskSiteState {
+    ScanTaskSiteState {
+      site_id: site_id.to_owned(),
+      status,
+      phase,
+      processed_files: 0,
+      total_files: None,
+      hashed_files: 0,
+      reused_files: 0,
+      hashes_pending: 0,
+      current_path: None,
     }
   }
 
@@ -303,10 +368,20 @@ mod tests {
         all: true,
       },
       ScanTaskStatus::Cancelling,
+      vec![
+        site_state("photos", ScanTaskSiteStatus::Completed, Some(ScanPhase::Finalizing)),
+        site_state("videos", ScanTaskSiteStatus::Running, Some(ScanPhase::Hashing)),
+      ],
     )];
 
-    assert_eq!(site_scan_state(&tasks, "photos", false), ScanState::Cancelling);
-    assert_eq!(site_scan_state(&tasks, "videos", true), ScanState::Cancelling);
+    assert_eq!(
+      site_scan_state(&tasks, "photos", SiteHashStatus::Ready),
+      ScanState::Done
+    );
+    assert_eq!(
+      site_scan_state(&tasks, "videos", SiteHashStatus::Pending),
+      ScanState::Cancelling
+    );
   }
 
   #[test]
@@ -318,11 +393,25 @@ mod tests {
         all: false,
       },
       ScanTaskStatus::Running,
+      vec![site_state(
+        "photos",
+        ScanTaskSiteStatus::Running,
+        Some(ScanPhase::PublishingMetadata),
+      )],
     )];
 
-    assert_eq!(site_scan_state(&tasks, "photos", false), ScanState::Hashing);
-    assert_eq!(site_scan_state(&tasks, "videos", true), ScanState::Done);
-    assert_eq!(site_scan_state(&tasks, "documents", false), ScanState::Idle);
+    assert_eq!(
+      site_scan_state(&tasks, "photos", SiteHashStatus::Pending),
+      ScanState::PublishingMetadata
+    );
+    assert_eq!(
+      site_scan_state(&tasks, "videos", SiteHashStatus::Ready),
+      ScanState::Done
+    );
+    assert_eq!(
+      site_scan_state(&tasks, "documents", SiteHashStatus::Unscanned),
+      ScanState::Idle
+    );
   }
 
   #[test]
@@ -339,6 +428,8 @@ mod tests {
       kind: StorageNodeKind::File,
       total_bytes: 8,
       file_count: 1,
+      verified_file_count: 1,
+      pending_hash_count: 0,
       duplicate_bytes: 0,
       duplicate_file_count: 1,
       space_health: Some(50.0),
@@ -356,6 +447,8 @@ mod tests {
       kind: StorageNodeKind::LocalRoot,
       total_bytes: 8,
       file_count: 1,
+      verified_file_count: 1,
+      pending_hash_count: 0,
       duplicate_bytes: 0,
       duplicate_file_count: 1,
       space_health: Some(50.0),

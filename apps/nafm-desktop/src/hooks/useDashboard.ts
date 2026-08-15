@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { siteAnalysisReady } from "../lib/analysis";
 import {
   cancelScan,
   getStorageChildren,
@@ -17,6 +18,7 @@ import {
   clearScanProgressForSite,
   initialScanProgress,
   reconcileScanCompletions,
+  retainedScanCompletionFromSiteState,
   scanCompletionFromEvent,
   scanProgressFromEvent,
   setCurrentScanProgress,
@@ -148,6 +150,8 @@ export function useDashboard(expectedWorkspace: string | null) {
   const currentSiteIdsRef = useRef<Set<string>>(new Set());
   const terminalRequestIdsRef = useRef<Set<number>>(new Set());
   const cancelRequestsInFlightRef = useRef<Set<number>>(new Set());
+  const publishedInventoryKeysRef = useRef<Set<string>>(new Set());
+  const cleanupPreviewRequestRef = useRef(0);
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
 
@@ -159,6 +163,12 @@ export function useDashboard(expectedWorkspace: string | null) {
       completionBySiteRef.current = next;
       return next;
     });
+  }, []);
+
+  const invalidateCleanupPreview = useCallback(() => {
+    cleanupPreviewRequestRef.current += 1;
+    setPreview(null);
+    setPreviewLoading(false);
   }, []);
 
   useEffect(() => {
@@ -192,6 +202,7 @@ export function useDashboard(expectedWorkspace: string | null) {
         currentSiteIdsRef.current = new Set();
         terminalRequestIdsRef.current.clear();
         cancelRequestsInFlightRef.current.clear();
+        publishedInventoryKeysRef.current.clear();
       }
       navigationInProgressRef.current = false;
       childrenLoadingRef.current = false;
@@ -491,6 +502,14 @@ export function useDashboard(expectedWorkspace: string | null) {
   }, [loadFolderLocation]);
 
   const acceptDashboard = useCallback((next: Dashboard) => {
+    const workspaceChanged = dashboardRef.current !== null
+      && dashboardRef.current.workspace_name !== next.workspace_name;
+    if (workspaceChanged) {
+      terminalRequestIdsRef.current.clear();
+      cancelRequestsInFlightRef.current.clear();
+      publishedInventoryKeysRef.current.clear();
+      setProgressBySite(new Map());
+    }
     const activeTasks = next.active_tasks.filter(
       (task) => !terminalRequestIdsRef.current.has(task.request_id),
     );
@@ -499,6 +518,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     currentSiteIdsRef.current = new Set(next.sites.map((site) => site.id));
     workspaceNameRef.current = next.workspace_name;
     setDashboard(next);
+    invalidateCleanupPreview();
     setActiveRequestIds(activeIds);
     setActiveScanTasks(new Map(activeTasks.map((task) => [task.request_id, task])));
     setCancellingRequestIds((current) => {
@@ -512,8 +532,12 @@ export function useDashboard(expectedWorkspace: string | null) {
       }
       return nextCancelling;
     });
-    updateCompletionBySite((current) => reconcileScanCompletions(current, next.sites, activeTasks));
-  }, [updateCompletionBySite]);
+    updateCompletionBySite((current) => reconcileScanCompletions(
+      workspaceChanged ? new Map() : current,
+      next.sites,
+      activeTasks,
+    ));
+  }, [invalidateCleanupPreview, updateCompletionBySite]);
 
   const refresh = useCallback(async () => {
     const requestId = dashboardRequestRef.current + 1;
@@ -574,8 +598,12 @@ export function useDashboard(expectedWorkspace: string | null) {
       setCancellingRequestIds((current) => new Set(current).add(event.request_id));
       setActiveScanTasks((current) => {
         const task = current.get(event.request_id);
-        if (!task || task.status === "cancelling") return current;
-        return new Map(current).set(event.request_id, { ...task, status: "cancelling" });
+        if (!task || (task.status === "cancelling" && !event.site_states)) return current;
+        return new Map(current).set(event.request_id, {
+          ...task,
+          status: "cancelling",
+          site_states: event.site_states ?? task.site_states,
+        });
       });
     }
     if (event.scope === "site" && event.site_id
@@ -591,6 +619,21 @@ export function useDashboard(expectedWorkspace: string | null) {
             progress.request_id,
           ));
           setProgressBySite((current) => setCurrentScanProgress(current, progress));
+          if (progress.phase === "hashing" || progress.phase === "finalizing") {
+            const inventoryKey = `${progress.request_id}\u0000${progress.site_id}`;
+            if (!publishedInventoryKeysRef.current.has(inventoryKey)) {
+              publishedInventoryKeysRef.current.add(inventoryKey);
+              setContentRevision((current) => current + 1);
+              void reloadDashboard().then(() => {
+                const sourceSiteId = selectedSiteRef.current;
+                const targetSiteId = targetSiteRef.current;
+                if (sourceSiteId
+                  && (progress.site_id === sourceSiteId || progress.site_id === targetSiteId)) {
+                  void refreshTree(sourceSiteId, targetSiteId, false);
+                }
+              });
+            }
+          }
         }
       } else if (["completed", "failed", "cancelled"].includes(event.kind)) {
         setProgressBySite((current) => clearScanProgressForSite(
@@ -619,6 +662,21 @@ export function useDashboard(expectedWorkspace: string | null) {
       }
     }
     if (event.scope === "task" && ["completed", "failed", "cancelled"].includes(event.kind)) {
+      const retainedCompletions = (event.site_states ?? [])
+        .map((state) => retainedScanCompletionFromSiteState(event.request_id, state))
+        .filter((completion): completion is ScanCompletionView => completion !== null);
+      if (retainedCompletions.length > 0) {
+        updateCompletionBySite((current) => {
+          const next = new Map(current);
+          for (const completion of retainedCompletions) {
+            const existing = next.get(completion.site_id);
+            if (existing?.source === "event" && existing.request_id === event.request_id) continue;
+            if (existing?.request_id != null && existing.request_id > event.request_id) continue;
+            next.set(completion.site_id, completion);
+          }
+          return next;
+        });
+      }
       terminalRequestIdsRef.current.add(event.request_id);
       setActiveRequestIds((current) => {
         const next = new Set(current);
@@ -638,10 +696,13 @@ export function useDashboard(expectedWorkspace: string | null) {
         return next;
       });
       setProgressBySite((current) => clearScanProgressForRequest(current, event.request_id));
+      publishedInventoryKeysRef.current.forEach((key) => {
+        if (key.startsWith(`${event.request_id}\u0000`)) publishedInventoryKeysRef.current.delete(key);
+      });
       void reloadDashboard();
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
       if (event.kind === "cancelled") {
-        setNotice("Scan cancelled. Completed hashes remain cached.");
+        setNotice("Scan cancelled. Indexed files remain; unfinished hashes will resume on the next scan.");
         const sourceSiteId = selectedSiteRef.current;
         if (sourceSiteId) void refreshTree(sourceSiteId, targetSiteRef.current, false);
       }
@@ -669,15 +730,33 @@ export function useDashboard(expectedWorkspace: string | null) {
       const next = new Map(current);
       for (const task of activeTasks) {
         if (terminalRequestIdsRef.current.has(task.request_id)) continue;
-        const siteIds = task.selector.all ? allSiteIds : task.selector.site_id ? [task.selector.site_id] : [];
+        const stateBySite = new Map(task.site_states.map((state) => [state.site_id, state]));
+        const siteIds = task.site_states.length > 0
+          ? task.site_states.map((state) => state.site_id)
+          : task.selector.all ? allSiteIds : task.selector.site_id ? [task.selector.site_id] : [];
         for (const siteId of siteIds) {
+          const siteState = stateBySite.get(siteId);
+          if (siteState?.status === "completed") {
+            if (next.get(siteId)?.request_id === task.request_id) next.delete(siteId);
+            continue;
+          }
           if (completionBySite.get(siteId)?.request_id === task.request_id) {
             if (next.get(siteId)?.request_id === task.request_id) next.delete(siteId);
             continue;
           }
           const existing = next.get(siteId);
           if (!existing || existing.request_id < task.request_id) {
-            next.set(siteId, initialScanProgress(task.request_id, siteId));
+            next.set(siteId, siteState?.status === "running" ? {
+              request_id: task.request_id,
+              site_id: siteId,
+              phase: siteState.phase ?? "discovering",
+              processed_files: siteState.processed_files,
+              total_files: siteState.total_files,
+              hashed_files: siteState.hashed_files,
+              reused_files: siteState.reused_files,
+              hashes_pending: siteState.hashes_pending,
+              current_path: siteState.current_path,
+            } : initialScanProgress(task.request_id, siteId));
           }
         }
       }
@@ -813,6 +892,7 @@ export function useDashboard(expectedWorkspace: string | null) {
       });
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
       setActiveScanTasks((current) => new Map(current).set(task.request_id, task));
+      invalidateCleanupPreview();
       const siteIds = siteId
         ? [siteId]
         : dashboardRef.current?.sites.map((site) => site.id) ?? [];
@@ -835,7 +915,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     } catch (scanError) {
       setNotice(errorMessage(scanError));
     }
-  }, [updateCompletionBySite]);
+  }, [invalidateCleanupPreview, updateCompletionBySite]);
 
   const cancel = useCallback(async (
     requestId: number,
@@ -1109,15 +1189,26 @@ export function useDashboard(expectedWorkspace: string | null) {
   }, [currentNavigationEntry, dashboard]);
 
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
-    setDashboard((current) => current ? {
+    invalidateCleanupPreview();
+    const current = dashboardRef.current;
+    if (!current) return;
+    const next = {
       ...current,
       staged: typeof update === "function" ? update(current.staged) : update,
-    } : current);
-    setPreview(null);
-  }, []);
+    };
+    dashboardRef.current = next;
+    setDashboard(next);
+  }, [invalidateCleanupPreview]);
 
   const stageSelected = useCallback(async () => {
     if (!activeSelectedNode?.path || healthMetric !== "space_health") return;
+    const selectedSite = dashboardRef.current?.sites.find(
+      (site) => site.id === selectedSiteRef.current,
+    ) ?? null;
+    if (!siteAnalysisReady(selectedSite) || activeSelectedNode.pending_hash_count > 0) {
+      setNotice("Hashes are pending. Duplicate staging will resume when analysis is ready.");
+      return;
+    }
     setStagingBusy(true);
     setNotice(null);
     try {
@@ -1149,22 +1240,48 @@ export function useDashboard(expectedWorkspace: string | null) {
       const report = await unstagePath(path, workspaceName);
       const removed = new Set(report.removed_files.map((file) => file.file_id));
       updateStaged((current) => current.filter((file) => !removed.has(file.file_id)));
+      void reloadDashboard();
     } catch (unstageError) {
       setReviewError(errorMessage(unstageError));
     } finally {
       setStagingBusy(false);
     }
-  }, [updateStaged]);
+  }, [reloadDashboard, updateStaged]);
 
   const runPreview = useCallback(async () => {
+    const currentDashboard = dashboardRef.current;
+    if (currentDashboard && !currentDashboard.staged_cleanup_ready) {
+      setReviewError(currentDashboard.staged_hashes_pending > 0
+        ? "Hashes are pending for staged copies. Finish hashing before running the cleanup safety check."
+        : "Staged copies are no longer verified as a safe cleanup set. Remove affected copies or rescan first.");
+      return;
+    }
+    const requestId = cleanupPreviewRequestRef.current + 1;
+    cleanupPreviewRequestRef.current = requestId;
     setPreviewLoading(true);
     setReviewError(null);
     try {
-      setPreview(await previewCleanup());
+      const report = await previewCleanup();
+      if (cleanupPreviewRequestRef.current !== requestId) return;
+      setPreview(report);
+      const current = dashboardRef.current;
+      if (current) {
+        const next = {
+          ...current,
+          staged: report.staged_files,
+          staged_hashes_pending: report.hashes_pending,
+          staged_cleanup_ready: report.cleanup_ready,
+          staged_warnings: report.warnings,
+        };
+        dashboardRef.current = next;
+        setDashboard(next);
+      }
     } catch (previewError) {
-      setReviewError(errorMessage(previewError));
+      if (cleanupPreviewRequestRef.current === requestId) {
+        setReviewError(errorMessage(previewError));
+      }
     } finally {
-      setPreviewLoading(false);
+      if (cleanupPreviewRequestRef.current === requestId) setPreviewLoading(false);
     }
   }, []);
 
@@ -1177,12 +1294,16 @@ export function useDashboard(expectedWorkspace: string | null) {
     const scan_all_request_ids = new Set<number>();
     for (const task of activeScanTasks.values()) {
       if (task.selector.all) scan_all_request_ids.add(task.request_id);
-      const taskSiteIds = task.selector.all
-        ? dashboard?.sites.map((site) => site.id) ?? []
-        : task.selector.site_id ? [task.selector.site_id] : [];
+      const taskSiteIds = task.site_states.length > 0
+        ? task.site_states.map((state) => state.site_id)
+        : task.selector.all
+          ? dashboard?.sites.map((site) => site.id) ?? []
+          : task.selector.site_id ? [task.selector.site_id] : [];
+      const stateBySite = new Map(task.site_states.map((state) => [state.site_id, state]));
       for (const siteId of taskSiteIds) {
         blocked_site_ids.add(siteId);
-        if (completionBySite.get(siteId)?.request_id !== task.request_id) {
+        if (stateBySite.get(siteId)?.status !== "completed"
+          && completionBySite.get(siteId)?.request_id !== task.request_id) {
           scanning_site_ids.add(siteId);
           const currentRequestId = request_by_site.get(siteId);
           if (currentRequestId === undefined || currentRequestId < task.request_id) {

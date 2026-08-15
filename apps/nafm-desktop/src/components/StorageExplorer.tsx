@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { formatHealth, healthColor } from "../lib/format";
 import { getFileContentMatches, getStorageChildren } from "../lib/tauri";
 import type {
@@ -188,7 +189,9 @@ export function StorageExplorer({
   const previewDuplicateRequestRef = useRef(0);
   const selectedDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
   const previewDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
-  const score = tree.root[metric];
+  const sourceAnalysisReady = siteAnalysisReady(source);
+  const analysisAvailability = metricAnalysisAvailability(metric, source, target);
+  const score = analysisAvailability.available ? tree.root[metric] : null;
   const coverageWithoutTarget = metric === "coverage_health" && !target;
   const previewing = previewNode !== null;
   const inspectedPage = previewing ? previewPageState.page : childrenPage;
@@ -210,10 +213,12 @@ export function StorageExplorer({
   const previewCanLoadNext = Boolean(previewing && inspectedPage && !inspectedLoading
     && inspectedPage.offset + inspectedPage.limit < inspectedPage.total_children);
   const inspectedDuplicateState = previewing ? previewDuplicateState : selectedDuplicateState;
-  const inspectedDuplicateIdentity = duplicateFileIdentity(workspaceName, source.id, inspectedNode);
+  const inspectedDuplicateIdentity = sourceAnalysisReady
+    ? duplicateFileIdentity(workspaceName, source.id, inspectedNode)
+    : null;
   const inspectedDuplicateStateMatches = inspectedDuplicateIdentity?.owner_key === inspectedDuplicateState.owner_key;
   const inspectedDuplicatePage = inspectedDuplicateStateMatches ? inspectedDuplicateState.page : null;
-  const inspectedDuplicatesLoading = inspectedNode.kind === "file"
+  const inspectedDuplicatesLoading = sourceAnalysisReady && inspectedNode.kind === "file"
     && (!inspectedDuplicateStateMatches || inspectedDuplicateState.loading);
   const inspectedDuplicatesError = inspectedDuplicateStateMatches ? inspectedDuplicateState.error : null;
   const duplicateRangeStart = inspectedDuplicatePage && inspectedDuplicatePage.total_matches > 0
@@ -262,6 +267,7 @@ export function StorageExplorer({
     identity: DuplicateFileIdentity,
     offset: number,
   ) => {
+    if (!sourceAnalysisReady) return;
     const requestRef = owner === "selected" ? selectedDuplicateRequestRef : previewDuplicateRequestRef;
     const identityRef = owner === "selected" ? selectedDuplicateIdentityRef : previewDuplicateIdentityRef;
     const updateState = owner === "selected" ? setSelectedDuplicateState : setPreviewDuplicateState;
@@ -335,7 +341,7 @@ export function StorageExplorer({
         error: duplicateErrorMessage(duplicateError),
       }));
     }
-  }, [source.id, workspaceName]);
+  }, [source.id, sourceAnalysisReady, workspaceName]);
 
   const loadPreviewPage = useCallback(async (previewedNode: StorageNode, offset: number) => {
     const key = previewKey(source.id, target?.id ?? null, previewedNode.id, offset);
@@ -405,7 +411,9 @@ export function StorageExplorer({
   }, [contentRevision, source.id, tree, workspaceName]);
 
   useEffect(() => {
-    const identity = duplicateFileIdentity(workspaceName, source.id, node);
+    const identity = sourceAnalysisReady
+      ? duplicateFileIdentity(workspaceName, source.id, node)
+      : null;
     selectedDuplicateIdentityRef.current = identity;
     if (!identity) {
       selectedDuplicateRequestRef.current += 1;
@@ -413,7 +421,7 @@ export function StorageExplorer({
       return;
     }
     void loadDuplicatePage("selected", identity, 0);
-  }, [contentRevision, loadDuplicatePage, node, source.id, tree, workspaceName]);
+  }, [contentRevision, loadDuplicatePage, node, source.id, sourceAnalysisReady, tree, workspaceName]);
 
   useEffect(() => clearPreview(), [clearPreview, node.id]);
 
@@ -436,7 +444,9 @@ export function StorageExplorer({
     previewNodeRef.current = next;
     setPreviewNode(next);
     setPreviewOffset(0);
-    const duplicateIdentity = duplicateFileIdentity(workspaceName, source.id, next);
+    const duplicateIdentity = sourceAnalysisReady
+      ? duplicateFileIdentity(workspaceName, source.id, next)
+      : null;
     previewDuplicateRequestRef.current += 1;
     previewDuplicateIdentityRef.current = duplicateIdentity;
     setPreviewDuplicateState(duplicateIdentity
@@ -455,7 +465,7 @@ export function StorageExplorer({
       void loadPreviewPage(next, 0);
     }
     if (duplicateIdentity) void loadDuplicatePage("preview", duplicateIdentity, 0);
-  }, [cancelPreviewRestore, loadDuplicatePage, loadPreviewPage, source.id, workspaceName]);
+  }, [cancelPreviewRestore, loadDuplicatePage, loadPreviewPage, source.id, sourceAnalysisReady, workspaceName]);
 
   const leavePreview = useCallback(() => {
     if (!previewNodeRef.current || restoreTimeoutRef.current !== null) return;
@@ -585,6 +595,8 @@ export function StorageExplorer({
           sites={sites}
           source={source}
           target={target}
+          sourceAnalysisReady={sourceAnalysisReady}
+          coverageAnalysisReady={sourceAnalysisReady && siteAnalysisReady(target)}
           onMetricChange={onMetricChange}
           onTargetChange={onTargetChange}
           onSwap={onSwap}
@@ -608,6 +620,7 @@ export function StorageExplorer({
                 root={location.root}
                 breadcrumbs={location.breadcrumbs}
                 metric={metric}
+                analysisAvailable={analysisAvailability.available}
                 selectedNodeId={node.id}
                 canGoBack={canGoBack}
                 canGoForward={canGoForward}
@@ -621,10 +634,12 @@ export function StorageExplorer({
                 onUp={navigateUp}
                 onNavigateBreadcrumb={navigateBreadcrumb}
               />
-              {metric === "coverage_health" && target && !target.last_scanned_at && (
-                <div className="coverage-freshness-note" role="status">
-                  <span><strong>Coverage unknown.</strong> Scan {target.name} to calculate this map.</span>
-                  <button className="secondary-button" type="button" onClick={onScanTarget}>Scan target</button>
+              {!analysisAvailability.available && analysisAvailability.message && (
+                <div className="coverage-freshness-note analysis-readiness-note" role="status">
+                  <span><strong>Analysis suspended.</strong> {analysisAvailability.message}</span>
+                  {metric === "coverage_health" && target && target.hash_status === "unscanned" && (
+                    <button className="secondary-button" type="button" onClick={onScanTarget}>Scan target</button>
+                  )}
                 </div>
               )}
             </>
@@ -635,6 +650,11 @@ export function StorageExplorer({
           previewing={previewing}
           metric={metric}
           coverageTargetName={target?.name ?? null}
+          sourceAnalysisReady={sourceAnalysisReady}
+          coverageAnalysisReady={sourceAnalysisReady && siteAnalysisReady(target)}
+          analysisMessage={sourceAnalysisReady
+            ? null
+            : metricAnalysisAvailability("space_health", source, null).message}
           staged={staged}
           stagingBusy={stagingBusy}
           page={inspectedPage}

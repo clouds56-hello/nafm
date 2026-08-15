@@ -1,12 +1,13 @@
 export type SiteKind = "local" | "smb";
 export type ConnectionState = "connected" | "offline" | "unknown";
-export type ScanState = "idle" | "queued" | "discovering" | "hashing" | "finalizing" | "cancelling" | "done" | "failed";
-export type ScanPhase = "discovering" | "hashing" | "finalizing";
+export type ScanState = "idle" | "queued" | "discovering" | "publishing_metadata" | "hashing" | "finalizing" | "cancelling" | "done" | "failed";
+export type ScanPhase = "discovering" | "publishing_metadata" | "hashing" | "finalizing";
 export type ScanTaskStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
 export type CancelScanMode = "graceful";
 export type CancelScanOutcome = "requested" | "already_requested" | "not_found";
 export type HealthMetric = "space_health" | "coverage_health";
 export type HiddenPolicy = "include" | "skip";
+export type SiteHashStatus = "unscanned" | "pending" | "ready";
 
 export interface WorkspaceSummary {
   name: string;
@@ -28,6 +29,10 @@ export interface ManagedSite {
   name: string;
   added_at: string;
   folders: ManagedSiteFolder[];
+  hash_status: SiteHashStatus;
+  verified_file_count: number;
+  pending_hash_count: number;
+  latest_inventory_at: string | null;
   last_scanned_at: string | null;
   total_files: number;
   total_bytes: number;
@@ -58,6 +63,10 @@ export interface SiteOverview {
   kind: SiteKind;
   connection_state: ConnectionState;
   scan_state: ScanState;
+  hash_status: SiteHashStatus;
+  verified_file_count: number;
+  pending_hash_count: number;
+  latest_inventory_at: string | null;
   last_scanned_at: string | null;
   total_files: number;
   total_bytes: number;
@@ -71,6 +80,9 @@ export interface Dashboard {
   sites: SiteOverview[];
   active_tasks: ScanTask[];
   staged: DuplicateFile[];
+  staged_hashes_pending: number;
+  staged_cleanup_ready: boolean;
+  staged_warnings: StageWarning[];
   last_updated_at: string;
 }
 
@@ -80,6 +92,8 @@ export interface StorageNode {
   path: string | null;
   kind: "site" | "local_root" | "smb_root" | "directory" | "file" | "smaller_items";
   file_count: number;
+  verified_file_count: number;
+  pending_hash_count: number;
   total_bytes: number;
   duplicate_bytes: number;
   duplicate_file_count: number;
@@ -138,7 +152,7 @@ export interface StorageFileReveal {
   selected_file: StorageNode;
 }
 
-export type FileContentMatchStatus = "ready" | "not_hashed";
+export type FileContentMatchStatus = "ready" | "not_hashed" | "needs_verification";
 
 export interface FileContentMatch {
   file_id: string;
@@ -153,6 +167,8 @@ export interface FileContentMatch {
 
 export interface FileContentMatchesPage {
   status: FileContentMatchStatus;
+  workspace_pending_hash_count: number;
+  workspace_incomplete_site_count: number;
   matches: FileContentMatch[];
   total_matches: number;
   offset: number;
@@ -169,6 +185,19 @@ export interface ScanTask {
   selector: ScanSelector;
   status: ScanTaskStatus;
   created_at: string;
+  site_states: ScanTaskSiteState[];
+}
+
+export interface ScanTaskSiteState {
+  site_id: string;
+  status: "queued" | "running" | "completed";
+  phase: ScanPhase | null;
+  processed_files: number;
+  total_files: number | null;
+  hashed_files: number;
+  reused_files: number;
+  hashes_pending: number;
+  current_path: string | null;
 }
 
 export interface CancelScanReport {
@@ -184,6 +213,7 @@ export interface ScanSummary {
   files_seen: number;
   files_hashed: number;
   files_reused: number;
+  files_pending: number;
   files_removed: number;
   bytes_hashed: number;
   duplicate_groups: number;
@@ -200,7 +230,9 @@ export interface ScanTaskEvent {
   total_files: number | null;
   hashed_files: number | null;
   reused_files: number | null;
+  hashes_pending: number | null;
   current_path: string | null;
+  site_states: ScanTaskSiteState[] | null;
   summary: ScanSummary | null;
   message: string | null;
 }
@@ -238,6 +270,9 @@ export interface StageRemoveReport {
 
 export interface CleanupPreview {
   staged_files: DuplicateFile[];
+  hashes_pending: number;
+  cleanup_ready: boolean;
+  warnings: StageWarning[];
   tracked_file_count_before: number;
   tracked_file_count_after: number;
   duplicate_group_count_before: number;
@@ -257,9 +292,10 @@ export interface ScanProgressView {
   site_id: string;
   phase: ScanPhase;
   processed_files: number;
-  total_files: number;
+  total_files: number | null;
   hashed_files: number;
   reused_files: number;
+  hashes_pending: number;
   current_path: string | null;
 }
 
@@ -267,8 +303,10 @@ export interface ScanCompletionView {
   request_id: number | null;
   site_id: string;
   source: "event" | "snapshot";
+  status: "indexed" | "complete";
   should_announce: boolean;
   total_files: number;
+  pending_files: number;
   hashed_files: number | null;
   reused_files: number | null;
 }

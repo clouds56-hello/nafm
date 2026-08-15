@@ -7,6 +7,8 @@ interface HealthControlsProps {
   sites: SiteOverview[];
   source: SiteOverview;
   target: SiteOverview | null;
+  sourceAnalysisReady: boolean;
+  coverageAnalysisReady: boolean;
   onMetricChange: (metric: HealthMetric) => void;
   onTargetChange: (siteId: string) => void;
   onSwap: () => void;
@@ -17,6 +19,8 @@ export function HealthControls({
   sites,
   source,
   target,
+  sourceAnalysisReady,
+  coverageAnalysisReady,
   onMetricChange,
   onTargetChange,
   onSwap,
@@ -28,16 +32,18 @@ export function HealthControls({
       <div className="metric-switch" role="group" aria-label="Map health metric">
         <button
           type="button"
-          className={metric === "space_health" ? "is-active" : ""}
+          className={`${metric === "space_health" ? "is-active" : ""} ${sourceAnalysisReady ? "" : "is-unavailable"}`}
           aria-pressed={metric === "space_health"}
+          title={sourceAnalysisReady ? "Space health is ready" : "Unavailable while source hashes are pending"}
           onClick={() => onMetricChange("space_health")}
         >
           <strong>Space health</strong>
         </button>
         <button
           type="button"
-          className={metric === "coverage_health" ? "is-active" : ""}
+          className={`${metric === "coverage_health" ? "is-active" : ""} ${coverageAnalysisReady ? "" : "is-unavailable"}`}
           aria-pressed={metric === "coverage_health"}
+          title={coverageAnalysisReady ? "Coverage health is ready" : "Unavailable until source and target hashes are ready"}
           onClick={() => onMetricChange("coverage_health")}
         >
           <strong>Coverage health</strong>
@@ -64,7 +70,15 @@ export function HealthControls({
             ) : (
               <strong>No other site</strong>
             )}
-            <small>{target ? formatRelativeTime(target.last_scanned_at) : "Add another site"}</small>
+            <small>
+              {target
+                ? target.hash_status === "ready"
+                  ? formatRelativeTime(target.last_scanned_at)
+                  : target.pending_hash_count > 0
+                    ? `${target.pending_hash_count.toLocaleString()} hashes pending`
+                    : "Not indexed"
+                : "Add another site"}
+            </small>
           </label>
           <button
             className="swap-button"

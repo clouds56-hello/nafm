@@ -121,5 +121,21 @@ cargo run -p nafm-cli -- missing laptop --against backup
 ```
 
 In human-readable mode, `scan all` displays one independently updated progress
-line per site and marks each site complete immediately. JSON mode emits
-`started`, `progress`, and `summary` events as JSON Lines.
+line per site and marks each site complete independently. Each site is scanned
+in two durable passes:
+
+1. discover every file and atomically publish its current size and modification
+   metadata;
+2. hash only files whose content has not been verified for that inventory.
+
+If only a file's modification time changes, NAFM retains the previous digest as
+stale information but does not use it for duplicate, health, coverage, or
+cleanup decisions until the file is hashed again. A cancellation during
+discovery keeps the previous inventory untouched. A cancellation during
+hashing keeps the newly published inventory and every completed hash, so the
+next scan can reuse that work. The desktop labels such a site as indexed with
+hashes pending and suspends content analysis until verification finishes.
+
+JSON mode emits `started`, `progress`, and `summary` events as JSON Lines.
+Progress events identify the current `discovering`, `publishing_metadata`,
+`hashing`, or `finalizing` phase.

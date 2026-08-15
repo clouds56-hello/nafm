@@ -46,6 +46,12 @@ pub enum NafmError {
   SmbCredentialNotFound(String),
   #[error("SMB file changed while it was being scanned: {0}")]
   SmbFileChanged(PathBuf),
+  #[error("file changed while it was being scanned: {0}")]
+  FileChanged(PathBuf),
+  #[error("scan was superseded by a newer inventory for site: {0}")]
+  ScanSuperseded(String),
+  #[error("site analysis is not ready ({pending_hashes} file hashes pending verification): {site_id}")]
+  SiteHashesPending { site_id: String, pending_hashes: u64 },
   #[error("scan cancelled")]
   ScanCancelled,
   #[error("unsupported site location scheme: {0}")]

@@ -139,6 +139,9 @@ export function DashboardPage({
         <ReviewDrawer
           open={state.reviewOpen}
           staged={state.dashboard.staged}
+          hashesPending={state.dashboard.staged_hashes_pending}
+          cleanupReady={state.dashboard.staged_cleanup_ready}
+          warnings={state.dashboard.staged_warnings}
           preview={state.preview}
           loadingPreview={state.previewLoading}
           error={state.reviewError}
