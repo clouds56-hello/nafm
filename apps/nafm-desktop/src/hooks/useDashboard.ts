@@ -24,6 +24,7 @@ import {
 } from "../lib/scanView";
 import type {
   CleanupPreview,
+  CancelScanMode,
   Dashboard,
   DuplicateFile,
   FileContentMatch,
@@ -118,6 +119,7 @@ export function useDashboard(expectedWorkspace: string | null) {
   const [completionBySite, setCompletionBySite] = useState<Map<string, ScanCompletionView>>(new Map());
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [activeScanTasks, setActiveScanTasks] = useState<Map<number, ScanTask>>(new Map());
+  const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [preview, setPreview] = useState<CleanupPreview | null>(null);
@@ -145,6 +147,7 @@ export function useDashboard(expectedWorkspace: string | null) {
   const completionBySiteRef = useRef<Map<string, ScanCompletionView>>(new Map());
   const currentSiteIdsRef = useRef<Set<string>>(new Set());
   const terminalRequestIdsRef = useRef<Set<number>>(new Set());
+  const cancelRequestsInFlightRef = useRef<Set<number>>(new Set());
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
 
@@ -185,8 +188,10 @@ export function useDashboard(expectedWorkspace: string | null) {
         updateCompletionBySite(() => new Map());
         setActiveRequestIds(new Set());
         setActiveScanTasks(new Map());
+        setCancellingRequestIds(new Set());
         currentSiteIdsRef.current = new Set();
         terminalRequestIdsRef.current.clear();
+        cancelRequestsInFlightRef.current.clear();
       }
       navigationInProgressRef.current = false;
       childrenLoadingRef.current = false;
@@ -489,13 +494,25 @@ export function useDashboard(expectedWorkspace: string | null) {
     const activeTasks = next.active_tasks.filter(
       (task) => !terminalRequestIdsRef.current.has(task.request_id),
     );
+    const activeIds = new Set(activeTasks.map((task) => task.request_id));
     dashboardRef.current = next;
     currentSiteIdsRef.current = new Set(next.sites.map((site) => site.id));
     workspaceNameRef.current = next.workspace_name;
     setDashboard(next);
-    setActiveRequestIds(new Set(activeTasks.map((task) => task.request_id)));
+    setActiveRequestIds(activeIds);
     setActiveScanTasks(new Map(activeTasks.map((task) => [task.request_id, task])));
-    updateCompletionBySite((current) => reconcileScanCompletions(current, next.sites));
+    setCancellingRequestIds((current) => {
+      const nextCancelling = new Set(
+        activeTasks
+          .filter((task) => task.status === "cancelling")
+          .map((task) => task.request_id),
+      );
+      for (const requestId of current) {
+        if (activeIds.has(requestId)) nextCancelling.add(requestId);
+      }
+      return nextCancelling;
+    });
+    updateCompletionBySite((current) => reconcileScanCompletions(current, next.sites, activeTasks));
   }, [updateCompletionBySite]);
 
   const refresh = useCallback(async () => {
@@ -551,6 +568,16 @@ export function useDashboard(expectedWorkspace: string | null) {
   }, [refresh]);
 
   const handleScanEvent = useCallback((event: ScanTaskEvent) => {
+    if (event.scope === "task" && event.kind === "cancelling"
+      && !terminalRequestIdsRef.current.has(event.request_id)) {
+      setActiveRequestIds((current) => new Set(current).add(event.request_id));
+      setCancellingRequestIds((current) => new Set(current).add(event.request_id));
+      setActiveScanTasks((current) => {
+        const task = current.get(event.request_id);
+        if (!task || task.status === "cancelling") return current;
+        return new Map(current).set(event.request_id, { ...task, status: "cancelling" });
+      });
+    }
     if (event.scope === "site" && event.site_id
       && currentSiteIdsRef.current.has(event.site_id)
       && !terminalRequestIdsRef.current.has(event.request_id)) {
@@ -565,7 +592,7 @@ export function useDashboard(expectedWorkspace: string | null) {
           ));
           setProgressBySite((current) => setCurrentScanProgress(current, progress));
         }
-      } else {
+      } else if (["completed", "failed", "cancelled"].includes(event.kind)) {
         setProgressBySite((current) => clearScanProgressForSite(
           current,
           event.site_id!,
@@ -604,6 +631,12 @@ export function useDashboard(expectedWorkspace: string | null) {
         next.delete(event.request_id);
         return next;
       });
+      setCancellingRequestIds((current) => {
+        if (!current.has(event.request_id)) return current;
+        const next = new Set(current);
+        next.delete(event.request_id);
+        return next;
+      });
       setProgressBySite((current) => clearScanProgressForRequest(current, event.request_id));
       void reloadDashboard();
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
@@ -638,7 +671,10 @@ export function useDashboard(expectedWorkspace: string | null) {
         if (terminalRequestIdsRef.current.has(task.request_id)) continue;
         const siteIds = task.selector.all ? allSiteIds : task.selector.site_id ? [task.selector.site_id] : [];
         for (const siteId of siteIds) {
-          if (completionBySite.get(siteId)?.request_id === task.request_id) continue;
+          if (completionBySite.get(siteId)?.request_id === task.request_id) {
+            if (next.get(siteId)?.request_id === task.request_id) next.delete(siteId);
+            continue;
+          }
           const existing = next.get(siteId);
           if (!existing || existing.request_id < task.request_id) {
             next.set(siteId, initialScanProgress(task.request_id, siteId));
@@ -769,6 +805,12 @@ export function useDashboard(expectedWorkspace: string | null) {
       );
       if (terminalRequestIdsRef.current.has(task.request_id)) return;
       dashboardRequestRef.current += 1;
+      setCancellingRequestIds((current) => {
+        if (!current.has(task.request_id)) return current;
+        const next = new Set(current);
+        next.delete(task.request_id);
+        return next;
+      });
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
       setActiveScanTasks((current) => new Map(current).set(task.request_id, task));
       const siteIds = siteId
@@ -795,14 +837,45 @@ export function useDashboard(expectedWorkspace: string | null) {
     }
   }, [updateCompletionBySite]);
 
-  const cancel = useCallback(async (requestId: number) => {
+  const cancel = useCallback(async (
+    requestId: number,
+    mode: CancelScanMode = "graceful",
+  ) => {
+    if (terminalRequestIdsRef.current.has(requestId)
+      || cancelRequestsInFlightRef.current.has(requestId)) return;
+    const requestedWorkspace = workspaceNameRef.current;
+    cancelRequestsInFlightRef.current.add(requestId);
+    setCancellingRequestIds((current) => new Set(current).add(requestId));
     try {
-      const report = await cancelScan(requestId);
-      if (!report.cancelled) setNotice("That scan has already finished.");
+      const report = await cancelScan(requestId, mode);
+      if (workspaceNameRef.current !== requestedWorkspace
+        || terminalRequestIdsRef.current.has(requestId)) return;
+      if (report.outcome === "not_found") {
+        setCancellingRequestIds((current) => {
+          if (!current.has(requestId)) return current;
+          const next = new Set(current);
+          next.delete(requestId);
+          return next;
+        });
+        setNotice("That scan has already finished.");
+        void reloadDashboard();
+      }
     } catch (cancelError) {
-      setNotice(errorMessage(cancelError));
+      if (workspaceNameRef.current === requestedWorkspace
+        && !terminalRequestIdsRef.current.has(requestId)) {
+        setCancellingRequestIds((current) => {
+          if (!current.has(requestId)) return current;
+          const next = new Set(current);
+          next.delete(requestId);
+          return next;
+        });
+        setNotice(errorMessage(cancelError));
+        void reloadDashboard();
+      }
+    } finally {
+      cancelRequestsInFlightRef.current.delete(requestId);
     }
-  }, []);
+  }, [reloadDashboard]);
 
   const activeTree = activeSiteId
     ? trees.get(treeKey(activeSiteId, coverageTargetSiteId)) ?? null
@@ -1100,7 +1173,10 @@ export function useDashboard(expectedWorkspace: string | null) {
   const backendScanState = useMemo(() => {
     const scanning_site_ids = new Set<string>();
     const blocked_site_ids = new Set<string>();
+    const request_by_site = new Map<string, number>();
+    const scan_all_request_ids = new Set<number>();
     for (const task of activeScanTasks.values()) {
+      if (task.selector.all) scan_all_request_ids.add(task.request_id);
       const taskSiteIds = task.selector.all
         ? dashboard?.sites.map((site) => site.id) ?? []
         : task.selector.site_id ? [task.selector.site_id] : [];
@@ -1108,11 +1184,19 @@ export function useDashboard(expectedWorkspace: string | null) {
         blocked_site_ids.add(siteId);
         if (completionBySite.get(siteId)?.request_id !== task.request_id) {
           scanning_site_ids.add(siteId);
+          const currentRequestId = request_by_site.get(siteId);
+          if (currentRequestId === undefined || currentRequestId < task.request_id) {
+            request_by_site.set(siteId, task.request_id);
+          }
         }
       }
     }
-    return { scanning_site_ids, blocked_site_ids };
+    return { scanning_site_ids, blocked_site_ids, request_by_site, scan_all_request_ids };
   }, [activeScanTasks, completionBySite, dashboard?.sites]);
+  const cancellingTaskCount = useMemo(() => (
+    [...activeRequestIds].filter((requestId) => cancellingRequestIds.has(requestId)).length
+  ), [activeRequestIds, cancellingRequestIds]);
+  const scanningTaskCount = Math.max(0, activeRequestIds.size - cancellingTaskCount);
   const isSelectedStaged = Boolean(activeSelectedNode?.path && dashboard?.staged.some((file) => {
     const selectedPath = activeSelectedNode.path!;
     const normalized = selectedPath.endsWith("/") ? selectedPath : `${selectedPath}/`;
@@ -1170,9 +1254,14 @@ export function useDashboard(expectedWorkspace: string | null) {
     completionBySite,
     backendScanningSiteIds: backendScanState.scanning_site_ids,
     scanBlockedSiteIds: backendScanState.blocked_site_ids,
+    scanRequestBySite: backendScanState.request_by_site,
+    scanAllRequestIds: backendScanState.scan_all_request_ids,
+    cancellingRequestIds,
     scan,
     cancel,
     activeTaskCount: activeRequestIds.size,
+    scanningTaskCount,
+    cancellingTaskCount,
     contentRevision,
     stagingBusy,
     stageSelected,
@@ -1197,6 +1286,8 @@ export function useDashboard(expectedWorkspace: string | null) {
     childrenLoading,
     childrenPage,
     completionBySite,
+    cancellingRequestIds,
+    cancellingTaskCount,
     coverageTargetSite,
     coverageTargetSiteId,
     contentRevision,
@@ -1220,6 +1311,7 @@ export function useDashboard(expectedWorkspace: string | null) {
     retryTree,
     runPreview,
     scan,
+    scanningTaskCount,
     selectCoverageTarget,
     selectNode,
     selectSite,

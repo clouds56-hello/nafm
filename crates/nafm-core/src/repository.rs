@@ -671,13 +671,45 @@ impl Repository {
     }
 
     let mut summaries = vec![None; tasks.len()];
+    let mut first_repository_error = None;
+    let mut first_cancellation = None;
+    let mut first_join_error = None;
+    // Dropping the JoinSet would abort these async wrappers without stopping any
+    // spawn_blocking scan they are awaiting, so drain every site before returning.
     while let Some(result) = tasks.join_next().await {
-      let (index, summary) = result?;
-      let summary = summary?;
-      if let Some(event_callback) = &event_callback {
-        event_callback(&ScanEvent::Summary(summary.clone()));
+      match result {
+        Ok((index, Ok(summary))) => {
+          if let Some(event_callback) = &event_callback {
+            event_callback(&ScanEvent::Summary(summary.clone()));
+          }
+          summaries[index] = Some(summary);
+        }
+        Ok((index, Err(error))) => {
+          let first_error = if matches!(error, NafmError::ScanCancelled) {
+            &mut first_cancellation
+          } else {
+            &mut first_repository_error
+          };
+          if first_error.as_ref().is_none_or(|(first_index, _)| index < *first_index) {
+            *first_error = Some((index, error));
+          }
+        }
+        Err(error) => {
+          first_join_error.get_or_insert(error);
+        }
       }
-      summaries[index] = Some(summary);
+    }
+
+    // A sibling's cooperative cancellation must not mask the failure that
+    // triggered it. Within each class, site order makes the result deterministic.
+    if let Some((_, error)) = first_repository_error {
+      return Err(error);
+    }
+    if let Some(error) = first_join_error {
+      return Err(error.into());
+    }
+    if let Some((_, error)) = first_cancellation {
+      return Err(error);
     }
 
     Ok(

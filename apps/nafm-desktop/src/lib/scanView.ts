@@ -2,12 +2,13 @@ import type {
   ScanCompletionView,
   ScanProgressView,
   ScanState,
+  ScanTask,
   ScanTaskEvent,
   SiteOverview,
 } from "./types";
 
 export function isActiveScanState(scanState: ScanState): boolean {
-  return ["queued", "discovering", "hashing", "finalizing"].includes(scanState);
+  return ["queued", "discovering", "hashing", "finalizing", "cancelling"].includes(scanState);
 }
 
 export function initialScanProgress(requestId: number, siteId: string): ScanProgressView {
@@ -63,6 +64,15 @@ export function snapshotScanCompletion(site: SiteOverview): ScanCompletionView |
   };
 }
 
+function rfc3339Nanoseconds(value: string): bigint | null {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return null;
+  const wholeSecondMilliseconds = Date.parse(`${match[1]}${match[3]}`);
+  if (Number.isNaN(wholeSecondMilliseconds)) return null;
+  const fractionalNanoseconds = BigInt((match[2] ?? "").padEnd(9, "0"));
+  return BigInt(wholeSecondMilliseconds) * 1_000_000n + fractionalNanoseconds;
+}
+
 export function silenceScanCompletions(
   current: Map<string, ScanCompletionView>,
   siteIds: string[],
@@ -81,12 +91,24 @@ export function silenceScanCompletions(
 export function reconcileScanCompletions(
   current: Map<string, ScanCompletionView>,
   sites: SiteOverview[],
+  activeTasks: ScanTask[] = [],
 ): Map<string, ScanCompletionView> {
   const next = new Map<string, ScanCompletionView>();
   for (const site of sites) {
     const existing = current.get(site.id);
     const snapshot = snapshotScanCompletion(site);
-    if (existing && (snapshot || isActiveScanState(site.scan_state))) {
+    const lastScannedAt = site.last_scanned_at
+      ? rfc3339Nanoseconds(site.last_scanned_at)
+      : null;
+    const completedTask = lastScannedAt === null
+      ? null
+      : activeTasks
+          .filter((task) => (task.selector.all || task.selector.site_id === site.id)
+            && (rfc3339Nanoseconds(task.created_at) ?? lastScannedAt + 1n) <= lastScannedAt)
+          .sort((left, right) => right.request_id - left.request_id)[0] ?? null;
+    if (snapshot && completedTask && existing?.request_id !== completedTask.request_id) {
+      next.set(site.id, { ...snapshot, request_id: completedTask.request_id });
+    } else if (existing && (snapshot || isActiveScanState(site.scan_state))) {
       next.set(site.id, existing);
     } else if (snapshot) {
       next.set(site.id, snapshot);

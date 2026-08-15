@@ -1,8 +1,10 @@
 export type SiteKind = "local" | "smb";
 export type ConnectionState = "connected" | "offline" | "unknown";
-export type ScanState = "idle" | "queued" | "discovering" | "hashing" | "finalizing" | "done" | "failed";
+export type ScanState = "idle" | "queued" | "discovering" | "hashing" | "finalizing" | "cancelling" | "done" | "failed";
 export type ScanPhase = "discovering" | "hashing" | "finalizing";
-export type ScanTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ScanTaskStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+export type CancelScanMode = "graceful";
+export type CancelScanOutcome = "requested" | "already_requested" | "not_found";
 export type HealthMetric = "space_health" | "coverage_health";
 export type HiddenPolicy = "include" | "skip";
 
@@ -171,7 +173,9 @@ export interface ScanTask {
 
 export interface CancelScanReport {
   request_id: number;
-  cancelled: boolean;
+  outcome: CancelScanOutcome;
+  status: "cancelling" | null;
+  effective_mode: CancelScanMode | null;
 }
 
 export interface ScanSummary {
@@ -190,15 +194,15 @@ export interface ScanTaskEvent {
   request_id: number;
   scope: "site" | "task";
   site_id: string | null;
-  kind: "started" | "progress" | "completed" | "failed" | "cancelled";
-  phase?: ScanPhase;
-  processed_files?: number;
-  total_files?: number;
-  hashed_files?: number;
-  reused_files?: number;
-  current_path?: string | null;
-  summary?: ScanSummary;
-  message?: string;
+  kind: "started" | "progress" | "cancelling" | "completed" | "failed" | "cancelled";
+  phase: ScanPhase | null;
+  processed_files: number | null;
+  total_files: number | null;
+  hashed_files: number | null;
+  reused_files: number | null;
+  current_path: string | null;
+  summary: ScanSummary | null;
+  message: string | null;
 }
 
 export interface DuplicateFile {

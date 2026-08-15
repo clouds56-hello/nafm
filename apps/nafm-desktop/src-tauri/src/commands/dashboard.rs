@@ -8,7 +8,7 @@ use nafm_core::{
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::{AppState, ScanTask};
+use crate::state::{AppState, ScanTask, ScanTaskStatus};
 
 #[derive(Serialize)]
 pub struct Dashboard {
@@ -41,12 +41,26 @@ enum ConnectionState {
   Unknown,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ScanState {
   Idle,
   Hashing,
+  Cancelling,
   Done,
+}
+
+fn site_scan_state(active_tasks: &[ScanTask], site_id: &str, has_completed_scan: bool) -> ScanState {
+  let active_status = active_tasks
+    .iter()
+    .find(|task| task.selector.includes_site(site_id))
+    .map(|task| task.status);
+  match active_status {
+    Some(ScanTaskStatus::Running) => ScanState::Hashing,
+    Some(ScanTaskStatus::Cancelling) => ScanState::Cancelling,
+    None if has_completed_scan => ScanState::Done,
+    None => ScanState::Idle,
+  }
 }
 
 #[derive(Serialize)]
@@ -128,9 +142,7 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     .into_iter()
     .map(|overview| {
       let primary_folder = overview.folders.first();
-      let is_scanning = active_tasks
-        .iter()
-        .any(|task| task.selector.all || task.selector.site_id.as_deref() == Some(overview.site.id.as_str()));
+      let scan_state = site_scan_state(&active_tasks, &overview.site.id, overview.latest_scan_at.is_some());
       SiteOverview {
         id: overview.site.id,
         name: overview.site.name,
@@ -141,13 +153,7 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
           .map(|folder| folder.kind)
           .unwrap_or(SiteFolderKind::Local),
         connection_state: ConnectionState::Unknown,
-        scan_state: if is_scanning {
-          ScanState::Hashing
-        } else if overview.latest_scan_at.is_some() {
-          ScanState::Done
-        } else {
-          ScanState::Idle
-        },
+        scan_state,
         last_scanned_at: overview.latest_scan_at,
         total_files: overview.total_file_count,
         total_bytes: overview.total_bytes,
@@ -277,6 +283,47 @@ mod tests {
   use nafm_core::{StorageNodeKind, StorageTree};
 
   use super::*;
+  use crate::state::{ScanSelector, ScanTaskStatus};
+
+  fn scan_task(request_id: u64, selector: ScanSelector, status: ScanTaskStatus) -> ScanTask {
+    ScanTask {
+      request_id,
+      selector,
+      status,
+      created_at: Utc::now(),
+    }
+  }
+
+  #[test]
+  fn dashboard_maps_cancelling_scan_to_every_affected_site() {
+    let tasks = vec![scan_task(
+      1,
+      ScanSelector {
+        site_id: None,
+        all: true,
+      },
+      ScanTaskStatus::Cancelling,
+    )];
+
+    assert_eq!(site_scan_state(&tasks, "photos", false), ScanState::Cancelling);
+    assert_eq!(site_scan_state(&tasks, "videos", true), ScanState::Cancelling);
+  }
+
+  #[test]
+  fn dashboard_scan_state_respects_site_scope_and_history() {
+    let tasks = vec![scan_task(
+      1,
+      ScanSelector {
+        site_id: Some("photos".to_owned()),
+        all: false,
+      },
+      ScanTaskStatus::Running,
+    )];
+
+    assert_eq!(site_scan_state(&tasks, "photos", false), ScanState::Hashing);
+    assert_eq!(site_scan_state(&tasks, "videos", true), ScanState::Done);
+    assert_eq!(site_scan_state(&tasks, "documents", false), ScanState::Idle);
+  }
 
   #[test]
   fn storage_file_reveal_uses_existing_desktop_tree_and_location_shapes() {

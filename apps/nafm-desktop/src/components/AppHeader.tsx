@@ -4,7 +4,8 @@ import { CheckIcon, LayersIcon, PlusIcon, ScanIcon, SettingsIcon, WorkspaceIcon 
 
 interface AppHeaderProps {
   stagedCount: number;
-  activeTaskCount: number;
+  scanningTaskCount: number;
+  cancellingTaskCount: number;
   workspaceName: string | null;
   workspaces: WorkspaceSummary[];
   managementLoading: boolean;
@@ -20,7 +21,8 @@ interface AppHeaderProps {
 
 export function AppHeader({
   stagedCount,
-  activeTaskCount,
+  scanningTaskCount,
+  cancellingTaskCount,
   workspaceName,
   workspaces,
   managementLoading,
@@ -33,7 +35,18 @@ export function AppHeader({
   onOpenManagement,
   onCreateWorkspace,
 }: AppHeaderProps) {
+  const activeTaskCount = scanningTaskCount + cancellingTaskCount;
   const scanning = activeTaskCount > 0;
+  const scanStatus = cancellingTaskCount === 0
+    ? `Scanning ${scanningTaskCount}`
+    : scanningTaskCount === 0
+      ? cancellingTaskCount === 1 ? "Cancelling…" : `Cancelling ${cancellingTaskCount}`
+      : `${scanningTaskCount} scanning · ${cancellingTaskCount} cancelling`;
+  const scanStatusLabel = cancellingTaskCount === 0
+    ? `${scanningTaskCount} scan ${scanningTaskCount === 1 ? "task" : "tasks"} running`
+    : scanningTaskCount === 0
+      ? `${cancellingTaskCount} scan ${cancellingTaskCount === 1 ? "task is" : "tasks are"} cancelling`
+      : `${scanningTaskCount} scan ${scanningTaskCount === 1 ? "task" : "tasks"} running and ${cancellingTaskCount} cancelling`;
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -84,9 +97,15 @@ export function AppHeader({
           {stagedCount > 0 && <span className="count-pill">{stagedCount}</span>}
         </button>
         <button className="icon-button header-settings" type="button" onClick={onOpenManagement} aria-label="Open Management Center"><SettingsIcon /></button>
-        <button className="primary-button" type="button" onClick={onScanAll} disabled={scanning || !scanAvailable}>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={onScanAll}
+          disabled={scanning || !scanAvailable}
+          aria-label={scanning ? scanStatusLabel : "Scan all sites"}
+        >
           <ScanIcon />
-          {scanning ? `Scanning ${activeTaskCount}` : "Scan all"}
+          {scanning ? scanStatus : "Scan all"}
         </button>
       </nav>
     </header>

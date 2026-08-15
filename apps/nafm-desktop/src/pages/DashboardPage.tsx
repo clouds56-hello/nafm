@@ -40,7 +40,8 @@ export function DashboardPage({
     <div className="app-frame">
       <AppHeader
         stagedCount={stagedCount}
-        activeTaskCount={state.activeTaskCount}
+        scanningTaskCount={state.scanningTaskCount}
+        cancellingTaskCount={state.cancellingTaskCount}
         workspaceName={workspaceName}
         workspaces={workspaces}
         managementLoading={managementLoading}
@@ -74,6 +75,9 @@ export function DashboardPage({
           completionBySite={state.completionBySite}
           backendScanningSiteIds={state.backendScanningSiteIds}
           scanBlockedSiteIds={state.scanBlockedSiteIds}
+          scanRequestBySite={state.scanRequestBySite}
+          scanAllRequestIds={state.scanAllRequestIds}
+          cancellingRequestIds={state.cancellingRequestIds}
           onSelect={(siteId) => void state.selectSite(siteId)}
           onScan={(siteId) => void state.scan(siteId)}
           onCancel={(requestId) => void state.cancel(requestId)}

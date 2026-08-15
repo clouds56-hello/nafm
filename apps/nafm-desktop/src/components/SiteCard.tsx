@@ -7,6 +7,9 @@ interface SiteCardProps {
   site: SiteOverview;
   progress?: ScanProgressView;
   completion?: ScanCompletionView;
+  scanRequestId?: number;
+  scanAll: boolean;
+  cancelling: boolean;
   backendScanActive: boolean;
   scanBlocked: boolean;
   active: boolean;
@@ -20,6 +23,9 @@ export function SiteCard({
   site,
   progress,
   completion,
+  scanRequestId,
+  scanAll,
+  cancelling,
   backendScanActive,
   scanBlocked,
   active,
@@ -29,8 +35,20 @@ export function SiteCard({
   onManage,
 }: SiteCardProps) {
   const backendStateActive = isActiveScanState(site.scan_state);
-  const isScanning = Boolean(progress) || (backendScanActive && backendStateActive);
+  const isScanning = Boolean(progress) || cancelling || (backendScanActive && backendStateActive);
   const progressValue = progress ? percent(progress.processed_files, progress.total_files) : 0;
+  const roundedProgressValue = Math.round(progressValue);
+  const progressKnown = Boolean(progress && progress.total_files > 0);
+  const progressCounters = progress
+    ? `${formatCount(progress.hashed_files)} hashed · ${formatCount(progress.reused_files)} reused`
+    : "Preparing this site…";
+  const progressValueText = progressKnown
+    ? `${roundedProgressValue}% complete, ${progressCounters}${cancelling ? ", cancellation requested" : ""}`
+    : `${cancelling ? "Cancellation requested" : "Starting"}, ${progressCounters}`;
+  const cancelCopy = scanAll ? "Cancel remaining" : "Cancel";
+  const cancelAriaLabel = cancelling
+    ? scanAll ? "Cancelling remaining sites in Scan all" : `Cancelling scan of ${site.name}`
+    : scanAll ? "Cancel remaining sites in Scan all" : `Cancel scan of ${site.name}`;
   const completionCopy = completion?.source === "event"
     ? `${formatCount(completion.hashed_files ?? 0)} hashed · ${formatCount(completion.reused_files ?? 0)} reused`
     : completion
@@ -53,17 +71,26 @@ export function SiteCard({
       </button>
 
       {isScanning ? (
-        <div className="site-progress" aria-live="polite">
+        <div className={`site-progress ${cancelling ? "is-cancelling" : ""}`} aria-live="polite">
           <div className="progress-copy">
-            <span><span className="pulse-dot" />{progress?.phase ?? site.scan_state}</span>
-            <strong>{progress && progress.total_files > 0 ? `${Math.round(progressValue)}%` : "Starting"}</strong>
+            <span>
+              <span className={cancelling ? "cancelling-dot" : "pulse-dot"} />
+              {cancelling ? "Cancelling…" : progress?.phase ?? site.scan_state}
+            </span>
+            <strong>{progressKnown ? `${roundedProgressValue}%` : cancelling ? "Waiting" : "Starting"}</strong>
           </div>
-          <div className="progress-track"><span style={{ width: `${progress ? Math.max(3, progressValue) : 8}%` }} /></div>
-          <p>
-            {progress
-              ? `${formatCount(progress.hashed_files)} hashed · ${formatCount(progress.reused_files)} reused`
-              : "Preparing this site…"}
-          </p>
+          <div
+            className="progress-track"
+            role="progressbar"
+            aria-label={`Scan progress for ${site.name}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressKnown ? roundedProgressValue : undefined}
+            aria-valuetext={progressValueText}
+          >
+            <span style={{ width: `${progress ? Math.max(3, progressValue) : 8}%` }} />
+          </div>
+          <p>{progressCounters}</p>
         </div>
       ) : (
         <>
@@ -85,7 +112,15 @@ export function SiteCard({
                 </span>
                 <strong>100%</strong>
               </div>
-              <div className="progress-track"><span /></div>
+              <div
+                className="progress-track"
+                role="progressbar"
+                aria-label={`Last scan result for ${site.name}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={100}
+                aria-valuetext={`Complete, ${completionCopy}`}
+              ><span /></div>
               <p>{completionCopy}</p>
             </div>
           )}
@@ -97,13 +132,13 @@ export function SiteCard({
         <span className="site-card-actions">
           <button className="site-more-button" type="button" onClick={onManage} aria-label={`Manage ${site.name}`}><MoreIcon /></button>
           <button
-            className="icon-text-button"
+            className={`icon-text-button ${cancelling ? "is-cancelling" : ""}`}
             type="button"
-            onClick={() => progress ? onCancel(progress.request_id) : onScan()}
-            disabled={!progress && (isScanning || scanBlocked)}
-            aria-label={progress ? `Cancel scan of ${site.name}` : `Scan ${site.name}`}
+            onClick={() => scanRequestId !== undefined ? onCancel(scanRequestId) : onScan()}
+            disabled={cancelling || (scanRequestId === undefined && (isScanning || scanBlocked))}
+            aria-label={isScanning ? cancelAriaLabel : `Scan ${site.name}`}
           >
-            <ScanIcon /> {progress ? "Cancel" : isScanning ? "Scanning" : "Scan"}
+            <ScanIcon /> {cancelling ? "Cancelling…" : scanRequestId !== undefined ? cancelCopy : isScanning ? "Scanning" : "Scan"}
           </button>
         </span>
       </footer>
