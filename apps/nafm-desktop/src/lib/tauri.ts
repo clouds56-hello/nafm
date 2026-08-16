@@ -19,6 +19,7 @@ import type {
   StorageFileReveal,
   StorageLocation,
   StorageTree,
+  StorageViewSnapshot,
 } from "./types";
 
 export function loadManagement(): Promise<ManagementSnapshot> {
@@ -131,6 +132,28 @@ export function getStorageChildren(
     targetSiteId,
     nodeId,
     offset,
+    limit,
+  });
+}
+
+export function getStorageViewSnapshot(
+  expectedWorkspace: string,
+  siteId: string,
+  targetSiteId: string | null,
+  nodeId: string,
+  offset: number,
+  maxDepth = 5,
+  maxChildren = 12,
+  limit = 6,
+): Promise<StorageViewSnapshot> {
+  return invoke<StorageViewSnapshot>("get_storage_view_snapshot", {
+    expectedWorkspace,
+    siteId,
+    targetSiteId,
+    nodeId,
+    offset,
+    maxDepth,
+    maxChildren,
     limit,
   });
 }

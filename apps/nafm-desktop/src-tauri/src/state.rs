@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
-use nafm_core::{CredentialStore, Repository, WorkspaceManager};
+use nafm_core::{CredentialStore, Repository, ScanPhase, WorkspaceManager};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
@@ -73,7 +73,7 @@ pub struct ActiveWorkspace {
 #[derive(Clone, Default)]
 pub struct ScanTaskRegistry {
   next_request_id: Arc<AtomicU64>,
-  tasks: Arc<Mutex<BTreeMap<u64, RunningScanTask>>>,
+  tasks: Arc<StdMutex<BTreeMap<u64, RunningScanTask>>>,
 }
 
 impl ScanTaskRegistry {
@@ -81,8 +81,8 @@ impl ScanTaskRegistry {
     self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1
   }
 
-  pub async fn insert_if_available(&self, task: RunningScanTask) -> bool {
-    let mut tasks = self.tasks.lock().await;
+  pub fn insert_if_available(&self, task: RunningScanTask) -> bool {
+    let mut tasks = self.lock_tasks();
     if tasks
       .values()
       .any(|running| running.task.selector.conflicts_with(&task.task.selector))
@@ -93,12 +93,8 @@ impl ScanTaskRegistry {
     true
   }
 
-  pub async fn remove(&self, request_id: u64) {
-    self.tasks.lock().await.remove(&request_id);
-  }
-
-  pub async fn request_cancel(&self, request_id: u64, mode: ScanCancelMode) -> ScanCancelRequest {
-    let mut tasks = self.tasks.lock().await;
+  pub fn request_cancel(&self, request_id: u64, mode: ScanCancelMode) -> ScanCancelRequest {
+    let mut tasks = self.lock_tasks();
     let Some(task) = tasks.get_mut(&request_id) else {
       return ScanCancelRequest::not_found();
     };
@@ -107,19 +103,49 @@ impl ScanTaskRegistry {
       ScanTaskStatus::Running => {
         let effective_mode = task.control.request_cancel(mode);
         task.task.status = ScanTaskStatus::Cancelling;
-        ScanCancelRequest::requested(effective_mode)
+        ScanCancelRequest::requested(effective_mode, task.task.site_states.clone())
       }
       ScanTaskStatus::Cancelling => ScanCancelRequest::already_requested(
         task
           .control
           .effective_cancel_mode()
           .unwrap_or_else(|| task.control.request_cancel(mode)),
+        task.task.site_states.clone(),
       ),
     }
   }
 
-  pub async fn active_tasks(&self) -> Vec<ScanTask> {
-    self.tasks.lock().await.values().map(|task| task.task.clone()).collect()
+  pub fn remove_with_site_states(&self, request_id: u64) -> Vec<ScanTaskSiteState> {
+    self
+      .lock_tasks()
+      .remove(&request_id)
+      .map(|running| running.task.site_states)
+      .unwrap_or_default()
+  }
+
+  pub fn update_site_state(&self, request_id: u64, site_state: ScanTaskSiteState) {
+    let mut tasks = self.lock_tasks();
+    let Some(running) = tasks.get_mut(&request_id) else {
+      return;
+    };
+    if let Some(existing) = running
+      .task
+      .site_states
+      .iter_mut()
+      .find(|existing| existing.site_id == site_state.site_id)
+    {
+      *existing = site_state;
+    } else {
+      running.task.site_states.push(site_state);
+    }
+  }
+
+  pub fn active_tasks(&self) -> Vec<ScanTask> {
+    self.lock_tasks().values().map(|task| task.task.clone()).collect()
+  }
+
+  fn lock_tasks(&self) -> MutexGuard<'_, BTreeMap<u64, RunningScanTask>> {
+    self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
   }
 }
 
@@ -166,6 +192,44 @@ pub struct ScanTask {
   pub selector: ScanSelector,
   pub status: ScanTaskStatus,
   pub created_at: DateTime<Utc>,
+  pub site_states: Vec<ScanTaskSiteState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScanTaskSiteState {
+  pub site_id: String,
+  pub status: ScanTaskSiteStatus,
+  pub phase: Option<ScanPhase>,
+  pub processed_files: u64,
+  pub total_files: Option<u64>,
+  pub hashed_files: u64,
+  pub reused_files: u64,
+  pub hashes_pending: u64,
+  pub current_path: Option<String>,
+}
+
+impl ScanTaskSiteState {
+  pub fn queued(site_id: String) -> Self {
+    Self {
+      site_id,
+      status: ScanTaskSiteStatus::Queued,
+      phase: None,
+      processed_files: 0,
+      total_files: None,
+      hashed_files: 0,
+      reused_files: 0,
+      hashes_pending: 0,
+      current_path: None,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanTaskSiteStatus {
+  Queued,
+  Running,
+  Completed,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -229,27 +293,30 @@ pub enum ScanCancelOutcome {
   NotFound,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ScanCancelRequest {
   pub outcome: ScanCancelOutcome,
   pub status: Option<ScanTaskStatus>,
   pub effective_mode: Option<ScanCancelMode>,
+  pub site_states: Option<Vec<ScanTaskSiteState>>,
 }
 
 impl ScanCancelRequest {
-  fn requested(effective_mode: ScanCancelMode) -> Self {
+  fn requested(effective_mode: ScanCancelMode, site_states: Vec<ScanTaskSiteState>) -> Self {
     Self {
       outcome: ScanCancelOutcome::Requested,
       status: Some(ScanTaskStatus::Cancelling),
       effective_mode: Some(effective_mode),
+      site_states: Some(site_states),
     }
   }
 
-  fn already_requested(effective_mode: ScanCancelMode) -> Self {
+  fn already_requested(effective_mode: ScanCancelMode, site_states: Vec<ScanTaskSiteState>) -> Self {
     Self {
       outcome: ScanCancelOutcome::AlreadyRequested,
       status: Some(ScanTaskStatus::Cancelling),
       effective_mode: Some(effective_mode),
+      site_states: Some(site_states),
     }
   }
 
@@ -258,6 +325,7 @@ impl ScanCancelRequest {
       outcome: ScanCancelOutcome::NotFound,
       status: None,
       effective_mode: None,
+      site_states: None,
     }
   }
 }
@@ -265,9 +333,12 @@ impl ScanCancelRequest {
 #[cfg(test)]
 mod tests {
   use super::{
-    ScanCancelMode, ScanCancelOutcome, ScanSelector, ScanTask, ScanTaskControl, ScanTaskRegistry, ScanTaskStatus,
+    ScanCancelMode, ScanCancelOutcome, ScanSelector, ScanTask, ScanTaskControl, ScanTaskRegistry, ScanTaskSiteState,
+    ScanTaskSiteStatus, ScanTaskStatus,
   };
   use chrono::Utc;
+  use nafm_core::ScanPhase;
+  use serde_json::json;
 
   fn site(site_id: &str) -> ScanSelector {
     ScanSelector {
@@ -277,12 +348,14 @@ mod tests {
   }
 
   fn running_task(request_id: u64, selector: ScanSelector) -> super::RunningScanTask {
+    let site_id = selector.site_id.clone().unwrap_or_else(|| "all".to_owned());
     super::RunningScanTask {
       task: ScanTask {
         request_id,
         selector,
         status: ScanTaskStatus::Running,
         created_at: Utc::now(),
+        site_states: vec![ScanTaskSiteState::queued(site_id)],
       },
       control: ScanTaskControl::default(),
     }
@@ -331,68 +404,107 @@ mod tests {
     );
   }
 
-  #[tokio::test]
-  async fn registry_rejects_overlapping_scan_scopes() {
+  #[test]
+  fn registry_rejects_overlapping_scan_scopes() {
     let registry = ScanTaskRegistry::default();
     let selector = site("photos");
-    assert!(registry.insert_if_available(running_task(1, selector.clone())).await);
+    assert!(registry.insert_if_available(running_task(1, selector.clone())));
 
-    assert!(!registry.insert_if_available(running_task(2, selector)).await);
-    assert!(registry.insert_if_available(running_task(3, site("videos"))).await);
-    assert!(
-      !registry
-        .insert_if_available(running_task(
-          4,
-          ScanSelector {
-            site_id: None,
-            all: true,
-          },
-        ))
-        .await
-    );
-    assert_eq!(registry.active_tasks().await.len(), 2);
+    assert!(!registry.insert_if_available(running_task(2, selector)));
+    assert!(registry.insert_if_available(running_task(3, site("videos"))));
+    assert!(!registry.insert_if_available(running_task(
+      4,
+      ScanSelector {
+        site_id: None,
+        all: true,
+      },
+    )));
+    assert_eq!(registry.active_tasks().len(), 2);
   }
 
-  #[tokio::test]
-  async fn registry_transitions_running_task_to_cancelling_once() {
+  #[test]
+  fn registry_transitions_running_task_to_cancelling_once() {
     let registry = ScanTaskRegistry::default();
     let task = running_task(1, site("photos"));
     let control = task.control.clone();
-    assert!(registry.insert_if_available(task).await);
+    assert!(registry.insert_if_available(task));
 
-    let first = registry.request_cancel(1, ScanCancelMode::Graceful).await;
+    let first = registry.request_cancel(1, ScanCancelMode::Graceful);
     assert_eq!(first.outcome, ScanCancelOutcome::Requested);
     assert_eq!(first.status, Some(ScanTaskStatus::Cancelling));
     assert_eq!(first.effective_mode, Some(ScanCancelMode::Graceful));
+    assert_eq!(first.site_states.as_ref().unwrap()[0].site_id, "photos");
     assert!(control.is_cancel_requested());
 
-    let repeated = registry.request_cancel(1, ScanCancelMode::Graceful).await;
+    let repeated = registry.request_cancel(1, ScanCancelMode::Graceful);
     assert_eq!(repeated.outcome, ScanCancelOutcome::AlreadyRequested);
     assert_eq!(repeated.status, Some(ScanTaskStatus::Cancelling));
     assert_eq!(repeated.effective_mode, Some(ScanCancelMode::Graceful));
-    assert_eq!(registry.active_tasks().await[0].status, ScanTaskStatus::Cancelling);
+    assert_eq!(repeated.site_states.as_ref().unwrap()[0].site_id, "photos");
+    assert_eq!(registry.active_tasks()[0].status, ScanTaskStatus::Cancelling);
   }
 
-  #[tokio::test]
-  async fn cancelling_task_still_conflicts_until_removed() {
+  #[test]
+  fn cancelling_task_still_conflicts_until_removed() {
     let registry = ScanTaskRegistry::default();
-    assert!(registry.insert_if_available(running_task(1, site("photos"))).await);
-    registry.request_cancel(1, ScanCancelMode::Graceful).await;
+    assert!(registry.insert_if_available(running_task(1, site("photos"))));
+    registry.request_cancel(1, ScanCancelMode::Graceful);
 
-    assert!(!registry.insert_if_available(running_task(2, site("photos"))).await);
-    registry.remove(1).await;
-    assert!(registry.insert_if_available(running_task(2, site("photos"))).await);
+    assert!(!registry.insert_if_available(running_task(2, site("photos"))));
+    registry.remove_with_site_states(1);
+    assert!(registry.insert_if_available(running_task(2, site("photos"))));
   }
 
-  #[tokio::test]
-  async fn cancelling_unknown_task_reports_not_found() {
+  #[test]
+  fn cancelling_unknown_task_reports_not_found() {
     let registry = ScanTaskRegistry::default();
 
-    let result = registry.request_cancel(42, ScanCancelMode::Graceful).await;
+    let result = registry.request_cancel(42, ScanCancelMode::Graceful);
 
     assert_eq!(result.outcome, ScanCancelOutcome::NotFound);
     assert_eq!(result.status, None);
     assert_eq!(result.effective_mode, None);
+    assert!(result.site_states.is_none());
+  }
+
+  #[test]
+  fn registry_retains_serializable_per_site_progress() {
+    let registry = ScanTaskRegistry::default();
+    assert!(registry.insert_if_available(running_task(1, site("photos"))));
+    registry.update_site_state(
+      1,
+      ScanTaskSiteState {
+        site_id: "photos".to_owned(),
+        status: ScanTaskSiteStatus::Running,
+        phase: Some(ScanPhase::PublishingMetadata),
+        processed_files: 0,
+        total_files: Some(12),
+        hashed_files: 0,
+        reused_files: 0,
+        hashes_pending: 12,
+        current_path: None,
+      },
+    );
+
+    let task = registry.active_tasks().pop().unwrap();
+    assert_eq!(
+      serde_json::to_value(task.site_states).unwrap(),
+      json!([{
+        "site_id": "photos",
+        "status": "running",
+        "phase": "publishing_metadata",
+        "processed_files": 0,
+        "total_files": 12,
+        "hashed_files": 0,
+        "reused_files": 0,
+        "hashes_pending": 12,
+        "current_path": null
+      }])
+    );
+    let terminal_states = registry.remove_with_site_states(1);
+    assert_eq!(terminal_states.len(), 1);
+    assert_eq!(terminal_states[0].phase, Some(ScanPhase::PublishingMetadata));
+    assert!(registry.active_tasks().is_empty());
   }
 
   #[test]

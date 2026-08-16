@@ -39,10 +39,23 @@ pub struct SiteOverview {
   pub site: Site,
   pub folders: Vec<SiteFolder>,
   pub total_file_count: u64,
+  pub verified_file_count: u64,
+  pub pending_hash_count: u64,
   pub total_bytes: u64,
+  pub verified_bytes: u64,
   pub duplicate_file_count: u64,
   pub duplicate_bytes: u64,
+  pub hash_status: SiteHashStatus,
+  pub latest_inventory_at: Option<DateTime<Utc>>,
   pub latest_scan_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteHashStatus {
+  Unscanned,
+  Pending,
+  Ready,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,12 +77,17 @@ pub struct StorageNode {
   pub kind: StorageNodeKind,
   pub total_bytes: u64,
   pub file_count: u64,
+  pub verified_file_count: u64,
+  pub pending_hash_count: u64,
+  pub verified_bytes: u64,
   pub duplicate_bytes: u64,
   pub duplicate_file_count: u64,
   pub space_health: Option<f64>,
+  pub estimated_space_health: Option<f64>,
   pub space_healthy_file_equivalents: f64,
   pub space_total_files: u64,
   pub coverage_health: Option<f64>,
+  pub estimated_coverage_health: Option<f64>,
   pub coverage_covered_files: u64,
   pub coverage_total_files: u64,
   pub children: Vec<StorageNode>,
@@ -106,6 +124,13 @@ pub struct StorageChildrenPage {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageViewSnapshot {
+  pub tree: StorageTree,
+  pub location: StorageLocation,
+  pub page: StorageChildrenPage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageFileReveal {
   pub tree: StorageTree,
   pub location: StorageLocation,
@@ -117,6 +142,7 @@ pub struct StorageFileReveal {
 #[serde(rename_all = "snake_case")]
 pub enum FileContentMatchStatus {
   Ready,
+  NeedsVerification,
   NotHashed,
 }
 
@@ -135,6 +161,8 @@ pub struct FileContentMatch {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FileContentMatchesPage {
   pub status: FileContentMatchStatus,
+  pub workspace_pending_hash_count: u64,
+  pub workspace_incomplete_site_count: u64,
   pub matches: Vec<FileContentMatch>,
   pub total_matches: u64,
   pub offset: u64,
@@ -155,20 +183,33 @@ pub struct ScanSummary {
   pub files_seen: u64,
   pub files_hashed: u64,
   pub files_reused: u64,
+  pub files_pending: u64,
   pub files_removed: u64,
   pub bytes_hashed: u64,
   pub duplicate_groups: u64,
   pub duplicate_files: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanPhase {
+  Discovering,
+  PublishingMetadata,
+  Hashing,
+  Finalizing,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScanProgress {
   pub site_id: String,
   pub site_name: String,
-  pub current_path: PathBuf,
-  pub files_scanned: u64,
-  pub files_reused: u64,
-  pub total_files: u64,
+  pub phase: ScanPhase,
+  pub current_path: Option<PathBuf>,
+  pub processed_files: u64,
+  pub total_files: Option<u64>,
+  pub hashed_files: u64,
+  pub reused_files: u64,
+  pub hashes_pending: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -257,6 +298,9 @@ pub struct StageHistoryReport {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StageCommitDryRun {
   pub staged_files: Vec<DuplicateFile>,
+  pub hashes_pending: u64,
+  pub cleanup_ready: bool,
+  pub warnings: Vec<StageWarning>,
   pub tracked_file_count_before: u64,
   pub tracked_file_count_after: u64,
   pub duplicate_group_count_before: u64,

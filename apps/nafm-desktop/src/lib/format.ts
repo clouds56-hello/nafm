@@ -44,12 +44,17 @@ export function formatFileEquivalent(value: number): string {
   return fileEquivalents.format(value);
 }
 
-export function healthColor(value: number | null): string {
-  if (value === null) return "#6b747c";
+export function healthColor(value: number | null, intensity = 1): string {
+  const neutral = [107, 116, 124];
+  if (value === null) return `rgb(${neutral.join(" ")})`;
   const clamped = Math.min(100, Math.max(0, value));
   const [from, to, amount] = clamped <= 50
     ? [[245, 112, 111], [240, 184, 91], clamped / 50]
     : [[240, 184, 91], [91, 219, 194], (clamped - 50) / 50];
-  const channels = from.map((channel, index) => Math.round(channel + (to[index] - channel) * amount));
+  const healthChannels = from.map((channel, index) => channel + (to[index] - channel) * amount);
+  const blend = Math.min(1, Math.max(0, intensity));
+  const channels = healthChannels.map((channel, index) => (
+    Math.round(neutral[index] + (channel - neutral[index]) * blend)
+  ));
   return `rgb(${channels.join(" ")})`;
 }

@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatHealth, healthColor } from "../lib/format";
+import {
+  formatHealthForCanvas,
+  healthAriaDescription,
+  nodeCompleteness,
+  nodeHealthPresentation,
+  type HealthPresentation,
+} from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface SunburstMapProps {
   root: StorageNode;
   breadcrumbs: StorageNode[];
   metric: HealthMetric;
+  coverageTargetCompleteness: number;
   selectedNodeId: string;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -30,6 +38,7 @@ interface ArcDatum {
 const TAU = Math.PI * 2;
 const GAP = 0.018;
 const MAX_ARCS = 5_000;
+const ARC_TRACK_COLOR = healthColor(null);
 
 function nodeWeight(node: StorageNode): number {
   return Math.max(node.total_bytes, 1);
@@ -71,6 +80,50 @@ function drawArc(
   context.closePath();
 }
 
+function arcProgress(presentation: HealthPresentation): number {
+  if (presentation.value === null) return 0;
+  if (presentation.state === "exact") return 1;
+  return Math.min(1, Math.max(0, presentation.completeness));
+}
+
+function drawProgressBoundary(
+  context: CanvasRenderingContext2D,
+  center: number,
+  radius: number,
+  start: number,
+  end: number,
+) {
+  const gap = Math.min(GAP, Math.max(0, (end - start) * 0.12));
+  context.beginPath();
+  context.arc(center, center, radius, start + gap, end - gap);
+  context.strokeStyle = "rgba(255, 255, 255, .2)";
+  context.lineWidth = 1;
+  context.stroke();
+}
+
+function drawRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const right = x + width;
+  const bottom = y + height;
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(right - radius, y);
+  context.quadraticCurveTo(right, y, right, y + radius);
+  context.lineTo(right, bottom - radius);
+  context.quadraticCurveTo(right, bottom, right - radius, bottom);
+  context.lineTo(x + radius, bottom);
+  context.quadraticCurveTo(x, bottom, x, bottom - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
+
 function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRadius: number, ringWidth: number) {
   const dx = x - center;
   const dy = y - center;
@@ -90,12 +143,12 @@ function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRa
 function drawScoreLabel(
   context: CanvasRenderingContext2D,
   arc: ArcDatum,
-  value: number | null,
+  presentation: HealthPresentation,
   center: number,
   inner: number,
   outer: number,
 ) {
-  if (value === null) return;
+  if (presentation.value === null || presentation.value === 100) return;
   const angleSpan = arc.end - arc.start;
   const radius = (inner + outer) / 2;
   if (angleSpan * radius < 43 || outer - inner < 25) return;
@@ -106,11 +159,19 @@ function drawScoreLabel(
   context.save();
   context.translate(center + Math.cos(angle) * radius, center + Math.sin(angle) * radius);
   context.rotate(rotation);
-  context.fillStyle = "rgba(7, 11, 15, .86)";
   context.font = "700 10px -apple-system, BlinkMacSystemFont, sans-serif";
+  const label = formatHealthForCanvas(presentation);
+  const labelWidth = Math.max(24, context.measureText(label).width + 10);
+  drawRoundedRect(context, -labelWidth / 2, -8, labelWidth, 16, 6);
+  context.fillStyle = "rgba(7, 11, 15, .76)";
+  context.fill();
+  context.strokeStyle = "rgba(255, 255, 255, .1)";
+  context.lineWidth = 1;
+  context.stroke();
+  context.fillStyle = "rgba(245, 248, 249, .94)";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(`${Math.round(value)}`, 0, 0);
+  context.fillText(label, 0, 0);
   context.restore();
 }
 
@@ -118,6 +179,7 @@ export function SunburstMap({
   root,
   breadcrumbs,
   metric,
+  coverageTargetCompleteness,
   selectedNodeId,
   canGoBack,
   canGoForward,
@@ -135,6 +197,7 @@ export function SunburstMap({
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null);
   const breadcrumbRef = useRef<HTMLOListElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const healthDescriptionId = useId();
   const animationFrameRef = useRef<number | null>(null);
   const hoveredNodeIdRef = useRef<string | null>(null);
   const [size, setSize] = useState(560);
@@ -185,12 +248,20 @@ export function SunburstMap({
       const center = size / 2;
       const inner = innerRadius + (hovered.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = healthColor(hovered.node[metric]);
+      const presentation = nodeHealthPresentation(
+        hovered.node,
+        metric,
+        coverageTargetCompleteness,
+      );
+      const color = healthColor(presentation.value);
+      const shadowColor = presentation.state === "exact"
+        ? color
+        : "rgba(210, 220, 224, .45)";
       drawArc(context, center, inner, outer, hovered.start, hovered.end);
       context.save();
       context.strokeStyle = "rgba(255,255,255,.78)";
       context.lineWidth = 1.5 + pulse * 1.5;
-      context.shadowColor = color;
+      context.shadowColor = shadowColor;
       context.shadowBlur = 13 + pulse * 18;
       context.stroke();
       context.restore();
@@ -216,7 +287,7 @@ export function SunburstMap({
       if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     };
-  }, [hovered, innerRadius, metric, ringWidth, size]);
+  }, [coverageTargetCompleteness, hovered, innerRadius, metric, ringWidth, size]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -241,23 +312,46 @@ export function SunburstMap({
     for (const arc of arcs) {
       const inner = innerRadius + (arc.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = healthColor(arc.node[metric]);
-      drawArc(context, center, inner, outer, arc.start, arc.end);
+      const presentation = nodeHealthPresentation(
+        arc.node,
+        metric,
+        coverageTargetCompleteness,
+      );
+      const color = healthColor(presentation.value);
       const selected = arc.node.id === selectedNodeId;
-      context.globalAlpha = selected ? 1 : 0.84;
-      context.fillStyle = color;
+
+      drawArc(context, center, inner, outer, arc.start, arc.end);
+      context.globalAlpha = selected ? 0.94 : 0.78;
+      context.fillStyle = ARC_TRACK_COLOR;
       context.fill();
+
+      const progress = arcProgress(presentation);
+      if (progress > 0) {
+        const thickness = outer - inner;
+        const progressOuter = inner + thickness * progress;
+        drawArc(context, center, inner, progressOuter, arc.start, arc.end);
+        context.globalAlpha = 1;
+        context.fillStyle = color;
+        context.fill();
+        if (progress < 1 && (arc.end - arc.start) * progressOuter >= 10) {
+          drawProgressBoundary(context, center, progressOuter, arc.start, arc.end);
+        }
+      }
+
+      context.globalAlpha = 1;
       if (selected) {
+        drawArc(context, center, inner, outer, arc.start, arc.end);
         context.save();
         context.strokeStyle = "rgba(255,255,255,.95)";
         context.lineWidth = 2;
-        context.shadowColor = color;
+        context.shadowColor = presentation.state === "exact"
+          ? color
+          : "rgba(210, 220, 224, .45)";
         context.shadowBlur = 12;
         context.stroke();
         context.restore();
       }
-      context.globalAlpha = 1;
-      drawScoreLabel(context, arc, arc.node[metric], center, inner, outer);
+      drawScoreLabel(context, arc, presentation, center, inner, outer);
     }
 
     context.beginPath();
@@ -266,11 +360,23 @@ export function SunburstMap({
     context.fill();
     context.strokeStyle = "rgba(255,255,255,.07)";
     context.stroke();
-  }, [arcs, innerRadius, metric, ringWidth, selectedNodeId, size]);
+  }, [arcs, coverageTargetCompleteness, innerRadius, metric, ringWidth, selectedNodeId, size]);
 
   useEffect(() => {
     previewArc(null);
-  }, [previewArc, root]);
+  }, [root.id]);
+
+  useEffect(() => {
+    const hoveredNodeId = hoveredNodeIdRef.current;
+    if (!hoveredNodeId) return;
+    const rebound = arcs.find((arc) => arc.node.id === hoveredNodeId) ?? null;
+    if (!rebound) {
+      previewArc(null);
+      return;
+    }
+    setHovered(rebound);
+    onPreviewNode(rebound.node);
+  }, [arcs, onPreviewNode, previewArc]);
 
   useEffect(() => {
     const breadcrumb = breadcrumbRef.current;
@@ -303,11 +409,22 @@ export function SunburstMap({
     }
   };
 
-  const score = root[metric];
+  const rootPresentation = nodeHealthPresentation(root, metric, coverageTargetCompleteness);
   const metricLabel = metric === "space_health" ? "space health" : "coverage health";
+  const rootCoverageUnavailableReason = metric === "coverage_health"
+    && rootPresentation.state === "unavailable"
+    && (nodeCompleteness(root) === 0 || coverageTargetCompleteness === 0)
+    ? "no verified comparison is available"
+    : undefined;
+  const rootHealthDescription = healthAriaDescription(
+    rootPresentation,
+    metric === "space_health" ? "space" : "coverage",
+    root.file_count > 0,
+    rootCoverageUnavailableReason,
+  );
 
   return (
-    <div className="sunburst-frame" ref={frameRef}>
+    <div className={`sunburst-frame is-analysis-${rootPresentation.state}`} ref={frameRef}>
       <nav className="map-navigation" aria-label="Folder navigation">
         <div className="map-history-controls" aria-label="History">
           <button
@@ -355,12 +472,20 @@ export function SunburstMap({
       <p className="sr-only" aria-live="polite">
         Opened {breadcrumbs.map((node) => node.name || "Site").join(" / ")}
       </p>
+      <p id={healthDescriptionId} className="sr-only">
+        Arc size is physical storage. The current folder has {rootHealthDescription}. {rootPresentation.state === "partial"
+          ? "For estimated arcs, verified content fills from the inner edge outward; the unverified remainder is neutral gray."
+          : rootPresentation.state === "unavailable"
+            ? "Unavailable health is shown in neutral gray."
+            : "Health colors are exact."} Use arrow keys to explore and Enter to select.
+      </p>
       <canvas
         ref={canvasRef}
         className="sunburst-canvas"
         role="img"
         tabIndex={0}
-        aria-label={`Radial ${metricLabel} map for ${root.name}. Arc size is physical storage. Use arrow keys to explore and Enter to select.`}
+        aria-label={`Radial ${metricLabel} map for ${root.name}`}
+        aria-describedby={healthDescriptionId}
         onPointerMove={(event) => {
           const next = getPointerArc(event) ?? null;
           previewArc(next, next ? "immediate" : "delayed");
@@ -387,15 +512,21 @@ export function SunburstMap({
         }}
         disabled={!canGoUp || !parentRoot}
         aria-label={parentRoot ? `Up to ${parentRoot.name}` : `${root.name}, map root`}
-        title={parentRoot ? `Up to ${parentRoot.name} (Alt+Up)` : undefined}
+        aria-describedby={healthDescriptionId}
+        title={parentRoot ? `Up to ${parentRoot.name} (Alt+Up)` : `${root.name} is the map root`}
       >
         <small>{parentRoot ? "↑ UP" : metricLabel.toUpperCase()}</small>
-        <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+        <strong style={{ color: rootPresentation.color }}>
+          {formatHealth(rootPresentation.value)}
+        </strong>
         <span title={root.name}>{root.name}</span>
       </button>
-      <div className="health-legend" aria-label="Health score color scale">
+      <div className="health-legend" aria-label="Health score color and verification progress legend">
         <div className="health-gradient" />
         <div><span>0 unhealthy</span><span>50</span><span>100 healthy</span></div>
+        {rootPresentation.state === "partial" && (
+          <small>Inner fill: verified · Gray: pending or unavailable</small>
+        )}
       </div>
     </div>
   );

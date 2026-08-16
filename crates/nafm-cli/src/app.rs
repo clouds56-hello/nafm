@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
 use crate::output::{
-  SiteScanProgress, format_duplicate_groups_by_folder, print_json_line, print_json_or, scan_progress_position,
+  SiteScanProgress, format_duplicate_groups_by_folder, print_json_line, print_json_or, scan_progress_message,
   site_folder_label, spinner,
 };
 
@@ -430,15 +430,7 @@ async fn handle_scan(repo: &Repository, selector: &str, json: bool) -> Result<()
     } else {
       let spinner = spinner.clone();
       Some(Arc::new(move |progress: &nafm_core::ScanProgress| {
-        spinner.set_message(format!(
-          "scanning {} {}/{} ({} hashed, {} reused) {}",
-          progress.site_name,
-          scan_progress_position(progress),
-          progress.total_files,
-          progress.files_scanned,
-          progress.files_reused,
-          progress.current_path.display()
-        ));
+        spinner.set_message(format!("{}: {}", progress.site_name, scan_progress_message(progress)));
       }) as Arc<dyn Fn(&nafm_core::ScanProgress) + Send + Sync>)
     };
     repo

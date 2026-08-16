@@ -5,8 +5,14 @@ import {
   formatCount,
   formatFileEquivalent,
   formatHealth,
-  healthColor,
 } from "../lib/format";
+import {
+  formatCompleteness,
+  healthAriaDescription,
+  nodeCompleteness,
+  nodeHealthPresentation,
+  type HealthPresentation,
+} from "../lib/health";
 import type {
   FileContentMatch,
   FileContentMatchesPage,
@@ -24,6 +30,7 @@ import {
   LayersIcon,
   NetworkIcon,
   RefreshIcon,
+  ScanIcon,
 } from "./Icons";
 
 interface InspectorPanelProps {
@@ -31,6 +38,9 @@ interface InspectorPanelProps {
   previewing: boolean;
   metric: HealthMetric;
   coverageTargetName: string | null;
+  coverageTargetCompleteness: number;
+  sourceAnalysisReady: boolean;
+  analysisMessage: string | null;
   staged: boolean;
   stagingBusy: boolean;
   page: StorageChildrenPage | null;
@@ -67,26 +77,59 @@ interface InspectorPanelProps {
 
 interface HealthScoreProps {
   label: string;
-  value: number | null;
+  presentation: HealthPresentation;
   numerator: number;
   total: number;
   unit: string;
+  hasContent: boolean;
   active: boolean;
+  partialEvidence?: string;
+  unavailableEvidence?: string;
 }
 
-function HealthScore({ label, value, numerator, total, unit, active }: HealthScoreProps) {
-  const evidence = total > 0
-    ? `${value === null ? "—" : formatFileEquivalent(numerator)} / ${formatCount(total)} ${unit}`
-    : `No comparable ${unit}`;
+function coveragePartialEvidence(sourceCompleteness: number, targetCompleteness: number): string | undefined {
+  const evidence = [
+    sourceCompleteness < 1 ? `Source ${formatCompleteness(sourceCompleteness)}` : null,
+    targetCompleteness < 1 ? `Target ${formatCompleteness(targetCompleteness)}` : null,
+  ].filter((value): value is string => value !== null);
+  return evidence.length > 0 ? evidence.join(" · ") : undefined;
+}
+
+function HealthScore({
+  label,
+  presentation,
+  numerator,
+  total,
+  unit,
+  hasContent,
+  active,
+  partialEvidence,
+  unavailableEvidence,
+}: HealthScoreProps) {
+  let evidence: string;
+  if (presentation.state === "unavailable") {
+    evidence = !hasContent
+      ? "No content to compare"
+      : unavailableEvidence
+        ?? (presentation.completeness > 0 ? "No comparable content" : "No verified content");
+  } else if (presentation.state === "partial") {
+    evidence = partialEvidence ? `PARTIAL · ${partialEvidence}` : "PARTIAL";
+  } else {
+    evidence = total > 0
+      ? `${formatFileEquivalent(numerator)} / ${formatCount(total)} ${unit}`
+      : `No comparable ${unit}`;
+  }
 
   return (
     <div
-      className={`inspector-score ${active ? "is-active" : ""}`}
+      className={`inspector-score ${active ? "is-active" : ""} is-${presentation.state}`}
       title="The score is weighted by bytes; the count is supporting context."
     >
       <span>{label}</span>
-      <strong style={{ color: healthColor(value) }}>{formatHealth(value)}</strong>
-      <small>{evidence}</small>
+      <strong style={{ color: presentation.color }}>
+        {formatHealth(presentation.value)}
+      </strong>
+      <small title={evidence}>{evidence}</small>
     </div>
   );
 }
@@ -111,6 +154,9 @@ export function InspectorPanel({
   previewing,
   metric,
   coverageTargetName,
+  coverageTargetCompleteness,
+  sourceAnalysisReady,
+  analysisMessage,
   staged,
   stagingBusy,
   page,
@@ -146,9 +192,26 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   const titleRef = useRef<HTMLHeadingElement>(null);
   const DetailIcon = node.kind === "file" ? FileIcon : FolderIcon;
-  const stageable = Boolean(node.path) && node.duplicate_bytes > 0 && node.kind !== "smaller_items";
+  const nodeAnalysisReady = sourceAnalysisReady && node.pending_hash_count === 0;
+  const spacePresentation = nodeHealthPresentation(node, "space_health");
+  const coveragePresentation = nodeHealthPresentation(
+    node,
+    "coverage_health",
+    coverageTargetCompleteness,
+  );
+  const metricPresentation = metric === "space_health"
+    ? spacePresentation
+    : coveragePresentation;
+  const sourceCompleteness = nodeCompleteness(node);
+  const coverageUnavailableReason = coveragePresentation.state === "unavailable"
+    && (sourceCompleteness === 0 || coverageTargetCompleteness === 0)
+    ? "no verified comparison is available"
+    : undefined;
+  const stageable = nodeAnalysisReady
+    && Boolean(node.path)
+    && node.duplicate_bytes > 0
+    && node.kind !== "smaller_items";
   const inspectingFile = node.kind === "file";
-  const metricLabel = metric === "space_health" ? "space health" : "coverage health";
 
   useEffect(() => {
     if (focusSelectedFileRevision > 0 && !previewing && node.kind === "file") {
@@ -164,8 +227,11 @@ export function InspectorPanel({
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
-      <p id="inspector-selection-status" className="sr-only" aria-live="polite">
-        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files, {formatHealth(node[metric])} {metricLabel}.
+      <p id="inspector-selection-status" className="sr-only">
+        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}, {formatBytes(node.total_bytes)}, {formatCount(node.file_count)} files, {healthAriaDescription(metricPresentation, metric === "space_health" ? "space" : "coverage", node.file_count > 0, metric === "coverage_health" ? coverageUnavailableReason : undefined)}.
+      </p>
+      <p className="sr-only" aria-live="polite">
+        {previewing ? "Previewing" : "Selected"} {nodeType(node)} {node.name}.
       </p>
       <header className="inspector-selection">
         {previewing ? (
@@ -188,19 +254,26 @@ export function InspectorPanel({
       <div className="inspector-scores">
         <HealthScore
           label="Space"
-          value={node.space_health}
+          presentation={spacePresentation}
           numerator={node.space_healthy_file_equivalents}
           total={node.space_total_files}
           unit="files"
+          hasContent={node.file_count > 0}
           active={metric === "space_health"}
+          partialEvidence={sourceCompleteness < 1
+            ? `${formatCompleteness(sourceCompleteness)} verified`
+            : undefined}
         />
         <HealthScore
           label={coverageTargetName ? `Coverage → ${coverageTargetName}` : "Coverage"}
-          value={node.coverage_health}
+          presentation={coveragePresentation}
           numerator={node.coverage_covered_files}
           total={node.coverage_total_files}
           unit="groups"
+          hasContent={node.file_count > 0}
           active={metric === "coverage_health"}
+          partialEvidence={coveragePartialEvidence(sourceCompleteness, coverageTargetCompleteness)}
+          unavailableEvidence={coverageUnavailableReason ? "No verified comparison" : undefined}
         />
       </div>
 
@@ -214,6 +287,8 @@ export function InspectorPanel({
             <button className="inspector-stage is-staged" type="button" onClick={onUnstage} disabled={stagingBusy}>
               <CheckIcon /> {stagingBusy ? "Updating…" : "Staged"}
             </button>
+          ) : !nodeAnalysisReady ? (
+            <span className="inspector-readonly analysis-suspended" title={analysisMessage ?? undefined}>Hashes pending</span>
           ) : (
             <button className="inspector-stage" type="button" onClick={onStage} disabled={!stageable || stagingBusy}>
               <LayersIcon /> {stagingBusy ? "Adding…" : "Review"}
@@ -239,12 +314,15 @@ export function InspectorPanel({
             onPrevious={onPreviousDuplicates}
             onNext={onNextDuplicates}
             onJumpDuplicate={onJumpDuplicate}
+            available={nodeAnalysisReady}
+            unavailableMessage={analysisMessage}
           />
         ) : (
           <FolderContents
             node={node}
             previewing={previewing}
             metric={metric}
+            coverageTargetCompleteness={coverageTargetCompleteness}
             page={page}
             loading={loading}
             error={error}
@@ -268,6 +346,7 @@ interface FolderContentsProps {
   node: StorageNode;
   previewing: boolean;
   metric: HealthMetric;
+  coverageTargetCompleteness: number;
   page: StorageChildrenPage | null;
   loading: boolean;
   error: string | null;
@@ -286,6 +365,7 @@ function FolderContents({
   node,
   previewing,
   metric,
+  coverageTargetCompleteness,
   page,
   loading,
   error,
@@ -336,9 +416,18 @@ function FolderContents({
         ) : (
           <ul className="inspector-list">
             {page?.children.map((child) => {
-              const score = child[metric];
+              const presentation = nodeHealthPresentation(
+                child,
+                metric,
+                coverageTargetCompleteness,
+              );
               const openable = canOpen(child);
               const ItemIcon = child.kind === "file" ? FileIcon : FolderIcon;
+              const childCoverageUnavailableReason = metric === "coverage_health"
+                && presentation.state === "unavailable"
+                && (nodeCompleteness(child) === 0 || coverageTargetCompleteness === 0)
+                ? "no verified comparison is available"
+                : undefined;
               return (
                 <li key={child.id}>
                   <button
@@ -346,11 +435,13 @@ function FolderContents({
                     onClick={() => onSelect(child)}
                     disabled={previewing}
                     aria-current={child.id === node.id ? "true" : undefined}
-                    aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${formatHealth(score)} ${metric === "space_health" ? "space" : "coverage"} health`}
+                    aria-label={`${previewing ? "Preview" : openable ? "Open" : "Select"} ${child.name}, ${nodeType(child)}, ${formatBytes(child.total_bytes)}, ${healthAriaDescription(presentation, metric === "space_health" ? "space" : "coverage", child.file_count > 0, childCoverageUnavailableReason)}`}
                   >
                     <span className={`inspector-row-name is-${child.kind}`}><ItemIcon /><strong title={child.name}>{child.name}</strong></span>
                     <span>{formatBytes(child.total_bytes)}</span>
-                    <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+                    <strong className="inspector-row-health" style={{ color: presentation.color }}>
+                      {formatHealth(presentation.value)}
+                    </strong>
                     <ChevronIcon className={openable ? "" : "is-hidden"} />
                   </button>
                 </li>
@@ -394,6 +485,8 @@ interface DuplicateListProps {
   onPrevious: () => void;
   onNext: () => void;
   onJumpDuplicate: (match: FileContentMatch) => void;
+  available: boolean;
+  unavailableMessage: string | null;
 }
 
 function DuplicateList({
@@ -409,9 +502,21 @@ function DuplicateList({
   onPrevious,
   onNext,
   onJumpDuplicate,
+  available,
+  unavailableMessage,
 }: DuplicateListProps) {
   const totalMatches = page?.total_matches ?? 0;
-  const rowCapacity = page?.status === "not_hashed" ? 5 : 6;
+  const rowCapacity = page?.status !== "ready" ? 5 : 6;
+  const workspaceIncompleteCopy = page
+    ? [
+        page.workspace_pending_hash_count > 0
+          ? `${formatCount(page.workspace_pending_hash_count)} workspace ${page.workspace_pending_hash_count === 1 ? "hash" : "hashes"} pending`
+          : null,
+        page.workspace_incomplete_site_count > 0
+          ? `${formatCount(page.workspace_incomplete_site_count)} ${page.workspace_incomplete_site_count === 1 ? "site is" : "sites are"} not fully indexed`
+          : null,
+      ].filter((part): part is string => part !== null).join(" · ")
+    : "";
 
   return (
     <>
@@ -430,7 +535,12 @@ function DuplicateList({
       </div>
 
       <div className={`inspector-list-body ${loading && page ? "is-updating" : ""}`} aria-busy={loading}>
-        {loading && !page ? (
+        {!available ? (
+          <div className="inspector-list-state analysis-suspended" role="status">
+            <ScanIcon />
+            <p>{unavailableMessage ?? "Hashes are pending. Duplicate analysis will resume when hashing completes."}</p>
+          </div>
+        ) : loading && !page ? (
           <div className="inspector-list-state" role="status"><span className="mini-spinner" /> Finding duplicates…</div>
         ) : error && !page ? (
           <div className="inspector-list-state is-error" role="alert">
@@ -439,14 +549,29 @@ function DuplicateList({
           </div>
         ) : page && page.matches.length === 0 ? (
           <div className="inspector-list-state">
-            <FileIcon />
-            <p>No indexed copy is available on this page.</p>
+            {page.status === "ready" ? <FileIcon /> : <ScanIcon />}
+            <p>
+              {page.status === "not_hashed"
+                ? "This file is not hashed yet. Scan the site to discover copies."
+                : page.status === "needs_verification"
+                  ? `This content must be reverified before copy results are available.${workspaceIncompleteCopy ? ` ${workspaceIncompleteCopy}.` : ""}`
+                  : workspaceIncompleteCopy
+                    ? `No verified copy is available yet. Results may be incomplete: ${workspaceIncompleteCopy}.`
+                    : "No indexed copy is available on this page."}
+            </p>
           </div>
         ) : (
           <>
             {page?.status === "not_hashed" && (
               <p className="duplicate-unhashed-note" role="status">
                 Not hashed yet. Scan this site to discover content copies.
+              </p>
+            )}
+            {page && workspaceIncompleteCopy && page.status !== "not_hashed" && (
+              <p className="duplicate-unhashed-note" role="status">
+                {page.status === "needs_verification"
+                  ? `${workspaceIncompleteCopy}. This content must be reverified before copy results are complete.`
+                  : `Results may be incomplete · ${workspaceIncompleteCopy}.`}
               </p>
             )}
             <ul className="inspector-list duplicate-list">
@@ -499,11 +624,11 @@ function DuplicateList({
       )}
 
       <footer className="inspector-pagination">
-        <button type="button" onClick={onPrevious} disabled={!canLoadPrevious || loading}>
+        <button type="button" onClick={onPrevious} disabled={!available || !canLoadPrevious || loading}>
           <ChevronIcon /> Previous
         </button>
         <span>{totalMatches > 0 ? `${rangeStart}–${rangeEnd}` : "0"}</span>
-        <button type="button" onClick={onNext} disabled={!canLoadNext || loading}>
+        <button type="button" onClick={onNext} disabled={!available || !canLoadNext || loading}>
           Next <ChevronIcon />
         </button>
       </footer>

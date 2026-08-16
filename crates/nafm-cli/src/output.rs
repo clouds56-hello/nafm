@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Error, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use nafm_core::{DuplicateGroup, ScanProgress, ScanStarted, ScanSummary, Site};
+use nafm_core::{DuplicateGroup, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -117,14 +117,14 @@ impl SiteScanProgress {
     let Some(bar) = self.bars_by_site.get(&progress.site_id) else {
       return;
     };
-    bar.set_length(progress.total_files);
-    bar.set_position(scan_progress_position(progress));
-    bar.set_message(format!(
-      "{} hashed, {} reused | {}",
-      progress.files_scanned,
-      progress.files_reused,
-      progress.current_path.display()
-    ));
+    if let Some(total_files) = progress.total_files {
+      bar.set_length(total_files);
+      bar.set_position(scan_progress_position(progress));
+    } else {
+      bar.set_length(0);
+      bar.set_position(0);
+    }
+    bar.set_message(scan_progress_message(progress));
   }
 
   pub fn start(&self, started: &ScanStarted) {
@@ -155,10 +155,36 @@ impl SiteScanProgress {
 }
 
 pub fn scan_progress_position(progress: &ScanProgress) -> u64 {
-  progress
-    .files_scanned
-    .saturating_add(progress.files_reused)
-    .min(progress.total_files)
+  progress.total_files.map_or(progress.processed_files, |total_files| {
+    progress.processed_files.min(total_files)
+  })
+}
+
+pub fn scan_progress_message(progress: &ScanProgress) -> String {
+  let path = progress
+    .current_path
+    .as_ref()
+    .map(|path| format!(" | {}", path.display()))
+    .unwrap_or_default();
+  match progress.phase {
+    ScanPhase::Discovering => format!("discovering {} files{path}", progress.processed_files),
+    ScanPhase::PublishingMetadata => format!(
+      "saving metadata for {} files",
+      progress.total_files.unwrap_or(progress.processed_files)
+    ),
+    ScanPhase::Hashing => format!(
+      "hashing {}/{} ({} hashed, {} reused, {} pending){path}",
+      progress.processed_files,
+      progress.total_files.unwrap_or(progress.processed_files),
+      progress.hashed_files,
+      progress.reused_files,
+      progress.hashes_pending
+    ),
+    ScanPhase::Finalizing => format!(
+      "finalizing {} files",
+      progress.total_files.unwrap_or(progress.processed_files)
+    ),
+  }
 }
 
 fn scan_summary_message(summary: &ScanSummary) -> String {
@@ -335,6 +361,7 @@ mod tests {
       files_seen: 8,
       files_hashed: 3,
       files_reused: 5,
+      files_pending: 0,
       files_removed: 0,
       bytes_hashed: 12,
       duplicate_groups: 0,
@@ -349,12 +376,19 @@ mod tests {
     let progress = nafm_core::ScanProgress {
       site_id: "site-1".to_owned(),
       site_name: "archive".to_owned(),
-      current_path: PathBuf::from("/archive/new.mov"),
-      files_scanned: 1,
-      files_reused: 5,
-      total_files: 8,
+      phase: ScanPhase::Hashing,
+      current_path: Some(PathBuf::from("/archive/new.mov")),
+      processed_files: 6,
+      total_files: Some(8),
+      hashed_files: 1,
+      reused_files: 5,
+      hashes_pending: 2,
     };
 
     assert_eq!(scan_progress_position(&progress), 6);
+    assert_eq!(
+      scan_progress_message(&progress),
+      "hashing 6/8 (1 hashed, 5 reused, 2 pending) | /archive/new.mov"
+    );
   }
 }

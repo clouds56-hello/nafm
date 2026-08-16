@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { formatHealth, healthColor } from "../lib/format";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
+import { formatCount, formatHealth } from "../lib/format";
+import {
+  formatCompleteness,
+  nodeCompleteness,
+  nodeHealthPresentation,
+  siteCompleteness,
+} from "../lib/health";
 import { getFileContentMatches, getStorageChildren } from "../lib/tauri";
 import type {
   FileContentMatch,
@@ -91,8 +98,9 @@ function previewKey(
   targetSiteId: string | null,
   nodeId: string,
   offset: number,
+  contentRevision: number,
 ): string {
-  return `${sourceSiteId}\u0000${targetSiteId ?? ""}\u0000${nodeId}\u0000${offset}`;
+  return `${contentRevision}\u0000${sourceSiteId}\u0000${targetSiteId ?? ""}\u0000${nodeId}\u0000${offset}`;
 }
 
 function duplicateFileIdentity(
@@ -125,6 +133,19 @@ function duplicateErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Unable to load duplicates.";
+}
+
+function verifiedFilesCopy(site: SiteOverview): string {
+  return `${formatCount(site.verified_file_count)} of ${formatCount(site.total_files)} verified`;
+}
+
+function findStorageNode(root: StorageNode, nodeId: string): StorageNode | null {
+  if (root.id === nodeId) return root;
+  for (const child of root.children) {
+    const match = findStorageNode(child, nodeId);
+    if (match) return match;
+  }
+  return null;
 }
 
 export function StorageExplorer({
@@ -177,6 +198,7 @@ export function StorageExplorer({
   const previewRequestsRef = useRef<Map<string, Promise<StorageChildrenPage>>>(new Map());
   const previewGenerationRef = useRef(0);
   const previewRequestRef = useRef(0);
+  const previewOffsetRef = useRef(0);
   const restoreTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewNodeRef = useRef<StorageNode | null>(null);
   const [selectedDuplicateState, setSelectedDuplicateState] = useState<DuplicatePageState>(emptyDuplicatePageState);
@@ -188,8 +210,50 @@ export function StorageExplorer({
   const previewDuplicateRequestRef = useRef(0);
   const selectedDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
   const previewDuplicateIdentityRef = useRef<DuplicateFileIdentity | null>(null);
-  const score = tree.root[metric];
+  const sourceAnalysisReady = siteAnalysisReady(source);
+  const analysisAvailability = metricAnalysisAvailability(metric, source, target);
+  const targetCompleteness = siteCompleteness(target);
+  const sourceCompleteness = nodeCompleteness(tree.root);
+  const spacePresentation = nodeHealthPresentation(tree.root, "space_health");
+  const coveragePresentation = nodeHealthPresentation(
+    tree.root,
+    "coverage_health",
+    targetCompleteness,
+  );
+  const scorePresentation = metric === "space_health"
+    ? spacePresentation
+    : coveragePresentation;
+  const verifiedButIncomparable = scorePresentation.state === "unavailable"
+    && scorePresentation.completeness > 0;
   const coverageWithoutTarget = metric === "coverage_health" && !target;
+  const coverageMissingVerifiedComparison = metric === "coverage_health"
+    && Boolean(target)
+    && scorePresentation.state === "unavailable"
+    && !verifiedButIncomparable
+    && (sourceCompleteness === 0 || targetCompleteness === 0);
+  const estimatingDuringHashing = source.scan_state === "hashing"
+    || (metric === "coverage_health" && target?.scan_state === "hashing");
+  const scoreStatus = scorePresentation.state === "partial"
+    ? `PARTIAL · ${formatCompleteness(scorePresentation.completeness)}`
+    : scorePresentation.state === "exact"
+      ? "EXACT"
+      : tree.root.file_count === 0
+        ? "NO CONTENT"
+        : coverageWithoutTarget
+          ? "NO TARGET"
+          : coverageMissingVerifiedComparison
+            ? "NO VERIFIED COMPARISON"
+            : verifiedButIncomparable ? "NO COMPARABLE DATA" : "NO VERIFIED DATA";
+  const estimateLabel = estimatingDuringHashing
+    ? "Estimated while hashing"
+    : "Estimated from verified content";
+  const readinessCopy = scorePresentation.state === "partial"
+    ? metric === "coverage_health" && target
+      ? `${source.name} ${verifiedFilesCopy(source)} · ${target.name} ${verifiedFilesCopy(target)}`
+      : verifiedFilesCopy(source)
+    : verifiedButIncomparable
+      ? "Verified content is present, but this index cannot produce a comparable health score."
+      : analysisAvailability.message;
   const previewing = previewNode !== null;
   const inspectedPage = previewing ? previewPageState.page : childrenPage;
   const inspectedNode = previewing ? inspectedPage?.parent ?? previewNode : node;
@@ -210,10 +274,12 @@ export function StorageExplorer({
   const previewCanLoadNext = Boolean(previewing && inspectedPage && !inspectedLoading
     && inspectedPage.offset + inspectedPage.limit < inspectedPage.total_children);
   const inspectedDuplicateState = previewing ? previewDuplicateState : selectedDuplicateState;
-  const inspectedDuplicateIdentity = duplicateFileIdentity(workspaceName, source.id, inspectedNode);
+  const inspectedDuplicateIdentity = sourceAnalysisReady
+    ? duplicateFileIdentity(workspaceName, source.id, inspectedNode)
+    : null;
   const inspectedDuplicateStateMatches = inspectedDuplicateIdentity?.owner_key === inspectedDuplicateState.owner_key;
   const inspectedDuplicatePage = inspectedDuplicateStateMatches ? inspectedDuplicateState.page : null;
-  const inspectedDuplicatesLoading = inspectedNode.kind === "file"
+  const inspectedDuplicatesLoading = sourceAnalysisReady && inspectedNode.kind === "file"
     && (!inspectedDuplicateStateMatches || inspectedDuplicateState.loading);
   const inspectedDuplicatesError = inspectedDuplicateStateMatches ? inspectedDuplicateState.error : null;
   const duplicateRangeStart = inspectedDuplicatePage && inspectedDuplicatePage.total_matches > 0
@@ -250,6 +316,7 @@ export function StorageExplorer({
     previewRequestRef.current += 1;
     previewDuplicateRequestRef.current += 1;
     previewNodeRef.current = null;
+    previewOffsetRef.current = 0;
     previewDuplicateIdentityRef.current = null;
     setPreviewNode(null);
     setPreviewOffset(0);
@@ -262,12 +329,13 @@ export function StorageExplorer({
     identity: DuplicateFileIdentity,
     offset: number,
   ) => {
+    if (!sourceAnalysisReady) return;
     const requestRef = owner === "selected" ? selectedDuplicateRequestRef : previewDuplicateRequestRef;
     const identityRef = owner === "selected" ? selectedDuplicateIdentityRef : previewDuplicateIdentityRef;
     const updateState = owner === "selected" ? setSelectedDuplicateState : setPreviewDuplicateState;
     const requestId = requestRef.current + 1;
     const generation = duplicateGenerationRef.current;
-    const key = duplicatePageKey(identity, offset);
+    const key = `${contentRevision}\u0000${duplicatePageKey(identity, offset)}`;
     requestRef.current = requestId;
 
     const cachedPage = duplicateCacheRef.current.get(key);
@@ -335,10 +403,20 @@ export function StorageExplorer({
         error: duplicateErrorMessage(duplicateError),
       }));
     }
-  }, [source.id, workspaceName]);
+  }, [contentRevision, source.id, sourceAnalysisReady, workspaceName]);
 
-  const loadPreviewPage = useCallback(async (previewedNode: StorageNode, offset: number) => {
-    const key = previewKey(source.id, target?.id ?? null, previewedNode.id, offset);
+  const loadPreviewPage = useCallback(async (
+    previewedNode: StorageNode,
+    offset: number,
+    keepPage = false,
+  ) => {
+    const key = previewKey(
+      source.id,
+      target?.id ?? null,
+      previewedNode.id,
+      offset,
+      contentRevision,
+    );
     const cachedPage = previewCacheRef.current.get(key);
     if (cachedPage) {
       previewRequestRef.current += 1;
@@ -351,7 +429,11 @@ export function StorageExplorer({
     const requestId = previewRequestRef.current + 1;
     const generation = previewGenerationRef.current;
     previewRequestRef.current = requestId;
-    setPreviewPageState({ page: null, loading: true, error: null });
+    setPreviewPageState((current) => ({
+      page: keepPage ? current.page : null,
+      loading: true,
+      error: null,
+    }));
     let request: Promise<StorageChildrenPage> | undefined;
     try {
       request = previewRequestsRef.current.get(key);
@@ -380,16 +462,39 @@ export function StorageExplorer({
       if (request && previewRequestsRef.current.get(key) === request) previewRequestsRef.current.delete(key);
       if (previewGenerationRef.current !== generation) return;
       if (previewRequestRef.current !== requestId || previewNodeRef.current?.id !== previewedNode.id) return;
-      setPreviewPageState({ page: null, loading: false, error: errorMessage(previewError) });
+      setPreviewPageState((current) => ({
+        page: keepPage ? current.page : null,
+        loading: false,
+        error: errorMessage(previewError),
+      }));
     }
-  }, [source.id, target?.id]);
+  }, [contentRevision, source.id, target?.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     previewGenerationRef.current += 1;
     previewCacheRef.current.clear();
     previewRequestsRef.current.clear();
     clearPreview();
-  }, [clearPreview, source.id, target?.id, tree]);
+  }, [clearPreview, source.id, target?.id]);
+
+  useLayoutEffect(() => {
+    previewGenerationRef.current += 1;
+    previewRequestRef.current += 1;
+    previewCacheRef.current.clear();
+    previewRequestsRef.current.clear();
+    const current = previewNodeRef.current;
+    if (!current) return;
+    const rebound = findStorageNode(location.root, current.id);
+    if (!rebound) {
+      clearPreview();
+      return;
+    }
+    previewNodeRef.current = rebound;
+    setPreviewNode(rebound);
+    if (rebound.kind !== "file" && rebound.kind !== "smaller_items") {
+      void loadPreviewPage(rebound, previewOffsetRef.current, true);
+    }
+  }, [clearPreview, contentRevision, loadPreviewPage, location.root]);
 
   useEffect(() => {
     duplicateGenerationRef.current += 1;
@@ -400,12 +505,27 @@ export function StorageExplorer({
     selectedDuplicateIdentityRef.current = null;
     previewDuplicateIdentityRef.current = null;
     setSelectedDuplicateState(emptyDuplicatePageState());
-    setPreviewDuplicateState(emptyDuplicatePageState());
-    clearPreview();
-  }, [contentRevision, source.id, tree, workspaceName]);
+    const currentPreview = previewNodeRef.current;
+    const previewIdentity = sourceAnalysisReady && currentPreview
+      ? duplicateFileIdentity(workspaceName, source.id, currentPreview)
+      : null;
+    previewDuplicateIdentityRef.current = previewIdentity;
+    setPreviewDuplicateState(previewIdentity
+      ? {
+          owner_key: previewIdentity.owner_key,
+          requested_offset: 0,
+          page: null,
+          loading: true,
+          error: null,
+        }
+      : emptyDuplicatePageState());
+    if (previewIdentity) void loadDuplicatePage("preview", previewIdentity, 0);
+  }, [contentRevision, loadDuplicatePage, source.id, sourceAnalysisReady, workspaceName]);
 
   useEffect(() => {
-    const identity = duplicateFileIdentity(workspaceName, source.id, node);
+    const identity = sourceAnalysisReady
+      ? duplicateFileIdentity(workspaceName, source.id, node)
+      : null;
     selectedDuplicateIdentityRef.current = identity;
     if (!identity) {
       selectedDuplicateRequestRef.current += 1;
@@ -413,7 +533,16 @@ export function StorageExplorer({
       return;
     }
     void loadDuplicatePage("selected", identity, 0);
-  }, [contentRevision, loadDuplicatePage, node, source.id, tree, workspaceName]);
+  }, [
+    contentRevision,
+    loadDuplicatePage,
+    node.id,
+    node.kind,
+    node.path,
+    source.id,
+    sourceAnalysisReady,
+    workspaceName,
+  ]);
 
   useEffect(() => clearPreview(), [clearPreview, node.id]);
 
@@ -432,11 +561,18 @@ export function StorageExplorer({
 
   const preview = useCallback((next: StorageNode) => {
     cancelPreviewRestore();
-    if (previewNodeRef.current?.id === next.id) return;
+    if (previewNodeRef.current?.id === next.id) {
+      previewNodeRef.current = next;
+      setPreviewNode(next);
+      return;
+    }
     previewNodeRef.current = next;
     setPreviewNode(next);
+    previewOffsetRef.current = 0;
     setPreviewOffset(0);
-    const duplicateIdentity = duplicateFileIdentity(workspaceName, source.id, next);
+    const duplicateIdentity = sourceAnalysisReady
+      ? duplicateFileIdentity(workspaceName, source.id, next)
+      : null;
     previewDuplicateRequestRef.current += 1;
     previewDuplicateIdentityRef.current = duplicateIdentity;
     setPreviewDuplicateState(duplicateIdentity
@@ -455,7 +591,7 @@ export function StorageExplorer({
       void loadPreviewPage(next, 0);
     }
     if (duplicateIdentity) void loadDuplicatePage("preview", duplicateIdentity, 0);
-  }, [cancelPreviewRestore, loadDuplicatePage, loadPreviewPage, source.id, workspaceName]);
+  }, [cancelPreviewRestore, loadDuplicatePage, loadPreviewPage, source.id, sourceAnalysisReady, workspaceName]);
 
   const leavePreview = useCallback(() => {
     if (!previewNodeRef.current || restoreTimeoutRef.current !== null) return;
@@ -470,6 +606,7 @@ export function StorageExplorer({
     const previewedNode = previewNodeRef.current;
     if (!previewedNode || !previewCanLoadPrevious) return;
     const previousOffset = Math.max(0, previewOffset - PREVIEW_PAGE_SIZE);
+    previewOffsetRef.current = previousOffset;
     setPreviewOffset(previousOffset);
     void loadPreviewPage(previewedNode, previousOffset);
   }, [loadPreviewPage, previewCanLoadPrevious, previewOffset]);
@@ -478,6 +615,7 @@ export function StorageExplorer({
     const previewedNode = previewNodeRef.current;
     if (!previewedNode || !previewCanLoadNext) return;
     const nextOffset = previewOffset + PREVIEW_PAGE_SIZE;
+    previewOffsetRef.current = nextOffset;
     setPreviewOffset(nextOffset);
     void loadPreviewPage(previewedNode, nextOffset);
   }, [loadPreviewPage, previewCanLoadNext, previewOffset]);
@@ -576,15 +714,20 @@ export function StorageExplorer({
   return (
     <section className="explorer-section" aria-label="Storage health workspace">
       <div className="health-toolbar">
-        <div className="health-toolbar-score">
+        <div className={`health-toolbar-score is-${scorePresentation.state}`}>
           <span>{metric === "space_health" ? source.name : `${source.name} → ${target?.name ?? "No target"}`}</span>
-          <strong style={{ color: healthColor(score) }}>{formatHealth(score)}</strong>
+          <strong style={{ color: scorePresentation.color }}>
+            {formatHealth(scorePresentation.value)}
+          </strong>
+          <small>{scoreStatus}</small>
         </div>
         <HealthControls
           metric={metric}
           sites={sites}
           source={source}
           target={target}
+          sourceHealth={spacePresentation}
+          coverageHealth={coveragePresentation}
           onMetricChange={onMetricChange}
           onTargetChange={onTargetChange}
           onSwap={onSwap}
@@ -608,6 +751,7 @@ export function StorageExplorer({
                 root={location.root}
                 breadcrumbs={location.breadcrumbs}
                 metric={metric}
+                coverageTargetCompleteness={targetCompleteness}
                 selectedNodeId={node.id}
                 canGoBack={canGoBack}
                 canGoForward={canGoForward}
@@ -621,10 +765,26 @@ export function StorageExplorer({
                 onUp={navigateUp}
                 onNavigateBreadcrumb={navigateBreadcrumb}
               />
-              {metric === "coverage_health" && target && !target.last_scanned_at && (
-                <div className="coverage-freshness-note" role="status">
-                  <span><strong>Coverage unknown.</strong> Scan {target.name} to calculate this map.</span>
-                  <button className="secondary-button" type="button" onClick={onScanTarget}>Scan target</button>
+              {readinessCopy && (
+                scorePresentation.state === "partial"
+                || !analysisAvailability.available
+                || verifiedButIncomparable
+              ) && (
+                <div
+                  className={`coverage-freshness-note analysis-readiness-note is-${scorePresentation.state}`}
+                  role={scorePresentation.state === "partial" ? undefined : "status"}
+                >
+                  <span>
+                    <strong>
+                      {scorePresentation.state === "partial"
+                        ? estimateLabel
+                        : "Analysis unavailable"}
+                    </strong>
+                    {scorePresentation.state === "partial" ? " · " : ". "}{readinessCopy}
+                  </span>
+                  {metric === "coverage_health" && target && target.hash_status === "unscanned" && (
+                    <button className="secondary-button" type="button" onClick={onScanTarget}>Scan target</button>
+                  )}
                 </div>
               )}
             </>
@@ -635,6 +795,11 @@ export function StorageExplorer({
           previewing={previewing}
           metric={metric}
           coverageTargetName={target?.name ?? null}
+          coverageTargetCompleteness={targetCompleteness}
+          sourceAnalysisReady={sourceAnalysisReady}
+          analysisMessage={sourceAnalysisReady
+            ? null
+            : metricAnalysisAvailability("space_health", source, null).message}
           staged={staged}
           stagingBusy={stagingBusy}
           page={inspectedPage}

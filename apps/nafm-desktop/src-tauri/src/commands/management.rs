@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use nafm_core::{
   AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions, SavedSmbCredential, SiteFolder, SiteFolderKind,
-  SiteOverview, SmbLocation, normalize_workspace_name, verify_smb_connection,
+  SiteHashStatus, SiteOverview, SmbLocation, normalize_workspace_name, verify_smb_connection,
 };
 use serde::Serialize;
 use tauri::State;
@@ -39,9 +39,14 @@ pub struct ManagedSite {
   name: String,
   added_at: DateTime<Utc>,
   folders: Vec<ManagedSiteFolder>,
+  hash_status: SiteHashStatus,
+  latest_inventory_at: Option<DateTime<Utc>>,
   last_scanned_at: Option<DateTime<Utc>>,
   total_files: u64,
+  verified_file_count: u64,
+  pending_hash_count: u64,
   total_bytes: u64,
+  verified_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -288,7 +293,7 @@ async fn open_workspace_repository(state: &AppState, workspace_path: PathBuf) ->
 }
 
 async fn ensure_scans_idle(state: &AppState) -> Result<(), String> {
-  if state.scan_tasks.active_tasks().await.is_empty() {
+  if state.scan_tasks.active_tasks().is_empty() {
     Ok(())
   } else {
     Err("site and workspace management is unavailable while scans are running".to_owned())
@@ -383,9 +388,14 @@ impl From<SiteOverview> for ManagedSite {
       name: overview.site.name,
       added_at: overview.site.added_at,
       folders: overview.folders.into_iter().map(ManagedSiteFolder::from).collect(),
+      hash_status: overview.hash_status,
+      latest_inventory_at: overview.latest_inventory_at,
       last_scanned_at: overview.latest_scan_at,
       total_files: overview.total_file_count,
+      verified_file_count: overview.verified_file_count,
+      pending_hash_count: overview.pending_hash_count,
       total_bytes: overview.total_bytes,
+      verified_bytes: overview.verified_bytes,
     }
   }
 }
@@ -405,7 +415,10 @@ impl From<SiteFolder> for ManagedSiteFolder {
 
 #[cfg(test)]
 mod tests {
-  use super::non_empty;
+  use chrono::Utc;
+  use nafm_core::{Site, SiteHashStatus, SiteOverview};
+
+  use super::{ManagedSite, non_empty};
 
   #[test]
   fn optional_folder_path_ignores_blank_values() {
@@ -415,5 +428,38 @@ mod tests {
       non_empty(Some("  /media/photos  ".to_owned())),
       Some("/media/photos".to_owned())
     );
+  }
+
+  #[test]
+  fn managed_site_retains_inventory_and_hash_readiness() {
+    let inventory_at = Utc::now();
+    let managed = ManagedSite::from(SiteOverview {
+      site: Site {
+        id: "photos".to_owned(),
+        name: "Photos".to_owned(),
+        added_at: inventory_at,
+      },
+      folders: Vec::new(),
+      total_file_count: 12,
+      verified_file_count: 7,
+      pending_hash_count: 5,
+      total_bytes: 128,
+      verified_bytes: 96,
+      duplicate_file_count: 0,
+      duplicate_bytes: 0,
+      hash_status: SiteHashStatus::Pending,
+      latest_inventory_at: Some(inventory_at),
+      latest_scan_at: None,
+    });
+    let json = serde_json::to_value(managed).unwrap();
+
+    assert_eq!(json["hash_status"], "pending");
+    assert_eq!(json["total_files"], 12);
+    assert_eq!(json["verified_file_count"], 7);
+    assert_eq!(json["pending_hash_count"], 5);
+    assert_eq!(json["total_bytes"], 128);
+    assert_eq!(json["verified_bytes"], 96);
+    assert!(json["latest_inventory_at"].is_string());
+    assert!(json["last_scanned_at"].is_null());
   }
 }

@@ -584,7 +584,17 @@ function SiteDetail({ site, workspaceName, busy, setBusy, onMutation }: {
         <span className={`management-site-icon ${site.folders.some((folder) => folder.kind === "smb") ? "smb" : ""}`}>
           {site.folders.some((folder) => folder.kind === "smb") ? <NetworkIcon /> : <DriveIcon />}
         </span>
-        <div><span className="eyebrow">SITE DETAILS</span><h3>{site.name}</h3><p>{formatCount(site.total_files)} files · {formatBytes(site.total_bytes)} · {formatRelativeTime(site.last_scanned_at)}</p></div>
+        <div>
+          <span className="eyebrow">SITE DETAILS</span>
+          <h3>{site.name}</h3>
+          <p>
+            {formatCount(site.total_files)} files · {formatBytes(site.total_bytes)} · {site.hash_status === "ready"
+              ? formatRelativeTime(site.last_scanned_at)
+              : site.pending_hash_count > 0
+                ? `${formatCount(site.pending_hash_count)} hashes pending`
+                : site.latest_inventory_at ? `Indexed ${formatRelativeTime(site.latest_inventory_at)}` : "Not indexed"}
+          </p>
+        </div>
       </header>
       <form className="inline-rename-form" onSubmit={rename}>
         <Field label="Display name"><input value={name} onChange={(event) => setName(event.target.value)} disabled={busy} /></Field>
@@ -642,7 +652,13 @@ function SitesSection({ snapshot, selectedSiteId, busy, setBusy, onSelectedSiteC
           ) : snapshot.sites.map((site) => (
             <button key={site.id} type="button" className={selected?.id === site.id ? "is-active" : ""} onClick={() => onSelectedSiteChange(site.id)} disabled={busy}>
               <span className={`management-list-icon ${site.folders.some((folder) => folder.kind === "smb") ? "smb" : ""}`}>{site.folders.some((folder) => folder.kind === "smb") ? <NetworkIcon /> : <DriveIcon />}</span>
-              <span><strong>{site.name}</strong><small>{site.folders.length} {site.folders.length === 1 ? "root" : "roots"} · {formatCount(site.total_files)} files</small></span>
+              <span>
+                <strong>{site.name}</strong>
+                <small>
+                  {site.folders.length} {site.folders.length === 1 ? "root" : "roots"} · {formatCount(site.total_files)} files
+                  {site.pending_hash_count > 0 ? ` · ${formatCount(site.pending_hash_count)} pending` : ""}
+                </small>
+              </span>
             </button>
           ))}
         </div>
