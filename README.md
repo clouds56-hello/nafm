@@ -135,9 +135,10 @@ discovery keeps the previous inventory untouched. A cancellation during
 hashing keeps the newly published inventory and every completed hash, so the
 next scan can reuse that work. While hashes are pending, the desktop shows a
 live health estimate: verified content contributes normally, pending content
-contributes zero, and partially verified folders blend their health color
-toward neutral gray. Fully unverified folders remain gray. Duplicate and
-cleanup actions stay suspended until verification finishes.
+contributes zero, and each partially verified map segment fills from its inner
+edge outward while the pending remainder stays neutral gray. Fully unverified
+folders remain gray. Duplicate and cleanup actions stay suspended until
+verification finishes.
 
 JSON mode emits `started`, `progress`, and `summary` events as JSON Lines.
 Progress events identify the current `discovering`, `publishing_metadata`,

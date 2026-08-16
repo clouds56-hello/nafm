@@ -322,10 +322,10 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .map-center-control.health-center strong { max-width: none; margin: 2px 0 1px; color: var(--accent-bright); font-size: clamp(23px, 3vw, 34px); letter-spacing: -.05em; }
 .map-center-control.health-center span { display: block; max-width: 92px; overflow: hidden; color: #9eaaaf; font-size: clamp(8px, .9vw, 10px); text-overflow: ellipsis; white-space: nowrap; }
 .health-legend { position: absolute; z-index: 3; bottom: 18px; left: 24px; width: min(300px, calc(100% - 48px)); color: var(--muted); font-size: 9px; }
-.sunburst-frame.is-analysis-partial .health-legend { opacity: .7; }
 .sunburst-frame.is-analysis-unavailable .health-legend { opacity: .42; }
 .health-gradient { height: 7px; border: 1px solid rgba(255,255,255,.09); border-radius: 99px; background: linear-gradient(90deg, #f5706f, #f0b85b 50%, #5bdbc2); box-shadow: 0 0 16px rgba(91,219,194,.09); }
 .health-legend > div:nth-child(2) { display: flex; justify-content: space-between; margin-top: 5px; }
+.health-legend > small { display: block; margin-top: 4px; color: #829097; font-size: 8px; font-weight: 650; letter-spacing: .02em; }
 .inspector-panel { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(155deg, rgba(17,23,31,.97), rgba(9,13,18,.97)); }
 .inspector-panel.is-previewing { border-color: rgba(118,225,215,.24); box-shadow: inset 0 0 36px rgba(118,225,215,.025); }
 .inspector-selection { display: grid; grid-template-columns: 28px 31px minmax(0, 1fr); gap: 8px; align-items: center; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }

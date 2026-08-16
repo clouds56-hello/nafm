@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { formatHealth } from "../lib/format";
+import { formatHealth, healthColor } from "../lib/format";
 import {
   formatHealthForCanvas,
   healthAriaDescription,
@@ -38,6 +38,7 @@ interface ArcDatum {
 const TAU = Math.PI * 2;
 const GAP = 0.018;
 const MAX_ARCS = 5_000;
+const ARC_TRACK_COLOR = healthColor(null);
 
 function nodeWeight(node: StorageNode): number {
   return Math.max(node.total_bytes, 1);
@@ -79,6 +80,50 @@ function drawArc(
   context.closePath();
 }
 
+function arcProgress(presentation: HealthPresentation): number {
+  if (presentation.value === null) return 0;
+  if (presentation.state === "exact") return 1;
+  return Math.min(1, Math.max(0, presentation.completeness));
+}
+
+function drawProgressBoundary(
+  context: CanvasRenderingContext2D,
+  center: number,
+  radius: number,
+  start: number,
+  end: number,
+) {
+  const gap = Math.min(GAP, Math.max(0, (end - start) * 0.12));
+  context.beginPath();
+  context.arc(center, center, radius, start + gap, end - gap);
+  context.strokeStyle = "rgba(255, 255, 255, .2)";
+  context.lineWidth = 1;
+  context.stroke();
+}
+
+function drawRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const right = x + width;
+  const bottom = y + height;
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(right - radius, y);
+  context.quadraticCurveTo(right, y, right, y + radius);
+  context.lineTo(right, bottom - radius);
+  context.quadraticCurveTo(right, bottom, right - radius, bottom);
+  context.lineTo(x + radius, bottom);
+  context.quadraticCurveTo(x, bottom, x, bottom - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
+
 function hitTest(arcs: ArcDatum[], x: number, y: number, center: number, innerRadius: number, ringWidth: number) {
   const dx = x - center;
   const dy = y - center;
@@ -103,7 +148,7 @@ function drawScoreLabel(
   inner: number,
   outer: number,
 ) {
-  if (presentation.value === null) return;
+  if (presentation.value === null || presentation.value === 100) return;
   const angleSpan = arc.end - arc.start;
   const radius = (inner + outer) / 2;
   if (angleSpan * radius < 43 || outer - inner < 25) return;
@@ -114,11 +159,19 @@ function drawScoreLabel(
   context.save();
   context.translate(center + Math.cos(angle) * radius, center + Math.sin(angle) * radius);
   context.rotate(rotation);
-  context.fillStyle = "rgba(7, 11, 15, .86)";
   context.font = "700 10px -apple-system, BlinkMacSystemFont, sans-serif";
+  const label = formatHealthForCanvas(presentation);
+  const labelWidth = Math.max(24, context.measureText(label).width + 10);
+  drawRoundedRect(context, -labelWidth / 2, -8, labelWidth, 16, 6);
+  context.fillStyle = "rgba(7, 11, 15, .76)";
+  context.fill();
+  context.strokeStyle = "rgba(255, 255, 255, .1)";
+  context.lineWidth = 1;
+  context.stroke();
+  context.fillStyle = "rgba(245, 248, 249, .94)";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(formatHealthForCanvas(presentation), 0, 0);
+  context.fillText(label, 0, 0);
   context.restore();
 }
 
@@ -195,16 +248,20 @@ export function SunburstMap({
       const center = size / 2;
       const inner = innerRadius + (hovered.depth - 1) * ringWidth;
       const outer = inner + ringWidth - 4;
-      const color = nodeHealthPresentation(
+      const presentation = nodeHealthPresentation(
         hovered.node,
         metric,
         coverageTargetCompleteness,
-      ).color;
+      );
+      const color = healthColor(presentation.value);
+      const shadowColor = presentation.state === "exact"
+        ? color
+        : "rgba(210, 220, 224, .45)";
       drawArc(context, center, inner, outer, hovered.start, hovered.end);
       context.save();
       context.strokeStyle = "rgba(255,255,255,.78)";
       context.lineWidth = 1.5 + pulse * 1.5;
-      context.shadowColor = color;
+      context.shadowColor = shadowColor;
       context.shadowBlur = 13 + pulse * 18;
       context.stroke();
       context.restore();
@@ -260,22 +317,40 @@ export function SunburstMap({
         metric,
         coverageTargetCompleteness,
       );
-      const color = presentation.color;
-      drawArc(context, center, inner, outer, arc.start, arc.end);
+      const color = healthColor(presentation.value);
       const selected = arc.node.id === selectedNodeId;
-      context.globalAlpha = selected ? 1 : 0.84;
-      context.fillStyle = color;
+
+      drawArc(context, center, inner, outer, arc.start, arc.end);
+      context.globalAlpha = selected ? 0.94 : 0.78;
+      context.fillStyle = ARC_TRACK_COLOR;
       context.fill();
+
+      const progress = arcProgress(presentation);
+      if (progress > 0) {
+        const thickness = outer - inner;
+        const progressOuter = inner + thickness * progress;
+        drawArc(context, center, inner, progressOuter, arc.start, arc.end);
+        context.globalAlpha = 1;
+        context.fillStyle = color;
+        context.fill();
+        if (progress < 1 && (arc.end - arc.start) * progressOuter >= 10) {
+          drawProgressBoundary(context, center, progressOuter, arc.start, arc.end);
+        }
+      }
+
+      context.globalAlpha = 1;
       if (selected) {
+        drawArc(context, center, inner, outer, arc.start, arc.end);
         context.save();
         context.strokeStyle = "rgba(255,255,255,.95)";
         context.lineWidth = 2;
-        context.shadowColor = color;
+        context.shadowColor = presentation.state === "exact"
+          ? color
+          : "rgba(210, 220, 224, .45)";
         context.shadowBlur = 12;
         context.stroke();
         context.restore();
       }
-      context.globalAlpha = 1;
       drawScoreLabel(context, arc, presentation, center, inner, outer);
     }
 
@@ -399,7 +474,7 @@ export function SunburstMap({
       </p>
       <p id={healthDescriptionId} className="sr-only">
         Arc size is physical storage. The current folder has {rootHealthDescription}. {rootPresentation.state === "partial"
-          ? "Estimated colors are blended with neutral gray according to verified completeness."
+          ? "For estimated arcs, verified content fills from the inner edge outward; the unverified remainder is neutral gray."
           : rootPresentation.state === "unavailable"
             ? "Unavailable health is shown in neutral gray."
             : "Health colors are exact."} Use arrow keys to explore and Enter to select.
@@ -446,9 +521,12 @@ export function SunburstMap({
         </strong>
         <span title={root.name}>{root.name}</span>
       </button>
-      <div className="health-legend" aria-label="Health score color scale">
+      <div className="health-legend" aria-label="Health score color and verification progress legend">
         <div className="health-gradient" />
         <div><span>0 unhealthy</span><span>50</span><span>100 healthy</span></div>
+        {rootPresentation.state === "partial" && (
+          <small>Inner fill: verified · Gray: pending or unavailable</small>
+        )}
       </div>
     </div>
   );
