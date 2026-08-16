@@ -247,7 +247,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .health-toolbar-score { display: grid; width: 148px; min-width: 0; align-content: center; padding: 4px 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(10,14,20,.86); }
 .health-toolbar-score span { overflow: hidden; color: #6e7b84; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .health-toolbar-score strong { font-size: 17px; font-variant-numeric: tabular-nums; }
-.health-toolbar-score strong em { margin-left: 3px; color: #718087; font-size: 7px; font-style: normal; letter-spacing: .04em; }
 .health-toolbar-score > small { overflow: hidden; color: #6c797f; font-size: 7px; font-weight: 720; letter-spacing: .04em; text-overflow: ellipsis; white-space: nowrap; }
 .health-toolbar-score.is-partial { border-color: rgba(151,171,178,.2); background: rgba(116,137,143,.045); }
 .health-toolbar .health-controls { display: flex; min-width: 0; flex: 1; gap: 7px; margin: 0; }
@@ -321,7 +320,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .map-center-control span { color: var(--accent); font-size: clamp(9px, 1vw, 12px); font-weight: 670; }
 .map-center-control:not(:disabled):hover small { color: var(--accent); }
 .map-center-control.health-center strong { max-width: none; margin: 2px 0 1px; color: var(--accent-bright); font-size: clamp(23px, 3vw, 34px); letter-spacing: -.05em; }
-.map-center-control.health-center strong em { margin-left: 2px; color: #65747d; font-size: .34em; font-style: normal; letter-spacing: 0; }
 .map-center-control.health-center span { display: block; max-width: 92px; overflow: hidden; color: #9eaaaf; font-size: clamp(8px, .9vw, 10px); text-overflow: ellipsis; white-space: nowrap; }
 .health-legend { position: absolute; z-index: 3; bottom: 18px; left: 24px; width: min(300px, calc(100% - 48px)); color: var(--muted); font-size: 9px; }
 .sunburst-frame.is-analysis-partial .health-legend { opacity: .7; }
@@ -353,7 +351,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-score span, .inspector-score strong, .inspector-score small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-score span { color: #6e7b84; font-size: 9px; }
 .inspector-score strong { margin-top: 1px; font-size: 17px; letter-spacing: -.03em; }
-.inspector-score strong em { margin-left: 3px; color: #718087; font-size: 7px; font-style: normal; letter-spacing: .04em; }
 .inspector-score small { margin-top: 1px; color: #89969d; font-size: 9px; }
 .inspector-facts { display: flex; min-width: 0; align-items: center; gap: 10px; min-height: 37px; padding: 4px 8px 7px; border-bottom: 1px solid var(--line); }
 .inspector-facts > span:not(.inspector-readonly) { display: grid; min-width: 0; }
@@ -386,7 +383,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .inspector-list li button > span, .inspector-list li button > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector-list li button > strong { font-size: 10px; font-variant-numeric: tabular-nums; }
 .inspector-list li button > strong.inspector-row-health { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 2px; }
-.inspector-row-health em { color: #718087; font-size: 5px; font-style: normal; letter-spacing: 0; }
 .inspector-row-name { display: flex; min-width: 0; align-items: center; gap: 6px; color: #dce5e7; }
 .inspector-row-name svg { width: 13px; flex: 0 0 13px; color: #7291a3; }
 .inspector-row-name.is-file svg { color: #69757d; opacity: .7; }

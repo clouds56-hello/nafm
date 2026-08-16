@@ -118,14 +118,7 @@ function drawScoreLabel(
   context.font = "700 10px -apple-system, BlinkMacSystemFont, sans-serif";
   context.textAlign = "center";
   context.textBaseline = "middle";
-  const scoreOffset = presentation.state === "partial" ? -5 : 0;
-  context.fillText(formatHealthForCanvas(presentation), scoreOffset, 0);
-  if (presentation.state === "partial") {
-    context.fillStyle = "rgba(7, 11, 15, .68)";
-    context.font = "700 5px -apple-system, BlinkMacSystemFont, sans-serif";
-    context.textAlign = "left";
-    context.fillText("EST", 4, 1);
-  }
+  context.fillText(formatHealthForCanvas(presentation), 0, 0);
   context.restore();
 }
 
@@ -450,7 +443,6 @@ export function SunburstMap({
         <small>{parentRoot ? "↑ UP" : metricLabel.toUpperCase()}</small>
         <strong style={{ color: rootPresentation.color }}>
           {formatHealth(rootPresentation.value)}
-          {rootPresentation.state === "partial" && <em>EST</em>}
         </strong>
         <span title={root.name}>{root.name}</span>
       </button>

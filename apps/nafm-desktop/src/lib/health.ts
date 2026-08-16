@@ -10,6 +10,8 @@ export interface HealthPresentation {
   color: string;
 }
 
+const PARTIAL_HEALTH_MIN_INTENSITY = 0.4;
+
 function clampRatio(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
@@ -80,7 +82,10 @@ export function healthPresentation(
     value: estimate,
     state: "partial",
     completeness: verified,
-    color: healthColor(estimate, verified),
+    color: healthColor(
+      estimate,
+      PARTIAL_HEALTH_MIN_INTENSITY + (1 - PARTIAL_HEALTH_MIN_INTENSITY) * verified,
+    ),
   };
 }
 

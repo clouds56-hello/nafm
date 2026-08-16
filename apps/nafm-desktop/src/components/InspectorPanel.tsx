@@ -83,8 +83,16 @@ interface HealthScoreProps {
   unit: string;
   hasContent: boolean;
   active: boolean;
-  partialEvidence: string;
+  partialEvidence?: string;
   unavailableEvidence?: string;
+}
+
+function coveragePartialEvidence(sourceCompleteness: number, targetCompleteness: number): string | undefined {
+  const evidence = [
+    sourceCompleteness < 1 ? `Source ${formatCompleteness(sourceCompleteness)}` : null,
+    targetCompleteness < 1 ? `Target ${formatCompleteness(targetCompleteness)}` : null,
+  ].filter((value): value is string => value !== null);
+  return evidence.length > 0 ? evidence.join(" · ") : undefined;
 }
 
 function HealthScore({
@@ -105,7 +113,7 @@ function HealthScore({
       : unavailableEvidence
         ?? (presentation.completeness > 0 ? "No comparable content" : "No verified content");
   } else if (presentation.state === "partial") {
-    evidence = `PARTIAL · ${partialEvidence}`;
+    evidence = partialEvidence ? `PARTIAL · ${partialEvidence}` : "PARTIAL";
   } else {
     evidence = total > 0
       ? `${formatFileEquivalent(numerator)} / ${formatCount(total)} ${unit}`
@@ -120,7 +128,6 @@ function HealthScore({
       <span>{label}</span>
       <strong style={{ color: presentation.color }}>
         {formatHealth(presentation.value)}
-        {presentation.state === "partial" && <em>EST</em>}
       </strong>
       <small title={evidence}>{evidence}</small>
     </div>
@@ -253,7 +260,9 @@ export function InspectorPanel({
           unit="files"
           hasContent={node.file_count > 0}
           active={metric === "space_health"}
-          partialEvidence={`${formatCompleteness(sourceCompleteness)} verified`}
+          partialEvidence={sourceCompleteness < 1
+            ? `${formatCompleteness(sourceCompleteness)} verified`
+            : undefined}
         />
         <HealthScore
           label={coverageTargetName ? `Coverage → ${coverageTargetName}` : "Coverage"}
@@ -263,7 +272,7 @@ export function InspectorPanel({
           unit="groups"
           hasContent={node.file_count > 0}
           active={metric === "coverage_health"}
-          partialEvidence={`source ${formatCompleteness(sourceCompleteness)} · target ${formatCompleteness(coverageTargetCompleteness)}`}
+          partialEvidence={coveragePartialEvidence(sourceCompleteness, coverageTargetCompleteness)}
           unavailableEvidence={coverageUnavailableReason ? "No verified comparison" : undefined}
         />
       </div>
@@ -432,7 +441,6 @@ function FolderContents({
                     <span>{formatBytes(child.total_bytes)}</span>
                     <strong className="inspector-row-health" style={{ color: presentation.color }}>
                       {formatHealth(presentation.value)}
-                      {presentation.state === "partial" && <em>EST</em>}
                     </strong>
                     <ChevronIcon className={openable ? "" : "is-hidden"} />
                   </button>

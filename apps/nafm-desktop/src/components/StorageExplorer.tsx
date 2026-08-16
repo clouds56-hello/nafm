@@ -718,7 +718,6 @@ export function StorageExplorer({
           <span>{metric === "space_health" ? source.name : `${source.name} → ${target?.name ?? "No target"}`}</span>
           <strong style={{ color: scorePresentation.color }}>
             {formatHealth(scorePresentation.value)}
-            {scorePresentation.state === "partial" && <em>EST</em>}
           </strong>
           <small>{scoreStatus}</small>
         </div>
