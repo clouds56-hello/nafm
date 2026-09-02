@@ -2,6 +2,9 @@
 members = [
   "apps/nafm-desktop/src-tauri",
   "crates/nafm-agent",
+  "crates/nafm-protocol",
+  "crates/nafm-bundle",
+  "crates/nafm-xtask",
   "crates/nafm-core",
   "crates/nafm-cli",
 ]

@@ -1,6 +1,7 @@
 mod credentials;
 mod error;
 mod hash;
+mod installer;
 mod model;
 mod remote;
 mod repository;
@@ -9,6 +10,7 @@ mod workspace;
 pub use credentials::{CredentialStore, SavedSmbCredential, SmbCredential, SmbLocation, verify_smb_connection};
 pub use error::{NafmError, Result};
 pub use hash::{Blake3HashAlgorithm, ContentHasher, HashAlgorithm, default_hash_algorithm};
+pub use installer::AgentInstallation;
 pub use model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
   FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,

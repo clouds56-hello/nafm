@@ -1,73 +1,22 @@
-use std::path::PathBuf;
 use std::process::Stdio;
 
-use serde::{Deserialize, Serialize};
+pub use nafm_protocol::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::{NafmError, Result};
-use crate::model::{HiddenPolicy, RemoteMachine};
-
-pub const REMOTE_AGENT_PROTOCOL_VERSION: u32 = 1;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RemoteFileMetadata {
-  pub relative_path: String,
-  pub size_bytes: u64,
-  pub modified_unix_nanos: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum RemoteAgentRequest {
-  Probe {
-    protocol_version: u32,
-    remote_root: Option<PathBuf>,
-  },
-  Discover {
-    protocol_version: u32,
-    remote_root: PathBuf,
-    hidden_policy: HiddenPolicy,
-  },
-  Hash {
-    protocol_version: u32,
-    remote_root: PathBuf,
-    hash_algorithm: String,
-    files: Vec<RemoteFileMetadata>,
-  },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum RemoteAgentResponse {
-  Ready {
-    protocol_version: u32,
-    agent_version: String,
-    hash_algorithms: Vec<String>,
-  },
-  File {
-    file: RemoteFileMetadata,
-  },
-  DiscoveryComplete {
-    file_count: u64,
-  },
-  Hash {
-    relative_path: String,
-    content_hash: String,
-  },
-  HashComplete {
-    file_count: u64,
-  },
-  Error {
-    message: String,
-  },
-}
+use crate::model::RemoteMachine;
 
 pub(crate) async fn execute_remote_agent(
   machine: &RemoteMachine,
   request: &RemoteAgentRequest,
 ) -> Result<Vec<RemoteAgentResponse>> {
-  execute_remote_agent_cancellable(machine, request, None).await
+  tokio::time::timeout(
+    std::time::Duration::from_secs(30),
+    execute_remote_agent_cancellable(machine, request, None),
+  )
+  .await
+  .map_err(|_| NafmError::RemoteAgent("agent probe timed out".to_owned()))?
 }
 
 pub(crate) async fn execute_remote_agent_cancellable(
@@ -91,6 +40,7 @@ pub(crate) async fn execute_remote_agent_with_handler(
   mut response_handler: impl FnMut(RemoteAgentResponse) -> Result<()> + Send,
 ) -> Result<()> {
   validate_ssh_target(&machine.ssh_target)?;
+  let agent_command = crate::installer::agent_command(machine)?;
   let mut child = Command::new("ssh")
     .args([
       "-T",
@@ -99,7 +49,7 @@ pub(crate) async fn execute_remote_agent_with_handler(
       "-o",
       "ConnectTimeout=10",
       &machine.ssh_target,
-      "nafm-agent",
+      &agent_command,
     ])
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -164,7 +114,7 @@ pub(crate) async fn execute_remote_agent_with_handler(
   Ok(())
 }
 
-fn validate_ssh_target(value: &str) -> Result<()> {
+pub(crate) fn validate_ssh_target(value: &str) -> Result<()> {
   if value.is_empty()
     || value.starts_with('-')
     || value

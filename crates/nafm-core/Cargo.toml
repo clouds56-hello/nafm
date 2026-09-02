@@ -7,6 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nafm-protocol = { path = "../nafm-protocol" }
+nafm-bundle = { path = "../nafm-bundle" }
+base64 = "0.22"
 blake3.workspace = true
 chrono.workspace = true
 directories.workspace = true

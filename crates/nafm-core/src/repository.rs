@@ -82,7 +82,7 @@ enum FileSource {
   },
   Remote {
     mapping_id: String,
-    machine: RemoteMachine,
+    machine: Arc<RemoteMachine>,
     remote_root: PathBuf,
     relative_path: String,
   },
@@ -558,6 +558,7 @@ impl Repository {
         id: Uuid::new_v4().to_string(),
         name,
         ssh_target,
+        agent_installation: None,
         added_at: Utc::now(),
       };
       conn.execute(
@@ -589,6 +590,40 @@ impl Repository {
       list_remote_machines(&conn)
     })
     .await?
+  }
+
+  pub async fn install_remote_agent(
+    &self,
+    selector: &str,
+    bundle_directory: PathBuf,
+    progress: &(dyn Fn(&str) + Send + Sync),
+  ) -> Result<crate::AgentInstallation> {
+    let db_path = self.db_path.clone();
+    let selector = selector.to_owned();
+    let machine = task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      find_remote_machine(&conn, &selector)?.ok_or_else(|| NafmError::RemoteMachineNotFound(selector))
+    })
+    .await??;
+    let installation = crate::installer::install(&machine, bundle_directory, progress).await?;
+    progress("Saving verified installation");
+    let db_path = self.db_path.clone();
+    let saved = installation.clone();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let changed = conn.execute(
+        "update remote_machines set agent_installation = ?1 where id = ?2 and ssh_target = ?3",
+        params![serde_json::to_string(&saved)?, machine.id, machine.ssh_target],
+      )?;
+      if changed != 1 {
+        return Err(NafmError::RemoteAgent(
+          "machine changed during installation; retry".into(),
+        ));
+      }
+      Ok::<_, NafmError>(())
+    })
+    .await??;
+    Ok(installation)
   }
 
   pub async fn probe_remote_machine(&self, selector: &str) -> Result<RemoteAgentResponse> {
@@ -629,7 +664,7 @@ impl Repository {
     remote_root: PathBuf,
   ) -> Result<RemotePathMapping> {
     let location = SmbLocation::parse(smb_root)?;
-    if !remote_root.is_absolute() {
+    if !crate::installer::is_remote_absolute(&remote_root.to_string_lossy()) {
       return Err(NafmError::RemoteAgent(format!(
         "remote root must be absolute: {}",
         remote_root.display()
@@ -1329,7 +1364,7 @@ impl Repository {
       }
     }
 
-    let mut agent_targets = BTreeMap::<(String, PathBuf), (RemoteMachine, Vec<FileProbe>)>::new();
+    let mut agent_targets = BTreeMap::<(String, PathBuf), (Arc<RemoteMachine>, Vec<FileProbe>)>::new();
     for (_, file) in &preparation.hash_targets {
       if let FileSource::Remote {
         machine, remote_root, ..
@@ -1724,6 +1759,7 @@ impl Repository {
           id text primary key not null,
           name text not null unique,
           ssh_target text not null,
+          agent_installation text,
           added_at text not null
         );
 
@@ -1768,6 +1804,7 @@ impl Repository {
       )?;
       ensure_site_folder_kind_column(&conn)?;
       ensure_hash_source_key_column(&conn)?;
+      ensure_agent_installation_column(&conn)?;
       migrate_scan_schema(&conn)?;
       backfill_site_scan_state(&conn)?;
       initialize_stage_history(&conn)?;
@@ -1947,6 +1984,13 @@ fn ensure_site_folder_kind_column(conn: &Connection) -> Result<()> {
   Ok(())
 }
 
+fn ensure_agent_installation_column(conn: &Connection) -> Result<()> {
+  if !table_columns(conn, "remote_machines")?.contains("agent_installation") {
+    conn.execute("alter table remote_machines add column agent_installation text", [])?;
+  }
+  Ok(())
+}
+
 fn ensure_hash_source_key_column(conn: &Connection) -> Result<()> {
   let columns = table_columns(conn, "file_records")?;
   if !columns.contains("hash_source_key") {
@@ -2102,6 +2146,7 @@ async fn discover_remote_files(
 
   let mut files = Vec::new();
   let mut completed_file_count = None;
+  let machine = Arc::new(machine.clone());
   for response in responses {
     let file = match response {
       RemoteAgentResponse::File { file } => file,
@@ -4783,16 +4828,27 @@ fn find_site_folder(conn: &Connection, id: &str) -> Result<Option<SiteFolder>> {
     .map_err(Into::into)
 }
 
+fn installation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<crate::AgentInstallation>> {
+  let value: Option<String> = row.get(4)?;
+  value
+    .map(|value| {
+      serde_json::from_str(&value)
+        .map_err(|error| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error)))
+    })
+    .transpose()
+}
+
 fn find_remote_machine(conn: &Connection, selector: &str) -> Result<Option<RemoteMachine>> {
   conn
     .query_row(
-      "select id, name, ssh_target, added_at from remote_machines where id = ?1 or name = ?1",
+      "select id, name, ssh_target, added_at, agent_installation from remote_machines where id = ?1 or name = ?1",
       params![selector],
       |row| {
         Ok(RemoteMachine {
           id: row.get(0)?,
           name: row.get(1)?,
           ssh_target: row.get(2)?,
+          agent_installation: installation_from_row(row)?,
           added_at: row.get(3)?,
         })
       },
@@ -4802,13 +4858,15 @@ fn find_remote_machine(conn: &Connection, selector: &str) -> Result<Option<Remot
 }
 
 fn list_remote_machines(conn: &Connection) -> Result<Vec<RemoteMachine>> {
-  let mut stmt = conn.prepare("select id, name, ssh_target, added_at from remote_machines order by name, id")?;
+  let mut stmt =
+    conn.prepare("select id, name, ssh_target, added_at, agent_installation from remote_machines order by name, id")?;
   stmt
     .query_map([], |row| {
       Ok(RemoteMachine {
         id: row.get(0)?,
         name: row.get(1)?,
         ssh_target: row.get(2)?,
+        agent_installation: installation_from_row(row)?,
         added_at: row.get(3)?,
       })
     })?
@@ -4874,9 +4932,7 @@ fn resolve_remote_path_mapping(
     };
     let machine = find_remote_machine(conn, &mapping.remote_machine_id)?
       .ok_or_else(|| NafmError::RemoteMachineNotFound(mapping.remote_machine_id.clone()))?;
-    let remote_root = suffix_segments
-      .iter()
-      .fold(mapping.remote_root.clone(), |path, segment| path.join(segment));
+    let remote_root = crate::installer::join_remote_path(&mapping.remote_root, suffix_segments)?;
     return Ok(Some((machine, mapping, remote_root)));
   }
   Ok(None)

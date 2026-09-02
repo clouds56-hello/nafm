@@ -43,6 +43,50 @@ async fn remote_machine_rejects_ssh_options_and_whitespace() {
 }
 
 #[tokio::test]
+async fn remote_installation_survives_reopen_and_migrates_old_schema() {
+  let fixture = Fixture::new().await;
+  let machine = fixture
+    .repo
+    .add_remote_machine("windows", "windows-host")
+    .await
+    .unwrap();
+  assert!(machine.agent_installation.is_none());
+  let installation = nafm_core::AgentInstallation {
+    target: "x86_64-pc-windows-msvc".into(),
+    agent_version: "0.2.0".into(),
+    executable_path: "C:\\Users\\O'Neil\\agent.exe".into(),
+    executable_hash: "test".into(),
+  };
+  let conn = rusqlite::Connection::open(fixture.repo.db_path()).unwrap();
+  conn
+    .execute(
+      "update remote_machines set agent_installation = ?1 where id = ?2",
+      rusqlite::params![serde_json::to_string(&installation).unwrap(), machine.id],
+    )
+    .unwrap();
+  assert_eq!(
+    fixture.repo.list_remote_machines().await.unwrap()[0].agent_installation,
+    Some(installation)
+  );
+  // Simulate the schema shipped before managed installations.
+  conn
+    .execute("alter table remote_machines drop column agent_installation", [])
+    .unwrap();
+  drop(conn);
+  let reopened = Repository::open(RepositoryOptions {
+    cache_path: fixture.repo.db_path().to_path_buf(),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  assert!(
+    reopened.list_remote_machines().await.unwrap()[0]
+      .agent_installation
+      .is_none()
+  );
+}
+
+#[tokio::test]
 async fn scan_site_detects_duplicates_across_site_folders() {
   let fixture = Fixture::new().await;
   let first = fixture.mkdir("first");

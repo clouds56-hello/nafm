@@ -19,6 +19,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  agents:
+    uses: ./.github/workflows/agents.yml
+
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10

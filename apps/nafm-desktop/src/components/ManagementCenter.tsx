@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { AgentInstallButton } from "./AgentInstallButton";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   addSiteFolder,
@@ -864,18 +865,22 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
       </div>
       <header className="management-section-heading">
         <div><span className="eyebrow">REMOTE HASHING</span><h2>SSH agents and path mappings</h2></div>
-        <p>SSH uses your existing configuration and host-key policy. NAFM does not store SSH credentials.</p>
+        <p>Install copies a bundled agent to the SSH user's private directory; no sudo or service. Supports Linux x64, Windows x64, and macOS ARM64. SSH uses your existing configuration and host-key policy.</p>
       </header>
       <div className="connection-management-grid">
         <div className="management-list connection-list">
           {snapshot.remote_machines.length === 0 ? (
-            <div className="management-empty"><NetworkIcon /><h3>No remote machines</h3><p>Install nafm-agent remotely, then register its SSH target.</p></div>
+            <div className="management-empty"><NetworkIcon /><h3>No remote machines</h3><p>Register an SSH target, install its agent, then map a native path.</p></div>
           ) : snapshot.remote_machines.map((machine) => (
             <div className="saved-connection" key={machine.id}>
               <span className="management-list-icon smb"><NetworkIcon /></span>
               <span>
                 <strong>{machine.name}</strong>
                 <small>{machine.ssh_target}</small>
+                <small>{machine.agent_installation
+                  ? `${machine.agent_installation.target} · v${machine.agent_installation.agent_version}`
+                  : "Manual agent on PATH, or install the bundled agent"}</small>
+                {machine.agent_installation && <small>{machine.agent_installation.executable_path}</small>}
                 {snapshot.remote_path_mappings
                   .filter((mapping) => mapping.remote_machine_id === machine.id)
                   .map((mapping) => (
@@ -887,6 +892,7 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
               </span>
               <span>
                 <button type="button" className="ghost-button" onClick={() => void probe(machine.id, machine.name)} disabled={busy}>Test</button>
+                <AgentInstallButton machine={machine} workspaceName={snapshot.active_workspace.name} busy={busy} setBusy={setBusy} onMutation={onMutation} />
                 <button type="button" className="ghost-button" onClick={() => void deleteMachine(machine.id)} disabled={busy}><TrashIcon /></button>
               </span>
             </div>
@@ -910,7 +916,7 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
               </select>
             </Field>
             <Field label="SMB root"><input value={mappingSmbRoot} onChange={(event) => setMappingSmbRoot(event.target.value)} placeholder="smb://nas/Media" spellCheck={false} disabled={busy} /></Field>
-            <Field label="Remote root"><input value={mappingRemoteRoot} onChange={(event) => setMappingRemoteRoot(event.target.value)} placeholder="/volume1/Media" spellCheck={false} disabled={busy} /></Field>
+            <Field label="Remote root" hint="Absolute path on the remote OS, e.g. /volume1/Media or C:\\Media"><input value={mappingRemoteRoot} onChange={(event) => setMappingRemoteRoot(event.target.value)} placeholder="/volume1/Media" spellCheck={false} disabled={busy} /></Field>
             <button className="primary-button full-width" type="submit" disabled={busy || !mappingMachineId || !mappingSmbRoot.trim() || !mappingRemoteRoot.trim()}><NetworkIcon />Verify and map</button>
           </form>
         </div>

@@ -2335,12 +2335,24 @@ dependencies = [
 
 [[package]]
 name = "nafm-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "nafm-core",
+ "blake3",
+ "nafm-protocol",
  "serde_json",
  "tempfile",
  "walkdir",
+]
+
+[[package]]
+name = "nafm-bundle"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nafm-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2364,9 +2376,12 @@ dependencies = [
 name = "nafm-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "directories",
+ "nafm-bundle",
+ "nafm-protocol",
  "percent-encoding",
  "rusqlite",
  "serde",
@@ -2386,6 +2401,7 @@ name = "nafm-desktop"
 version = "0.1.1"
 dependencies = [
  "chrono",
+ "nafm-bundle",
  "nafm-core",
  "serde",
  "serde_json",
@@ -2395,6 +2411,23 @@ dependencies = [
  "tempfile",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "nafm-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "nafm-xtask"
+version = "0.1.0"
+dependencies = [
+ "nafm-bundle",
+ "nafm-protocol",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
