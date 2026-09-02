@@ -93,6 +93,46 @@ export function matchSmbConnection(url: string): Promise<SavedConnection | null>
   return invoke<SavedConnection | null>("match_smb_connection", { url });
 }
 
+export function addRemoteMachine(
+  workspaceName: string,
+  name: string,
+  sshTarget: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("add_remote_machine", { workspaceName, name, sshTarget });
+}
+
+export function removeRemoteMachine(
+  workspaceName: string,
+  machineId: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("remove_remote_machine", { workspaceName, machineId });
+}
+
+export function probeRemoteMachine(workspaceName: string, machineId: string): Promise<void> {
+  return invoke<void>("probe_remote_machine", { workspaceName, machineId });
+}
+
+export function addRemotePathMapping(
+  workspaceName: string,
+  machineId: string,
+  smbRoot: string,
+  remoteRoot: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("add_remote_path_mapping", {
+    workspaceName,
+    machineId,
+    smbRoot,
+    remoteRoot,
+  });
+}
+
+export function removeRemotePathMapping(
+  workspaceName: string,
+  mappingId: string,
+): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("remove_remote_path_mapping", { workspaceName, mappingId });
+}
+
 export function loadDashboard(): Promise<Dashboard> {
   return invoke<Dashboard>("load_dashboard");
 }

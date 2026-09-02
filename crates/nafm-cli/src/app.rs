@@ -10,7 +10,7 @@ use nafm_core::{
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::cli::{Cli, Command, HiddenArg, SiteCommand, StageCommand, WorkspaceCommand};
+use crate::cli::{Cli, Command, HiddenArg, RemoteCommand, SiteCommand, StageCommand, WorkspaceCommand};
 use crate::output::{
   SiteScanProgress, format_duplicate_groups_by_folder, print_json_line, print_json_or, scan_progress_message,
   site_folder_label, spinner,
@@ -29,6 +29,7 @@ pub async fn run_with_cli(cli: Cli) -> Result<()> {
       match command {
         Command::Site(command) => handle_site(&repo, command, cli.json).await?,
         Command::Stage(command) => handle_stage(&repo, command, cli.json).await?,
+        Command::Remote(command) => handle_remote(&repo, command, cli.json).await?,
         Command::Scan { selector } => handle_scan(&repo, &selector, cli.json).await?,
         Command::Duplicates { selector } => handle_duplicates(&repo, &selector, cli.json).await?,
         Command::Missing { site, against } => handle_missing(&repo, &site, &against, cli.json).await?,
@@ -62,6 +63,8 @@ async fn handle_status(
     database_path: repo.db_path().to_path_buf(),
     sites: site_list_entries(&repo).await?,
     connections: CredentialStore::from_default_root()?.list_smb_credentials()?,
+    remote_machines: repo.list_remote_machines().await?,
+    remote_path_mappings: repo.list_remote_path_mappings().await?,
   };
 
   print_json_or(json, &status, || {
@@ -89,7 +92,82 @@ async fn handle_status(
         println!("  {}  username={}", connection.url, connection.username);
       }
     }
+    if status.remote_machines.is_empty() {
+      println!("remote machines: none");
+    } else {
+      println!("remote machines ({}):", status.remote_machines.len());
+      for machine in &status.remote_machines {
+        println!("  {}  ssh_target={}", machine.name, machine.ssh_target);
+        for mapping in status
+          .remote_path_mappings
+          .iter()
+          .filter(|mapping| mapping.remote_machine_id == machine.id)
+        {
+          println!(
+            "    {} -> {}  id={}",
+            mapping.smb_root,
+            mapping.remote_root.display(),
+            mapping.id
+          );
+        }
+      }
+    }
   })?;
+  Ok(())
+}
+
+async fn handle_remote(repo: &Repository, command: RemoteCommand, json: bool) -> Result<()> {
+  match command {
+    RemoteCommand::Add { name, ssh_target } => {
+      let machine = repo.add_remote_machine(&name, &ssh_target).await?;
+      print_json_or(json, &machine, || {
+        println!("registered remote machine {} ({})", machine.name, machine.ssh_target);
+      })?;
+    }
+    RemoteCommand::Remove { machine } => {
+      let removed = repo.remove_remote_machine(&machine).await?;
+      print_json_or(json, &removed, || {
+        println!("removed remote machine {}", removed.name);
+      })?;
+    }
+    RemoteCommand::Probe { machine } => {
+      let response = repo.probe_remote_machine(&machine).await?;
+      print_json_or(json, &response, || {
+        println!("remote agent on {machine} is ready");
+      })?;
+    }
+    RemoteCommand::Map {
+      machine,
+      smb_root,
+      remote_root,
+    } => {
+      let mapping = repo.add_remote_path_mapping(&machine, &smb_root, remote_root).await?;
+      print_json_or(json, &mapping, || {
+        println!("mapped {} -> {}", mapping.smb_root, mapping.remote_root.display());
+      })?;
+    }
+    RemoteCommand::Unmap { mapping_id } => {
+      let mapping = repo.remove_remote_path_mapping(&mapping_id).await?;
+      print_json_or(json, &mapping, || {
+        println!(
+          "removed mapping {} -> {}",
+          mapping.smb_root,
+          mapping.remote_root.display()
+        );
+      })?;
+    }
+    RemoteCommand::List => {
+      let payload = serde_json::json!({
+        "machines": repo.list_remote_machines().await?,
+        "path_mappings": repo.list_remote_path_mappings().await?,
+      });
+      print_json_or(json, &payload, || {
+        let machines = payload["machines"].as_array().map_or(0, Vec::len);
+        let mappings = payload["path_mappings"].as_array().map_or(0, Vec::len);
+        println!("{machines} remote machines, {mappings} path mappings");
+      })?;
+    }
+  }
   Ok(())
 }
 
@@ -573,6 +651,8 @@ struct StatusOutput {
   database_path: PathBuf,
   sites: Vec<SiteListEntry>,
   connections: Vec<SavedSmbCredential>,
+  remote_machines: Vec<nafm_core::RemoteMachine>,
+  remote_path_mappings: Vec<nafm_core::RemotePathMapping>,
 }
 
 #[cfg(test)]

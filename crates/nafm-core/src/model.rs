@@ -34,6 +34,23 @@ pub struct SiteFolder {
   pub added_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemoteMachine {
+  pub id: String,
+  pub name: String,
+  pub ssh_target: String,
+  pub added_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemotePathMapping {
+  pub id: String,
+  pub remote_machine_id: String,
+  pub smb_root: String,
+  pub remote_root: PathBuf,
+  pub added_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SiteOverview {
   pub site: Site,

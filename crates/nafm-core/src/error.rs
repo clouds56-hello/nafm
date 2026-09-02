@@ -54,6 +54,16 @@ pub enum NafmError {
   SiteHashesPending { site_id: String, pending_hashes: u64 },
   #[error("scan cancelled")]
   ScanCancelled,
+  #[error("remote machine not found: {0}")]
+  RemoteMachineNotFound(String),
+  #[error("remote path mapping not found: {0}")]
+  RemotePathMappingNotFound(String),
+  #[error("remote machine name cannot be empty")]
+  EmptyRemoteMachineName,
+  #[error("invalid SSH target: {0}")]
+  InvalidSshTarget(String),
+  #[error("remote agent error: {0}")]
+  RemoteAgent(String),
   #[error("unsupported site location scheme: {0}")]
   UnsupportedLocationScheme(String),
   #[error("credentials path is not a regular file or directory: {0}")]

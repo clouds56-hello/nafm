@@ -36,6 +36,8 @@ pub enum Command {
   Site(SiteCommand),
   #[command(subcommand)]
   Stage(StageCommand),
+  #[command(subcommand)]
+  Remote(RemoteCommand),
   Scan {
     selector: String,
   },
@@ -47,6 +49,30 @@ pub enum Command {
     #[arg(long)]
     against: String,
   },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoteCommand {
+  /// Register an SSH target from ~/.ssh/config or user@host.
+  Add {
+    name: String,
+    #[arg(long)]
+    ssh_target: String,
+  },
+  /// Remove a remote machine and all of its path mappings.
+  Remove { machine: String },
+  /// Verify SSH access and agent protocol compatibility.
+  Probe { machine: String },
+  /// Map an SMB URL prefix to a native path on a remote machine.
+  Map {
+    machine: String,
+    smb_root: String,
+    remote_root: PathBuf,
+  },
+  /// Remove a path mapping by ID.
+  Unmap { mapping_id: String },
+  /// List remote machines and path mappings.
+  List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -95,9 +121,11 @@ pub enum HiddenArg {
 
 #[cfg(test)]
 mod tests {
+  use std::path::Path;
+
   use clap::Parser;
 
-  use super::{Cli, Command, SiteCommand};
+  use super::{Cli, Command, RemoteCommand, SiteCommand};
 
   #[test]
   fn parses_smb_connect_command() {
@@ -139,5 +167,16 @@ mod tests {
 
     assert!(cli.json);
     assert!(matches!(cli.command, Command::Site(SiteCommand::List)));
+  }
+
+  #[test]
+  fn parses_remote_mapping_command() {
+    let cli = Cli::try_parse_from(["nafm", "remote", "map", "nas", "smb://nas/Media", "/volume1/Media"]).unwrap();
+
+    assert!(matches!(
+      cli.command,
+      Command::Remote(RemoteCommand::Map { machine, smb_root, remote_root })
+        if machine == "nas" && smb_root == "smb://nas/Media" && remote_root == Path::new("/volume1/Media")
+    ));
   }
 }

@@ -47,6 +47,11 @@ pub fn run() {
       commands::management::remove_site_folder,
       commands::management::connect_smb,
       commands::management::match_smb_connection,
+      commands::management::add_remote_machine,
+      commands::management::remove_remote_machine,
+      commands::management::probe_remote_machine,
+      commands::management::add_remote_path_mapping,
+      commands::management::remove_remote_path_mapping,
     ])
     .run(tauri::generate_context!())
     .expect("error while running NAFM");

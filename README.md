@@ -90,6 +90,39 @@ SMB files are streamed into the configured content hasher and are not copied
 into NAFM's data directory. A credential saved for a share also authorizes
 site folders beneath that share, such as `smb://nas.example.test/Media/Family Videos`.
 
+## Remote hashing over SSH
+
+When an SMB server, NAS, or nearby Linux machine can read the share through a
+native filesystem path, NAFM can discover and hash the files there instead of
+transferring every byte over SMB. The desktop keeps ownership of the workspace
+database; the remote machine runs a stateless `nafm-agent` process on demand.
+
+Build the agent for the remote machine's platform and install it as
+`nafm-agent` in the non-interactive SSH `PATH`:
+
+```sh
+cargo build --release -p nafm-agent
+scp target/release/nafm-agent nas:/usr/local/bin/nafm-agent
+```
+
+Use an existing alias from `~/.ssh/config`, or a normal `user@host` target.
+NAFM delegates keys, host verification, proxying, and ports to the system SSH
+client and never stores SSH credentials.
+
+```sh
+cargo run -p nafm-cli -- remote add nas --ssh-target nas
+cargo run -p nafm-cli -- remote probe nas
+cargo run -p nafm-cli -- remote map nas smb://nas.example.test/Media /volume1/Media
+cargo run -p nafm-cli -- remote list
+```
+
+Mappings use the longest matching SMB URL prefix, so the example also maps
+`smb://nas.example.test/Media/Family Videos` to
+`/volume1/Media/Family Videos`. Mapping creation verifies the SSH connection,
+agent protocol, hash algorithm, and remote directory before saving it. An SMB
+root without a mapping continues to use the regular SMB connection. Remote
+paths are Unix-style absolute paths in this release.
+
 ## Status
 
 Show the application root, current workspace, workspace database, registered

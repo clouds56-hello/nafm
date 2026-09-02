@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  AddSiteFolderRequest, HiddenPolicy, Repository, RepositoryOptions, SavedSmbCredential, SiteFolder, SiteFolderKind,
-  SiteHashStatus, SiteOverview, SmbLocation, normalize_workspace_name, verify_smb_connection,
+  AddSiteFolderRequest, HiddenPolicy, RemoteMachine, RemotePathMapping, Repository, RepositoryOptions,
+  SavedSmbCredential, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, SmbLocation, normalize_workspace_name,
+  verify_smb_connection,
 };
 use serde::Serialize;
 use tauri::State;
@@ -17,6 +18,8 @@ pub struct ManagementSnapshot {
   workspaces: Vec<WorkspaceSummary>,
   sites: Vec<ManagedSite>,
   connections: Vec<SavedSmbCredential>,
+  remote_machines: Vec<RemoteMachine>,
+  remote_path_mappings: Vec<RemotePathMapping>,
 }
 
 #[derive(Clone, Serialize)]
@@ -280,6 +283,87 @@ pub async fn match_smb_connection(
   }))
 }
 
+#[tauri::command]
+pub async fn add_remote_machine(
+  state: State<'_, AppState>,
+  workspace_name: String,
+  name: String,
+  ssh_target: String,
+) -> Result<ManagementMutationResult, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&workspace_name).await?;
+  ensure_scans_idle(&state).await?;
+  repository
+    .add_remote_machine(&name, &ssh_target)
+    .await
+    .map_err(|error| error.to_string())?;
+  Ok(mutation_result(&state).await)
+}
+
+#[tauri::command]
+pub async fn remove_remote_machine(
+  state: State<'_, AppState>,
+  workspace_name: String,
+  machine_id: String,
+) -> Result<ManagementMutationResult, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&workspace_name).await?;
+  ensure_scans_idle(&state).await?;
+  repository
+    .remove_remote_machine(&machine_id)
+    .await
+    .map_err(|error| error.to_string())?;
+  Ok(mutation_result(&state).await)
+}
+
+#[tauri::command]
+pub async fn probe_remote_machine(
+  state: State<'_, AppState>,
+  workspace_name: String,
+  machine_id: String,
+) -> Result<(), String> {
+  let repository = state.repository_for(&workspace_name).await?;
+  repository
+    .probe_remote_machine(&machine_id)
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn add_remote_path_mapping(
+  state: State<'_, AppState>,
+  workspace_name: String,
+  machine_id: String,
+  smb_root: String,
+  remote_root: String,
+) -> Result<ManagementMutationResult, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&workspace_name).await?;
+  ensure_scans_idle(&state).await?;
+  repository
+    .add_remote_path_mapping(&machine_id, &smb_root, PathBuf::from(remote_root))
+    .await
+    .map_err(|error| error.to_string())?;
+  Ok(mutation_result(&state).await)
+}
+
+#[tauri::command]
+pub async fn remove_remote_path_mapping(
+  state: State<'_, AppState>,
+  workspace_name: String,
+  mapping_id: String,
+) -> Result<ManagementMutationResult, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&workspace_name).await?;
+  ensure_scans_idle(&state).await?;
+  repository
+    .remove_remote_path_mapping(&mapping_id)
+    .await
+    .map_err(|error| error.to_string())?;
+  Ok(mutation_result(&state).await)
+}
+
 async fn open_workspace_repository(state: &AppState, workspace_path: PathBuf) -> Result<Repository, String> {
   Repository::open_with_credential_store(
     RepositoryOptions {
@@ -332,6 +416,16 @@ async fn management_snapshot(state: &AppState) -> Result<ManagementSnapshot, Str
     .credential_store
     .list_smb_credentials()
     .map_err(|error| error.to_string())?;
+  let remote_machines = active
+    .repository
+    .list_remote_machines()
+    .await
+    .map_err(|error| error.to_string())?;
+  let remote_path_mappings = active
+    .repository
+    .list_remote_path_mappings()
+    .await
+    .map_err(|error| error.to_string())?;
 
   Ok(ManagementSnapshot {
     active_workspace: WorkspaceSummary {
@@ -342,6 +436,8 @@ async fn management_snapshot(state: &AppState) -> Result<ManagementSnapshot, Str
     workspaces,
     sites,
     connections,
+    remote_machines,
+    remote_path_mappings,
   })
 }
 
