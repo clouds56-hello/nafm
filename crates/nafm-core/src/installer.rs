@@ -309,10 +309,12 @@ mod tests {
     let script = if cfg!(windows) {
       let encoded = script.split_whitespace().last().unwrap();
       let bytes = STANDARD.decode(encoded).unwrap();
-      let utf16: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+      let (pairs, remainder) = bytes.as_chunks::<2>();
+      assert!(
+        remainder.is_empty(),
+        "PowerShell script must contain complete UTF-16 code units"
+      );
+      let utf16: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
       powershell_command(
         &String::from_utf16(&utf16)
           .unwrap()
