@@ -2,13 +2,18 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   addSiteFolder,
+  addRemoteMachine,
+  addRemotePathMapping,
   connectSmb,
   createSite,
   createWorkspace,
   matchSmbConnection,
   removeSite,
   removeSiteFolder,
+  removeRemoteMachine,
+  removeRemotePathMapping,
   renameSite,
+  probeRemoteMachine,
   switchWorkspace,
 } from "../lib/tauri";
 import type {
@@ -16,6 +21,7 @@ import type {
   ManagedSite,
   ManagementMutationResult,
   ManagementSnapshot,
+  RemotePathMapping,
   SavedConnection,
   SiteKind,
 } from "../lib/types";
@@ -55,6 +61,22 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "An unexpected error occurred.";
+}
+
+function hasRemoteMapping(path: string, mappings: RemotePathMapping[]): boolean {
+  function normalize(value: string): string {
+    try {
+      const url = new URL(value.trim());
+      return `${url.protocol}//${url.host}${url.pathname}`.replace(/\/+$/, "");
+    } catch {
+      return value.trim().replace(/\/+$/, "");
+    }
+  }
+  const value = normalize(path);
+  return mappings.some((mapping) => {
+    const root = normalize(mapping.smb_root);
+    return value === root || value.startsWith(`${root}/`);
+  });
 }
 
 interface SmbMatch {
@@ -242,6 +264,7 @@ interface RootFieldsProps {
   hiddenPolicy: HiddenPolicy;
   savedConnection: SavedConnection | null;
   checkingConnection: boolean;
+  remoteMappingAvailable: boolean;
   disabled: boolean;
   onKindChange: (kind: SiteKind) => void;
   onPathChange: (path: string) => void;
@@ -292,15 +315,22 @@ function RootFields(props: RootFieldsProps) {
           <Field label="SMB URL" hint="For example: smb://server/share/folder">
             <input type="url" value={props.path} onChange={(event) => props.onPathChange(event.target.value)} placeholder="smb://server/share" spellCheck={false} disabled={props.disabled} />
           </Field>
-          <SmbConnectionFields
-            url={props.path}
-            saved={props.savedConnection}
-            checking={props.checkingConnection}
-            disabled={props.disabled}
-            onMutation={props.onMutation}
-            onConnected={props.onConnected}
-            onBusyChange={props.onBusyChange}
-          />
+          {props.remoteMappingAvailable ? (
+            <div className="connection-available" role="status">
+              <span><CheckIcon /></span>
+              <div><strong>Remote agent mapping available</strong><small>This root will be read through SSH.</small></div>
+            </div>
+          ) : (
+            <SmbConnectionFields
+              url={props.path}
+              saved={props.savedConnection}
+              checking={props.checkingConnection}
+              disabled={props.disabled}
+              onMutation={props.onMutation}
+              onConnected={props.onConnected}
+              onBusyChange={props.onBusyChange}
+            />
+          )}
         </>
       )}
       <Field label="Hidden files">
@@ -396,7 +426,8 @@ function AddSiteForm({ snapshot, busy, setBusy, onMutation, onDone }: {
   const [hiddenPolicy, setHiddenPolicy] = useState<HiddenPolicy>("include");
   const [error, setError] = useState<string | null>(null);
   const smbMatch = useSmbConnectionMatch(path, kind === "smb");
-  const smbReady = kind === "local" || Boolean(smbMatch.connection);
+  const remoteMappingAvailable = kind === "smb" && hasRemoteMapping(path, snapshot.remote_path_mappings);
+  const smbReady = kind === "local" || remoteMappingAvailable || Boolean(smbMatch.connection);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -434,6 +465,7 @@ function AddSiteForm({ snapshot, busy, setBusy, onMutation, onDone }: {
         hiddenPolicy={hiddenPolicy}
         savedConnection={smbMatch.connection}
         checkingConnection={smbMatch.checking}
+        remoteMappingAvailable={remoteMappingAvailable}
         disabled={busy}
         onKindChange={setKind}
         onPathChange={setPath}
@@ -449,9 +481,10 @@ function AddSiteForm({ snapshot, busy, setBusy, onMutation, onDone }: {
   );
 }
 
-function AddRootForm({ site, workspaceName, busy, setBusy, onMutation, onCancel }: {
+function AddRootForm({ site, workspaceName, remotePathMappings, busy, setBusy, onMutation, onCancel }: {
   site: ManagedSite;
   workspaceName: string;
+  remotePathMappings: RemotePathMapping[];
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onMutation: (result: ManagementMutationResult, dashboardChanged: boolean) => void;
@@ -462,7 +495,8 @@ function AddRootForm({ site, workspaceName, busy, setBusy, onMutation, onCancel 
   const [hiddenPolicy, setHiddenPolicy] = useState<HiddenPolicy>("include");
   const [error, setError] = useState<string | null>(null);
   const smbMatch = useSmbConnectionMatch(path, kind === "smb");
-  const smbReady = kind === "local" || Boolean(smbMatch.connection);
+  const remoteMappingAvailable = kind === "smb" && hasRemoteMapping(path, remotePathMappings);
+  const smbReady = kind === "local" || remoteMappingAvailable || Boolean(smbMatch.connection);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -493,6 +527,7 @@ function AddRootForm({ site, workspaceName, busy, setBusy, onMutation, onCancel 
         hiddenPolicy={hiddenPolicy}
         savedConnection={smbMatch.connection}
         checkingConnection={smbMatch.checking}
+        remoteMappingAvailable={remoteMappingAvailable}
         disabled={busy}
         onKindChange={setKind}
         onPathChange={setPath}
@@ -508,9 +543,10 @@ function AddRootForm({ site, workspaceName, busy, setBusy, onMutation, onCancel 
   );
 }
 
-function SiteDetail({ site, workspaceName, busy, setBusy, onMutation }: {
+function SiteDetail({ site, workspaceName, remotePathMappings, busy, setBusy, onMutation }: {
   site: ManagedSite;
   workspaceName: string;
+  remotePathMappings: RemotePathMapping[];
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onMutation: (result: ManagementMutationResult, dashboardChanged: boolean) => void;
@@ -575,7 +611,7 @@ function SiteDetail({ site, workspaceName, busy, setBusy, onMutation }: {
   }
 
   if (addingRoot) {
-    return <AddRootForm site={site} workspaceName={workspaceName} busy={busy} setBusy={setBusy} onMutation={onMutation} onCancel={() => setAddingRoot(false)} />;
+    return <AddRootForm site={site} workspaceName={workspaceName} remotePathMappings={remotePathMappings} busy={busy} setBusy={setBusy} onMutation={onMutation} onCancel={() => setAddingRoot(false)} />;
   }
 
   return (
@@ -665,7 +701,7 @@ function SitesSection({ snapshot, selectedSiteId, busy, setBusy, onSelectedSiteC
         {adding ? (
           <AddSiteForm snapshot={snapshot} busy={busy} setBusy={setBusy} onMutation={onMutation} onDone={(siteId) => onSelectedSiteChange(siteId || (snapshot.sites[0]?.id ?? null))} />
         ) : selected ? (
-          <SiteDetail site={selected} workspaceName={snapshot.active_workspace.name} busy={busy} setBusy={setBusy} onMutation={onMutation} />
+          <SiteDetail site={selected} workspaceName={snapshot.active_workspace.name} remotePathMappings={snapshot.remote_path_mappings} busy={busy} setBusy={setBusy} onMutation={onMutation} />
         ) : (
           <div className="management-empty"><SettingsIcon /><h3>Select a site</h3><p>Choose a site to edit its name and roots.</p></div>
         )}
@@ -684,6 +720,13 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [remoteName, setRemoteName] = useState("");
+  const [sshTarget, setSshTarget] = useState("");
+  const [mappingMachineId, setMappingMachineId] = useState("");
+  const [mappingSmbRoot, setMappingSmbRoot] = useState("");
+  const [mappingRemoteRoot, setMappingRemoteRoot] = useState("");
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [probeMessage, setProbeMessage] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -698,6 +741,93 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
       onMutation(result, false);
     } catch (mutationError) {
       setError(errorMessage(mutationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitRemoteMachine(event: FormEvent) {
+    event.preventDefault();
+    if (!remoteName.trim() || !sshTarget.trim()) return;
+    setBusy(true);
+    setRemoteError(null);
+    try {
+      const result = await addRemoteMachine(
+        snapshot.active_workspace.name,
+        remoteName.trim(),
+        sshTarget.trim(),
+      );
+      setRemoteName("");
+      setSshTarget("");
+      onMutation(result, false);
+    } catch (mutationError) {
+      setRemoteError(errorMessage(mutationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitMapping(event: FormEvent) {
+    event.preventDefault();
+    if (!mappingMachineId || !mappingSmbRoot.trim() || !mappingRemoteRoot.trim()) return;
+    setBusy(true);
+    setRemoteError(null);
+    try {
+      const result = await addRemotePathMapping(
+        snapshot.active_workspace.name,
+        mappingMachineId,
+        mappingSmbRoot.trim(),
+        mappingRemoteRoot.trim(),
+      );
+      setMappingSmbRoot("");
+      setMappingRemoteRoot("");
+      onMutation(result, false);
+    } catch (mutationError) {
+      setRemoteError(errorMessage(mutationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function probe(machineId: string, machineName: string) {
+    setBusy(true);
+    setRemoteError(null);
+    setProbeMessage(null);
+    try {
+      await probeRemoteMachine(snapshot.active_workspace.name, machineId);
+      setProbeMessage(`${machineName} is ready.`);
+    } catch (probeError) {
+      setRemoteError(errorMessage(probeError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMachine(machineId: string) {
+    setBusy(true);
+    setRemoteError(null);
+    try {
+      onMutation(
+        await removeRemoteMachine(snapshot.active_workspace.name, machineId),
+        false,
+      );
+    } catch (mutationError) {
+      setRemoteError(errorMessage(mutationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMapping(mappingId: string) {
+    setBusy(true);
+    setRemoteError(null);
+    try {
+      onMutation(
+        await removeRemotePathMapping(snapshot.active_workspace.name, mappingId),
+        false,
+      );
+    } catch (mutationError) {
+      setRemoteError(errorMessage(mutationError));
     } finally {
       setBusy(false);
     }
@@ -732,6 +862,61 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
           <button className="primary-button full-width" type="submit" disabled={busy || !url.trim() || !username.trim() || !password}><NetworkIcon />{busy ? "Connecting…" : "Connect and save"}</button>
         </form>
       </div>
+      <header className="management-section-heading">
+        <div><span className="eyebrow">REMOTE HASHING</span><h2>SSH agents and path mappings</h2></div>
+        <p>SSH uses your existing configuration and host-key policy. NAFM does not store SSH credentials.</p>
+      </header>
+      <div className="connection-management-grid">
+        <div className="management-list connection-list">
+          {snapshot.remote_machines.length === 0 ? (
+            <div className="management-empty"><NetworkIcon /><h3>No remote machines</h3><p>Install nafm-agent remotely, then register its SSH target.</p></div>
+          ) : snapshot.remote_machines.map((machine) => (
+            <div className="saved-connection" key={machine.id}>
+              <span className="management-list-icon smb"><NetworkIcon /></span>
+              <span>
+                <strong>{machine.name}</strong>
+                <small>{machine.ssh_target}</small>
+                {snapshot.remote_path_mappings
+                  .filter((mapping) => mapping.remote_machine_id === machine.id)
+                  .map((mapping) => (
+                    <small key={mapping.id}>
+                      {mapping.smb_root} → {mapping.remote_root}{" "}
+                      <button type="button" className="ghost-button" onClick={() => void deleteMapping(mapping.id)} disabled={busy}>Remove</button>
+                    </small>
+                  ))}
+              </span>
+              <span>
+                <button type="button" className="ghost-button" onClick={() => void probe(machine.id, machine.name)} disabled={busy}>Test</button>
+                <button type="button" className="ghost-button" onClick={() => void deleteMachine(machine.id)} disabled={busy}><TrashIcon /></button>
+              </span>
+            </div>
+          ))}
+        </div>
+        <div>
+          <form className="management-form-card" onSubmit={submitRemoteMachine}>
+            <span className="eyebrow">REMOTE MACHINE</span>
+            <h3>Register an SSH target</h3>
+            <Field label="Name"><input value={remoteName} onChange={(event) => setRemoteName(event.target.value)} placeholder="NAS" disabled={busy} /></Field>
+            <Field label="SSH target" hint="An alias from ~/.ssh/config or user@host"><input value={sshTarget} onChange={(event) => setSshTarget(event.target.value)} placeholder="nas" spellCheck={false} disabled={busy} /></Field>
+            <button className="primary-button full-width" type="submit" disabled={busy || !remoteName.trim() || !sshTarget.trim()}><NetworkIcon />Register machine</button>
+          </form>
+          <form className="management-form-card" onSubmit={submitMapping}>
+            <span className="eyebrow">PATH MAPPING</span>
+            <h3>Map SMB to a native path</h3>
+            <Field label="Remote machine">
+              <select value={mappingMachineId} onChange={(event) => setMappingMachineId(event.target.value)} disabled={busy}>
+                <option value="">Select a machine</option>
+                {snapshot.remote_machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}
+              </select>
+            </Field>
+            <Field label="SMB root"><input value={mappingSmbRoot} onChange={(event) => setMappingSmbRoot(event.target.value)} placeholder="smb://nas/Media" spellCheck={false} disabled={busy} /></Field>
+            <Field label="Remote root"><input value={mappingRemoteRoot} onChange={(event) => setMappingRemoteRoot(event.target.value)} placeholder="/volume1/Media" spellCheck={false} disabled={busy} /></Field>
+            <button className="primary-button full-width" type="submit" disabled={busy || !mappingMachineId || !mappingSmbRoot.trim() || !mappingRemoteRoot.trim()}><NetworkIcon />Verify and map</button>
+          </form>
+        </div>
+      </div>
+      {probeMessage && <p className="connection-available" role="status"><CheckIcon />{probeMessage}</p>}
+      {remoteError && <p className="management-form-error" role="alert">{remoteError}</p>}
     </section>
   );
 }

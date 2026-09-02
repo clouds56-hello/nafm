@@ -44,11 +44,28 @@ export interface SavedConnection {
   username: string;
 }
 
+export interface RemoteMachine {
+  id: string;
+  name: string;
+  ssh_target: string;
+  added_at: string;
+}
+
+export interface RemotePathMapping {
+  id: string;
+  remote_machine_id: string;
+  smb_root: string;
+  remote_root: string;
+  added_at: string;
+}
+
 export interface ManagementSnapshot {
   active_workspace: WorkspaceSummary;
   workspaces: WorkspaceSummary[];
   sites: ManagedSite[];
   connections: SavedConnection[];
+  remote_machines: RemoteMachine[];
+  remote_path_mappings: RemotePathMapping[];
 }
 
 export interface ManagementMutationResult {

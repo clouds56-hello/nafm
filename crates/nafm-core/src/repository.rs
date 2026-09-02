@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,10 +16,15 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
-  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
-  ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, StageAddReport, StageCommitDryRun,
-  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
+  ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,
+  StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning,
+  StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
+  StorageTree, StorageViewSnapshot,
+};
+use crate::remote::{
+  REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
+  execute_remote_agent_cancellable, execute_remote_agent_with_handler,
 };
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
@@ -59,12 +64,27 @@ struct FileProbe {
   source: FileSource,
 }
 
+impl FileProbe {
+  fn hash_source_key(&self) -> Option<&str> {
+    match &self.source {
+      FileSource::Remote { mapping_id, .. } => Some(mapping_id),
+      FileSource::Local | FileSource::Smb { .. } => None,
+    }
+  }
+}
+
 #[derive(Clone, Debug)]
 enum FileSource {
   Local,
   Smb {
     credential_url: String,
     remote_path: String,
+  },
+  Remote {
+    mapping_id: String,
+    machine: RemoteMachine,
+    remote_root: PathBuf,
+    relative_path: String,
   },
 }
 
@@ -77,6 +97,7 @@ struct ExistingRecord {
   hash_algorithm: String,
   inventory_revision: u64,
   hash_revision: Option<u64>,
+  hash_source_key: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -466,7 +487,7 @@ impl Repository {
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector.clone()))?;
-      let (kind, path) = resolve_site_folder_location(&request.path, &credential_store)?;
+      let (kind, path) = resolve_site_folder_location(&conn, &request.path, &credential_store)?;
       let now = Utc::now();
       let site_folder = SiteFolder {
         id: Uuid::new_v4().to_string(),
@@ -519,6 +540,175 @@ impl Repository {
         None => None,
       };
       list_site_folders(&conn, site_id.as_deref())
+    })
+    .await?
+  }
+
+  pub async fn add_remote_machine(&self, name: &str, ssh_target: &str) -> Result<RemoteMachine> {
+    let db_path = self.db_path.clone();
+    let name = name.trim().to_owned();
+    let ssh_target = ssh_target.trim().to_owned();
+    task::spawn_blocking(move || {
+      if name.is_empty() {
+        return Err(NafmError::EmptyRemoteMachineName);
+      }
+      validate_ssh_target(&ssh_target)?;
+      let conn = open_connection(db_path)?;
+      let machine = RemoteMachine {
+        id: Uuid::new_v4().to_string(),
+        name,
+        ssh_target,
+        added_at: Utc::now(),
+      };
+      conn.execute(
+        "insert into remote_machines (id, name, ssh_target, added_at) values (?1, ?2, ?3, ?4)",
+        params![machine.id, machine.name, machine.ssh_target, machine.added_at],
+      )?;
+      Ok(machine)
+    })
+    .await?
+  }
+
+  pub async fn remove_remote_machine(&self, selector: &str) -> Result<RemoteMachine> {
+    let db_path = self.db_path.clone();
+    let selector = selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let machine =
+        find_remote_machine(&conn, &selector)?.ok_or_else(|| NafmError::RemoteMachineNotFound(selector.clone()))?;
+      conn.execute("delete from remote_machines where id = ?1", params![machine.id])?;
+      Ok(machine)
+    })
+    .await?
+  }
+
+  pub async fn list_remote_machines(&self) -> Result<Vec<RemoteMachine>> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      list_remote_machines(&conn)
+    })
+    .await?
+  }
+
+  pub async fn probe_remote_machine(&self, selector: &str) -> Result<RemoteAgentResponse> {
+    let db_path = self.db_path.clone();
+    let selector = selector.to_owned();
+    let machine = task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      find_remote_machine(&conn, &selector)?.ok_or_else(|| NafmError::RemoteMachineNotFound(selector))
+    })
+    .await??;
+    let responses = execute_remote_agent(
+      &machine,
+      &RemoteAgentRequest::Probe {
+        protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+        remote_root: None,
+      },
+    )
+    .await?;
+    responses
+      .into_iter()
+      .find(|response| {
+        matches!(
+          response,
+          RemoteAgentResponse::Ready {
+            protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+            hash_algorithms,
+            ..
+          } if hash_algorithms.iter().any(|algorithm| algorithm == self.hash_algorithm.name())
+        )
+      })
+      .ok_or_else(|| NafmError::RemoteAgent("agent did not return a ready response".to_owned()))
+  }
+
+  pub async fn add_remote_path_mapping(
+    &self,
+    machine_selector: &str,
+    smb_root: &str,
+    remote_root: PathBuf,
+  ) -> Result<RemotePathMapping> {
+    let location = SmbLocation::parse(smb_root)?;
+    if !remote_root.is_absolute() {
+      return Err(NafmError::RemoteAgent(format!(
+        "remote root must be absolute: {}",
+        remote_root.display()
+      )));
+    }
+    let db_path = self.db_path.clone();
+    let machine_selector = machine_selector.to_owned();
+    let lookup_db_path = db_path.clone();
+    let machine = task::spawn_blocking(move || {
+      let conn = open_connection(lookup_db_path)?;
+      find_remote_machine(&conn, &machine_selector)?
+        .ok_or_else(|| NafmError::RemoteMachineNotFound(machine_selector.clone()))
+    })
+    .await??;
+    let responses = execute_remote_agent(
+      &machine,
+      &RemoteAgentRequest::Probe {
+        protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+        remote_root: Some(remote_root.clone()),
+      },
+    )
+    .await?;
+    if !responses.iter().any(|response| {
+      matches!(
+        response,
+        RemoteAgentResponse::Ready {
+          protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+          hash_algorithms,
+          ..
+        } if hash_algorithms.iter().any(|algorithm| algorithm == self.hash_algorithm.name())
+      )
+    }) {
+      return Err(NafmError::RemoteAgent(
+        "agent did not confirm the remote root".to_owned(),
+      ));
+    }
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let mapping = RemotePathMapping {
+        id: Uuid::new_v4().to_string(),
+        remote_machine_id: machine.id,
+        smb_root: location.normalized_url,
+        remote_root,
+        added_at: Utc::now(),
+      };
+      conn.execute(
+        "insert into remote_path_mappings (id, remote_machine_id, smb_root, remote_root, added_at)
+         values (?1, ?2, ?3, ?4, ?5)",
+        params![
+          mapping.id,
+          mapping.remote_machine_id,
+          mapping.smb_root,
+          mapping.remote_root.to_string_lossy(),
+          mapping.added_at
+        ],
+      )?;
+      Ok(mapping)
+    })
+    .await?
+  }
+
+  pub async fn remove_remote_path_mapping(&self, mapping_id: &str) -> Result<RemotePathMapping> {
+    let db_path = self.db_path.clone();
+    let mapping_id = mapping_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      let mapping = find_remote_path_mapping(&conn, &mapping_id)?
+        .ok_or_else(|| NafmError::RemotePathMappingNotFound(mapping_id.clone()))?;
+      conn.execute("delete from remote_path_mappings where id = ?1", params![mapping.id])?;
+      Ok(mapping)
+    })
+    .await?
+  }
+
+  pub async fn list_remote_path_mappings(&self) -> Result<Vec<RemotePathMapping>> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      list_remote_path_mappings(&conn)
     })
     .await?
   }
@@ -1012,14 +1202,33 @@ impl Repository {
     let discovered_smb_files = AtomicU64::new(files_by_path.len() as u64);
     for site_folder in &smb_folders {
       check_scan_cancelled(cancellation_callback.as_ref())?;
-      for file in discover_smb_files(
-        site_folder,
-        &self.credential_store,
-        cancellation_callback.as_ref(),
-        Some((site, progress_callback.as_ref(), &discovered_smb_files)),
-      )
-      .await?
-      {
+      let mapping_db_path = self.db_path.clone();
+      let mapping_url = site_folder.path.to_string_lossy().into_owned();
+      let remote_mapping = task::spawn_blocking(move || {
+        let conn = open_connection(mapping_db_path)?;
+        resolve_remote_path_mapping(&conn, &mapping_url)
+      })
+      .await??;
+      let discovered = if let Some((machine, mapping, remote_root)) = remote_mapping {
+        discover_remote_files(
+          site_folder,
+          &mapping.id,
+          &machine,
+          &remote_root,
+          cancellation_callback.as_ref(),
+          Some((site, progress_callback.as_ref(), &discovered_smb_files)),
+        )
+        .await?
+      } else {
+        discover_smb_files(
+          site_folder,
+          &self.credential_store,
+          cancellation_callback.as_ref(),
+          Some((site, progress_callback.as_ref(), &discovered_smb_files)),
+        )
+        .await?
+      };
+      for file in discovered {
         files_by_path.entry(file.path.clone()).or_insert(file);
       }
     }
@@ -1117,6 +1326,107 @@ impl Repository {
         .any(|(_, file)| matches!(file.source, FileSource::Smb { .. }))
       {
         check_scan_cancelled(cancellation_callback.as_ref())?;
+      }
+    }
+
+    let mut agent_targets = BTreeMap::<(String, PathBuf), (RemoteMachine, Vec<FileProbe>)>::new();
+    for (_, file) in &preparation.hash_targets {
+      if let FileSource::Remote {
+        machine, remote_root, ..
+      } = &file.source
+      {
+        agent_targets
+          .entry((machine.id.clone(), remote_root.clone()))
+          .or_insert_with(|| (machine.clone(), Vec::new()))
+          .1
+          .push(file.clone());
+      }
+    }
+    for ((_machine_id, remote_root), (machine, targets)) in agent_targets {
+      check_scan_cancelled(cancellation_callback.as_ref())?;
+      let request_files = targets
+        .iter()
+        .map(|file| {
+          let FileSource::Remote { relative_path, .. } = &file.source else {
+            unreachable!("agent target should have a remote source");
+          };
+          RemoteFileMetadata {
+            relative_path: relative_path.clone(),
+            size_bytes: file.size_bytes,
+            modified_unix_nanos: file.modified_unix_nanos,
+          }
+        })
+        .collect();
+      let mut files_by_relative_path = targets
+        .into_iter()
+        .map(|file| {
+          let FileSource::Remote { relative_path, .. } = &file.source else {
+            unreachable!("agent target should have a remote source");
+          };
+          (relative_path.clone(), file)
+        })
+        .collect::<BTreeMap<_, _>>();
+      let target_count = files_by_relative_path.len() as u64;
+      let writer_conn = open_connection(&db_path)?;
+      let handler_progress_callback = progress_callback.clone();
+      let handler_progress_context = progress_context.clone();
+      let handler_processed_files = processed_files.clone();
+      let handler_site_id = site.id.clone();
+      let handler_inventory_revision = preparation.inventory_revision;
+      let handler_hash_algorithm = self.hash_algorithm.name().to_owned();
+      let hash_complete = Arc::new(AtomicBool::new(false));
+      let handler_hash_complete = hash_complete.clone();
+      execute_remote_agent_with_handler(
+        &machine,
+        &RemoteAgentRequest::Hash {
+          protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+          remote_root,
+          hash_algorithm: self.hash_algorithm.name().to_owned(),
+          files: request_files,
+        },
+        cancellation_callback.as_deref(),
+        move |response| match response {
+          RemoteAgentResponse::Hash {
+            relative_path,
+            content_hash,
+          } => {
+            let file = files_by_relative_path.remove(&relative_path).ok_or_else(|| {
+              NafmError::RemoteAgent(format!("agent returned an unexpected hash path: {relative_path}"))
+            })?;
+            publish_hashed_file(
+              &writer_conn,
+              &handler_site_id,
+              handler_inventory_revision,
+              &file,
+              &handler_hash_algorithm,
+              &content_hash,
+            )?;
+            report_scan_progress(
+              handler_progress_callback.as_ref(),
+              &handler_progress_context,
+              &file.path,
+              &handler_processed_files,
+            );
+            Ok(())
+          }
+          RemoteAgentResponse::HashComplete { file_count }
+            if file_count == target_count && files_by_relative_path.is_empty() =>
+          {
+            handler_hash_complete.store(true, Ordering::Release);
+            Ok(())
+          }
+          RemoteAgentResponse::HashComplete { .. } => Err(NafmError::RemoteAgent(format!(
+            "agent omitted {} requested hash results",
+            files_by_relative_path.len()
+          ))),
+          _ => Ok(()),
+        },
+      )
+      .await?;
+      if !hash_complete.load(Ordering::Acquire) {
+        return Err(NafmError::RemoteAgent(
+          "agent did not finish the hash response".to_owned(),
+        ));
       }
     }
 
@@ -1383,6 +1693,7 @@ impl Repository {
           modified_unix_nanos integer not null,
           hash_algorithm text not null,
           content_hash text,
+          hash_source_key text,
           inventory_revision integer not null default 0,
           hash_revision integer,
           last_seen_at text not null
@@ -1409,11 +1720,28 @@ impl Repository {
           hash_completed_at text
         );
 
+        create table if not exists remote_machines (
+          id text primary key not null,
+          name text not null unique,
+          ssh_target text not null,
+          added_at text not null
+        );
+
+        create table if not exists remote_path_mappings (
+          id text primary key not null,
+          remote_machine_id text not null references remote_machines(id) on delete cascade,
+          smb_root text not null unique,
+          remote_root text not null,
+          added_at text not null
+        );
+
         create index if not exists idx_site_folders_site_id on site_folders(site_id);
         create index if not exists idx_file_records_site_id on file_records(site_id);
         create index if not exists idx_file_records_site_folder_id on file_records(site_folder_id);
         create index if not exists idx_file_records_hash on file_records(hash_algorithm, content_hash, size_bytes);
         create index if not exists idx_scan_cache_entries_site_id on scan_cache_entries(site_id);
+        create index if not exists idx_remote_path_mappings_machine_id
+          on remote_path_mappings(remote_machine_id);
 
         create table if not exists stage_entries (
           file_id text primary key not null references file_records(id) on delete cascade,
@@ -1439,6 +1767,7 @@ impl Repository {
         ",
       )?;
       ensure_site_folder_kind_column(&conn)?;
+      ensure_hash_source_key_column(&conn)?;
       migrate_scan_schema(&conn)?;
       backfill_site_scan_state(&conn)?;
       initialize_stage_history(&conn)?;
@@ -1453,6 +1782,19 @@ fn open_connection(path: impl AsRef<Path>) -> Result<Connection> {
   conn.busy_timeout(Duration::from_secs(5))?;
   conn.pragma_update(None, "foreign_keys", "on")?;
   Ok(conn)
+}
+
+fn validate_ssh_target(value: &str) -> Result<()> {
+  if value.is_empty()
+    || value.starts_with('-')
+    || value
+      .chars()
+      .any(|character| character.is_whitespace() || character.is_control())
+  {
+    Err(NafmError::InvalidSshTarget(value.to_owned()))
+  } else {
+    Ok(())
+  }
 }
 
 fn with_immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -1605,7 +1947,19 @@ fn ensure_site_folder_kind_column(conn: &Connection) -> Result<()> {
   Ok(())
 }
 
-fn resolve_site_folder_location(path: &Path, credential_store: &CredentialStore) -> Result<(SiteFolderKind, PathBuf)> {
+fn ensure_hash_source_key_column(conn: &Connection) -> Result<()> {
+  let columns = table_columns(conn, "file_records")?;
+  if !columns.contains("hash_source_key") {
+    conn.execute("alter table file_records add column hash_source_key text", [])?;
+  }
+  Ok(())
+}
+
+fn resolve_site_folder_location(
+  conn: &Connection,
+  path: &Path,
+  credential_store: &CredentialStore,
+) -> Result<(SiteFolderKind, PathBuf)> {
   let value = path.to_string_lossy();
   if value
     .get(..6)
@@ -1615,6 +1969,7 @@ fn resolve_site_folder_location(path: &Path, credential_store: &CredentialStore)
     if credential_store
       .load_smb_credential(&location.normalized_url)?
       .is_none()
+      && resolve_remote_path_mapping(conn, &location.normalized_url)?.is_none()
     {
       return Err(NafmError::SmbCredentialNotFound(location.normalized_url));
     }
@@ -1719,6 +2074,81 @@ async fn discover_smb_files(
   let _ = client.disconnect_share(&tree).await;
   let files = discovery_result?;
   check_scan_cancelled(cancellation_callback)?;
+  Ok(files)
+}
+
+async fn discover_remote_files(
+  site_folder: &SiteFolder,
+  mapping_id: &str,
+  machine: &RemoteMachine,
+  remote_root: &Path,
+  cancellation_callback: Option<&ScanCancellationCallback>,
+  progress: Option<(&Site, Option<&ScanProgressCallback>, &AtomicU64)>,
+) -> Result<Vec<FileProbe>> {
+  check_scan_cancelled(cancellation_callback)?;
+  let location_value = site_folder.path.to_string_lossy();
+  let location = SmbLocation::parse(&location_value)?;
+  let responses = execute_remote_agent_cancellable(
+    machine,
+    &RemoteAgentRequest::Discover {
+      protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+      remote_root: remote_root.to_path_buf(),
+      hidden_policy: site_folder.hidden_policy,
+    },
+    cancellation_callback.map(AsRef::as_ref),
+  )
+  .await?;
+  check_scan_cancelled(cancellation_callback)?;
+
+  let mut files = Vec::new();
+  let mut completed_file_count = None;
+  for response in responses {
+    let file = match response {
+      RemoteAgentResponse::File { file } => file,
+      RemoteAgentResponse::DiscoveryComplete { file_count } => {
+        completed_file_count = Some(file_count);
+        continue;
+      }
+      _ => continue,
+    };
+    if file.relative_path.is_empty()
+      || file
+        .relative_path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+      return Err(NafmError::RemoteAgent(format!(
+        "agent returned an invalid relative path: {}",
+        file.relative_path
+      )));
+    }
+    let path_segments = file.relative_path.split('/').map(str::to_owned).collect::<Vec<_>>();
+    let display_url = location.join_path_segments(&path_segments)?;
+    let probe = FileProbe {
+      site_folder_id: site_folder.id.clone(),
+      path: PathBuf::from(display_url),
+      size_bytes: file.size_bytes,
+      modified_unix_nanos: file.modified_unix_nanos,
+      source: FileSource::Remote {
+        mapping_id: mapping_id.to_owned(),
+        machine: machine.clone(),
+        remote_root: remote_root.to_path_buf(),
+        relative_path: file.relative_path,
+      },
+    };
+    if let Some((site, progress_callback, discovered_files)) = progress {
+      let discovered_files = discovered_files.fetch_add(1, Ordering::Relaxed) + 1;
+      if should_report_discovery(discovered_files) {
+        report_discovery_progress(progress_callback, site, discovered_files, Some(&probe.path));
+      }
+    }
+    files.push(probe);
+  }
+  if completed_file_count != Some(files.len() as u64) {
+    return Err(NafmError::RemoteAgent(
+      "agent returned an incomplete discovery response".to_owned(),
+    ));
+  }
   Ok(files)
 }
 
@@ -1962,7 +2392,8 @@ fn publish_inventory_atomically(
           && record.hash_revision == Some(record.inventory_revision)
           && record.size_bytes == file.size_bytes
           && record.modified_unix_nanos == file.modified_unix_nanos
-          && matches!(file.source, FileSource::Local)
+          && record.hash_source_key.as_deref() == file.hash_source_key()
+          && !matches!(file.source, FileSource::Smb { .. })
       });
       let (content_hash, hash_revision) = if exact_verified {
         preparation.files_reused += 1;
@@ -2275,7 +2706,7 @@ fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingReco
   conn
     .query_row(
       "select site_id, size_bytes, modified_unix_nanos, content_hash, hash_algorithm,
-         inventory_revision, hash_revision
+         inventory_revision, hash_revision, hash_source_key
        from file_records where path = ?1",
       params![path.to_string_lossy()],
       |row| {
@@ -2287,6 +2718,7 @@ fn existing_record(conn: &Connection, path: &Path) -> Result<Option<ExistingReco
           hash_algorithm: row.get(4)?,
           inventory_revision: row.get(5)?,
           hash_revision: row.get(6)?,
+          hash_source_key: row.get(7)?,
         })
       },
     )
@@ -2356,9 +2788,9 @@ fn upsert_inventory_file(
   conn.execute(
     "insert into file_records (
       id, site_id, site_folder_id, path, size_bytes, modified_unix_nanos, hash_algorithm, content_hash,
-      inventory_revision, hash_revision, last_seen_at
+      hash_source_key, inventory_revision, hash_revision, last_seen_at
     )
-    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     on conflict(path) do update set
       site_id = excluded.site_id,
       site_folder_id = excluded.site_folder_id,
@@ -2366,6 +2798,7 @@ fn upsert_inventory_file(
       modified_unix_nanos = excluded.modified_unix_nanos,
       hash_algorithm = excluded.hash_algorithm,
       content_hash = excluded.content_hash,
+      hash_source_key = excluded.hash_source_key,
       inventory_revision = excluded.inventory_revision,
       hash_revision = excluded.hash_revision,
       last_seen_at = excluded.last_seen_at",
@@ -2378,6 +2811,7 @@ fn upsert_inventory_file(
       file.modified_unix_nanos,
       hash_algorithm,
       hash_state.content_hash,
+      file.hash_source_key(),
       inventory_revision,
       hash_state.hash_revision,
       last_seen_at,
@@ -4347,6 +4781,105 @@ fn find_site_folder(conn: &Connection, id: &str) -> Result<Option<SiteFolder>> {
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn find_remote_machine(conn: &Connection, selector: &str) -> Result<Option<RemoteMachine>> {
+  conn
+    .query_row(
+      "select id, name, ssh_target, added_at from remote_machines where id = ?1 or name = ?1",
+      params![selector],
+      |row| {
+        Ok(RemoteMachine {
+          id: row.get(0)?,
+          name: row.get(1)?,
+          ssh_target: row.get(2)?,
+          added_at: row.get(3)?,
+        })
+      },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn list_remote_machines(conn: &Connection) -> Result<Vec<RemoteMachine>> {
+  let mut stmt = conn.prepare("select id, name, ssh_target, added_at from remote_machines order by name, id")?;
+  stmt
+    .query_map([], |row| {
+      Ok(RemoteMachine {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        ssh_target: row.get(2)?,
+        added_at: row.get(3)?,
+      })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+fn find_remote_path_mapping(conn: &Connection, id: &str) -> Result<Option<RemotePathMapping>> {
+  conn
+    .query_row(
+      "select id, remote_machine_id, smb_root, remote_root, added_at
+       from remote_path_mappings where id = ?1",
+      params![id],
+      remote_path_mapping_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn list_remote_path_mappings(conn: &Connection) -> Result<Vec<RemotePathMapping>> {
+  let mut stmt = conn.prepare(
+    "select id, remote_machine_id, smb_root, remote_root, added_at
+     from remote_path_mappings order by length(smb_root) desc, smb_root",
+  )?;
+  stmt
+    .query_map([], remote_path_mapping_from_row)?
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+fn remote_path_mapping_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemotePathMapping> {
+  Ok(RemotePathMapping {
+    id: row.get(0)?,
+    remote_machine_id: row.get(1)?,
+    smb_root: row.get(2)?,
+    remote_root: PathBuf::from(row.get::<_, String>(3)?),
+    added_at: row.get(4)?,
+  })
+}
+
+fn resolve_remote_path_mapping(
+  conn: &Connection,
+  smb_url: &str,
+) -> Result<Option<(RemoteMachine, RemotePathMapping, PathBuf)>> {
+  let requested = SmbLocation::parse(smb_url)?;
+  for mapping in list_remote_path_mappings(conn)? {
+    let candidate = SmbLocation::parse(&mapping.smb_root)?;
+    if candidate.server_address != requested.server_address || !candidate.share.eq_ignore_ascii_case(&requested.share) {
+      continue;
+    }
+    let candidate_segments = candidate
+      .relative_path
+      .split('/')
+      .filter(|segment| !segment.is_empty())
+      .collect::<Vec<_>>();
+    let requested_segments = requested
+      .relative_path
+      .split('/')
+      .filter(|segment| !segment.is_empty())
+      .collect::<Vec<_>>();
+    let Some(suffix_segments) = requested_segments.strip_prefix(candidate_segments.as_slice()) else {
+      continue;
+    };
+    let machine = find_remote_machine(conn, &mapping.remote_machine_id)?
+      .ok_or_else(|| NafmError::RemoteMachineNotFound(mapping.remote_machine_id.clone()))?;
+    let remote_root = suffix_segments
+      .iter()
+      .fold(mapping.remote_root.clone(), |path, segment| path.join(segment));
+    return Ok(Some((machine, mapping, remote_root)));
+  }
+  Ok(None)
 }
 
 fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {

@@ -2,6 +2,7 @@ mod credentials;
 mod error;
 mod hash;
 mod model;
+mod remote;
 mod repository;
 mod workspace;
 
@@ -10,10 +11,12 @@ pub use error::{NafmError, Result};
 pub use hash::{Blake3HashAlgorithm, ContentHasher, HashAlgorithm, default_hash_algorithm};
 pub use model::{
   AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
-  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
-  ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, StageAddReport, StageCommitDryRun,
-  StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
+  ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,
+  StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning,
+  StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
+  StorageTree, StorageViewSnapshot,
 };
+pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};
 pub use repository::{Repository, RepositoryOptions};
 pub use workspace::{DEFAULT_WORKSPACE_NAME, WorkspaceInfo, WorkspaceManager, app_root_dir, normalize_workspace_name};

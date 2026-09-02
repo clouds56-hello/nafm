@@ -13,6 +13,36 @@ use nafm_core::{
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn remote_machines_are_workspace_configuration_and_cascade_on_removal() {
+  let fixture = Fixture::new().await;
+  let machine = fixture.repo.add_remote_machine("nas", "media-nas").await.unwrap();
+
+  assert_eq!(
+    fixture.repo.list_remote_machines().await.unwrap(),
+    vec![machine.clone()]
+  );
+  assert!(fixture.repo.list_remote_path_mappings().await.unwrap().is_empty());
+
+  let removed = fixture.repo.remove_remote_machine("nas").await.unwrap();
+  assert_eq!(removed, machine);
+  assert!(fixture.repo.list_remote_machines().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn remote_machine_rejects_ssh_options_and_whitespace() {
+  let fixture = Fixture::new().await;
+
+  let option_error = fixture
+    .repo
+    .add_remote_machine("nas", "-oProxyCommand=bad")
+    .await
+    .unwrap_err();
+  assert!(matches!(option_error, NafmError::InvalidSshTarget(_)));
+  let whitespace_error = fixture.repo.add_remote_machine("nas", "host name").await.unwrap_err();
+  assert!(matches!(whitespace_error, NafmError::InvalidSshTarget(_)));
+}
+
+#[tokio::test]
 async fn scan_site_detects_duplicates_across_site_folders() {
   let fixture = Fixture::new().await;
   let first = fixture.mkdir("first");
