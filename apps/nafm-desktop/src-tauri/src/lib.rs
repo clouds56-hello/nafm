@@ -50,6 +50,7 @@ pub fn run() {
       commands::management::add_remote_machine,
       commands::management::remove_remote_machine,
       commands::management::probe_remote_machine,
+      commands::agents::install_remote_agent,
       commands::management::add_remote_path_mapping,
       commands::management::remove_remote_path_mapping,
     ])

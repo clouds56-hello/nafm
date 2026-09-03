@@ -3,12 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HiddenPolicy {
-  Include,
-  Skip,
-}
+pub use nafm_protocol::HiddenPolicy;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +34,8 @@ pub struct RemoteMachine {
   pub id: String,
   pub name: String,
   pub ssh_target: String,
+  #[serde(default)]
+  pub agent_installation: Option<crate::installer::AgentInstallation>,
   pub added_at: DateTime<Utc>,
 }
 

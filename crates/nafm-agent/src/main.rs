@@ -2,9 +2,8 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nafm_core::{
-  Blake3HashAlgorithm, HashAlgorithm, HiddenPolicy, REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest,
-  RemoteAgentResponse, RemoteFileMetadata,
+use nafm_protocol::{
+  HiddenPolicy, REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata,
 };
 use walkdir::WalkDir;
 
@@ -26,15 +25,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } => {
       require_protocol(protocol_version)?;
       if let Some(remote_root) = remote_root {
-        let remote_root = remote_root.canonicalize()?;
-        if !remote_root.is_dir() {
-          return Err(format!("remote root is not a directory: {}", remote_root.display()).into());
-        }
+        canonical_root(&remote_root)?;
       }
       write_response(&RemoteAgentResponse::Ready {
         protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
         agent_version: env!("CARGO_PKG_VERSION").to_owned(),
         hash_algorithms: vec!["blake3".to_owned()],
+        os: std::env::consts::OS.to_owned(),
+        arch: std::env::consts::ARCH.to_owned(),
+        executable_hash: {
+          let mut hasher = blake3::Hasher::new();
+          hasher.update_reader(std::fs::File::open(std::env::current_exe()?)?)?;
+          hasher.finalize().to_hex().to_string()
+        },
       })?;
     }
     RemoteAgentRequest::Discover {
@@ -71,10 +74,7 @@ fn require_protocol(protocol_version: u32) -> Result<(), Box<dyn std::error::Err
 }
 
 fn discover(remote_root: &Path, hidden_policy: HiddenPolicy) -> Result<(), Box<dyn std::error::Error>> {
-  let root = remote_root.canonicalize()?;
-  if !root.is_dir() {
-    return Err(format!("remote root is not a directory: {}", root.display()).into());
-  }
+  let root = canonical_root(remote_root)?;
 
   let walker = WalkDir::new(&root).follow_links(false).sort_by_file_name().into_iter();
   let mut file_count = 0_u64;
@@ -107,10 +107,7 @@ fn include_entry(path: &Path, root: &Path, hidden_policy: HiddenPolicy) -> bool 
 }
 
 fn hash_files(remote_root: &Path, files: &[RemoteFileMetadata]) -> Result<(), Box<dyn std::error::Error>> {
-  let root = remote_root.canonicalize()?;
-  if !root.is_dir() {
-    return Err(format!("remote root is not a directory: {}", root.display()).into());
-  }
+  let root = canonical_root(remote_root)?;
   if files.is_empty() {
     write_response(&RemoteAgentResponse::HashComplete { file_count: 0 })?;
     return Ok(());
@@ -131,9 +128,11 @@ fn hash_files(remote_root: &Path, files: &[RemoteFileMetadata]) -> Result<(), Bo
           for expected in chunk {
             let path = resolve_relative_path(root, &expected.relative_path).map_err(|error| error.to_string())?;
             verify_metadata(&path, expected).map_err(|error| error.to_string())?;
-            let content_hash = Blake3HashAlgorithm
-              .hash_file(&path)
+            let mut hasher = blake3::Hasher::new();
+            hasher
+              .update_reader(std::fs::File::open(&path).map_err(|error| error.to_string())?)
               .map_err(|error| error.to_string())?;
+            let content_hash = hasher.finalize().to_hex().to_string();
             verify_metadata(&path, expected).map_err(|error| error.to_string())?;
             write_response(&RemoteAgentResponse::Hash {
               relative_path: expected.relative_path.clone(),
@@ -157,6 +156,17 @@ fn hash_files(remote_root: &Path, files: &[RemoteFileMetadata]) -> Result<(), Bo
     file_count: files.len() as u64,
   })?;
   Ok(())
+}
+
+fn canonical_root(root: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+  if !root.is_absolute() {
+    return Err("remote root must be absolute on the remote machine".into());
+  }
+  let root = root.canonicalize()?;
+  if !root.is_dir() {
+    return Err(format!("remote root is not a directory: {}", root.display()).into());
+  }
+  Ok(root)
 }
 
 fn resolve_relative_path(root: &Path, relative_path: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -220,7 +230,7 @@ fn write_response(response: &RemoteAgentResponse) -> Result<(), Box<dyn std::err
 mod tests {
   use std::fs;
 
-  use nafm_core::RemoteFileMetadata;
+  use nafm_protocol::RemoteFileMetadata;
 
   use super::{modified_unix_nanos, resolve_relative_path, verify_metadata};
 

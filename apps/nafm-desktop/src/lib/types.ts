@@ -48,7 +48,27 @@ export interface RemoteMachine {
   id: string;
   name: string;
   ssh_target: string;
+  agent_installation: AgentInstallation | null;
   added_at: string;
+}
+
+export interface AgentInstallation {
+  target: string;
+  agent_version: string;
+  executable_path: string;
+  executable_hash: string;
+}
+
+export interface InstallAgentRequest {
+  workspace_name: string;
+  machine_id: string;
+  request_id: string;
+}
+
+export interface InstallAgentProgress {
+  request_id: string;
+  machine_id: string;
+  message: string;
 }
 
 export interface RemotePathMapping {

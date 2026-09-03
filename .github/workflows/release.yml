@@ -149,6 +149,16 @@ jobs:
         working-directory: apps/nafm-desktop
         run: pnpm install --frozen-lockfile
 
+      - name: Download cross-built agents
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: remote-agents
+          path: apps/nafm-desktop/src-tauri/resources/agents/
+
+      - name: Restore agent executable permissions
+        if: runner.os != 'Windows'
+        run: chmod +x apps/nafm-desktop/src-tauri/resources/agents/nafm-agent-*
+
       - name: Build and attach desktop bundle
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:

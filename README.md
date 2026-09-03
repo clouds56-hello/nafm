@@ -97,13 +97,13 @@ native filesystem path, NAFM can discover and hash the files there instead of
 transferring every byte over SMB. The desktop keeps ownership of the workspace
 database; the remote machine runs a stateless `nafm-agent` process on demand.
 
-Build the agent for the remote machine's platform and install it as
-`nafm-agent` in the non-interactive SSH `PATH`:
+The desktop bundles agents for Linux x64, Windows x64, and macOS ARM64.
+Register an SSH target in Connections, click **Install agent**, then add the
+path mapping. Installation detects the remote platform and verifies the uploaded
+binary before selecting it. No service, sudo, or manual PATH changes are needed.
 
-```sh
-cargo build --release -p nafm-agent
-scp target/release/nafm-agent nas:/usr/local/bin/nafm-agent
-```
+For local cross-build prerequisites, compatibility requirements, and manual CLI
+installation, see [Bundled SSH agents](docs/remote-agents.md).
 
 Use an existing alias from `~/.ssh/config`, or a normal `user@host` target.
 NAFM delegates keys, host verification, proxying, and ports to the system SSH
@@ -121,7 +121,8 @@ Mappings use the longest matching SMB URL prefix, so the example also maps
 `/volume1/Media/Family Videos`. Mapping creation verifies the SSH connection,
 agent protocol, hash algorithm, and remote directory before saving it. An SMB
 root without a mapping continues to use the regular SMB connection. Remote
-paths are Unix-style absolute paths in this release.
+paths must be absolute on the remote OS; POSIX, Windows drive paths and UNC paths
+are supported independently of the desktop OS.
 
 ## Status
 

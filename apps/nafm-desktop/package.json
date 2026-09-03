@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "agents:build": "cargo run --locked -p nafm-xtask -- build-agents",
+    "agents:check": "cargo run --locked -p nafm-xtask -- check-agents",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

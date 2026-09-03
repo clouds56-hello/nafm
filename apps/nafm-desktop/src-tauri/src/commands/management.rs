@@ -376,7 +376,7 @@ async fn open_workspace_repository(state: &AppState, workspace_path: PathBuf) ->
   .map_err(|error| error.to_string())
 }
 
-async fn ensure_scans_idle(state: &AppState) -> Result<(), String> {
+pub(super) async fn ensure_scans_idle(state: &AppState) -> Result<(), String> {
   if state.scan_tasks.active_tasks().is_empty() {
     Ok(())
   } else {
@@ -441,7 +441,7 @@ async fn management_snapshot(state: &AppState) -> Result<ManagementSnapshot, Str
   })
 }
 
-async fn mutation_result(state: &AppState) -> ManagementMutationResult {
+pub(super) async fn mutation_result(state: &AppState) -> ManagementMutationResult {
   let active = state.active_workspace().await;
   let active_workspace = WorkspaceSummary {
     name: active.name,

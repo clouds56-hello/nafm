@@ -1,3 +1,4 @@
+pub(crate) mod agents;
 pub(crate) mod dashboard;
 pub(crate) mod management;
 pub(crate) mod scan;

@@ -1,4 +1,6 @@
 /target/
+/apps/nafm-desktop/src-tauri/resources/agents/*
+!/apps/nafm-desktop/src-tauri/resources/agents/.gitkeep
 /.pnpm-store/
 /apps/nafm-desktop/dist/
 /apps/nafm-desktop/node_modules/

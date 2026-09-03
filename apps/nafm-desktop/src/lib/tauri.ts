@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  InstallAgentRequest,
+  InstallAgentProgress,
   CancelScanReport,
   CancelScanMode,
   CleanupPreview,
@@ -21,6 +23,14 @@ import type {
   StorageTree,
   StorageViewSnapshot,
 } from "./types";
+
+export function installRemoteAgent(request: InstallAgentRequest): Promise<ManagementMutationResult> {
+  return invoke<ManagementMutationResult>("install_remote_agent", { request });
+}
+
+export function onAgentInstallProgress(handler: (event: InstallAgentProgress) => void): Promise<UnlistenFn> {
+  return listen<InstallAgentProgress>("agent://install-progress", ({ payload }) => handler(payload));
+}
 
 export function loadManagement(): Promise<ManagementSnapshot> {
   return invoke<ManagementSnapshot>("load_management");
