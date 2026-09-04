@@ -791,6 +791,9 @@ export function StorageExplorer({
           )}
         </div>
         <InspectorPanel
+          workspaceName={workspaceName}
+          sourceSiteId={source.id}
+          contentRevision={contentRevision}
           node={inspectedNode}
           previewing={previewing}
           metric={metric}
