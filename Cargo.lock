@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "nafm-agent"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "nafm-protocol",
@@ -2410,6 +2410,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "tokio",
+ "uuid",
  "zeroize",
 ]
 
@@ -2418,6 +2419,7 @@ name = "nafm-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ pub const TARGETS: [&str; 3] = [
   "x86_64-pc-windows-msvc",
   "aarch64-apple-darwin",
 ];
-pub const AGENT_VERSION: &str = "0.2.0";
+pub const AGENT_VERSION: &str = "0.4.0";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentArtifact {

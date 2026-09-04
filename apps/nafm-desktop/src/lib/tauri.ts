@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  PathCompletion,
+  PathCompletionRequest,
   InstallAgentRequest,
+  SshPrompt,
+  SshPromptReply,
+  PreflightReport,
+  MappingPreview,
+  PathPreviewRequest,
   InstallAgentProgress,
   CancelScanReport,
   CancelScanMode,
@@ -24,8 +31,36 @@ import type {
   StorageViewSnapshot,
 } from "./types";
 
+export function completeRemotePath(request: PathCompletionRequest): Promise<PathCompletion> {
+  return invoke<PathCompletion>("complete_remote_path", { request });
+}
+
 export function installRemoteAgent(request: InstallAgentRequest): Promise<ManagementMutationResult> {
   return invoke<ManagementMutationResult>("install_remote_agent", { request });
+}
+
+export function getSshPrompts(): Promise<SshPrompt[]> {
+  return invoke<SshPrompt[]>("ssh_prompts");
+}
+
+export function replySshPrompt(request: SshPromptReply): Promise<void> {
+  return invoke<void>("ssh_prompt_reply", { request });
+}
+
+export function onSshPromptsChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen("ssh://prompts-changed", handler);
+}
+
+export function preflightRemoteMachine(request: InstallAgentRequest): Promise<PreflightReport> {
+  return invoke<PreflightReport>("preflight_remote_machine", { request });
+}
+
+export function onAgentSetupProgress(handler: (event: InstallAgentProgress) => void): Promise<UnlistenFn> {
+  return listen<InstallAgentProgress>("agent://setup-progress", ({ payload }) => handler(payload));
+}
+
+export function previewRemotePathMapping(request: PathPreviewRequest): Promise<MappingPreview> {
+  return invoke<MappingPreview>("preview_remote_path_mapping", { request });
 }
 
 export function onAgentInstallProgress(handler: (event: InstallAgentProgress) => void): Promise<UnlistenFn> {

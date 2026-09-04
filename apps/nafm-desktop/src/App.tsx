@@ -3,6 +3,7 @@ import { ManagementCenter, type ManagementSection } from "./components/Managemen
 import { loadManagement, switchWorkspace } from "./lib/tauri";
 import type { ManagementMutationResult, ManagementSnapshot } from "./lib/types";
 import { DashboardPage } from "./pages/DashboardPage";
+import { SshAuthentication } from "./components/SshAuthentication";
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -183,6 +184,7 @@ export default function App() {
 
   return (
     <>
+      <SshAuthentication />
       <div
         className={`dashboard-surface ${workspaceSwitching ? "is-transitioning" : ""}`}
         inert={dashboardDisabled ? true : undefined}

@@ -3,8 +3,10 @@ mod error;
 mod hash;
 mod installer;
 mod model;
+mod onboarding;
 mod remote;
 mod repository;
+mod ssh;
 mod workspace;
 
 pub use credentials::{CredentialStore, SavedSmbCredential, SmbCredential, SmbLocation, verify_smb_connection};
@@ -19,6 +21,8 @@ pub use model::{
   StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
   StorageTree, StorageViewSnapshot,
 };
+pub use onboarding::{CheckStatus, MappingPreview, PathCompletion, PreflightReport, SetupCheck};
 pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};
 pub use repository::{Repository, RepositoryOptions};
+pub use ssh::{SshConnection, SshConnector, set_ssh_connector, system_ssh_command};
 pub use workspace::{DEFAULT_WORKSPACE_NAME, WorkspaceInfo, WorkspaceManager, app_root_dir, normalize_workspace_name};

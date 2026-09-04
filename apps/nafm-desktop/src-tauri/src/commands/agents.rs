@@ -18,6 +18,80 @@ struct InstallAgentProgress {
   message: String,
 }
 
+fn bundle_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+  if cfg!(debug_assertions) {
+    Ok(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/agents"))
+  } else {
+    app
+      .path()
+      .resolve("agents", BaseDirectory::Resource)
+      .map_err(|error| error.to_string())
+  }
+}
+
+#[tauri::command]
+pub async fn preflight_remote_machine(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  request: InstallAgentRequest,
+) -> Result<nafm_core::PreflightReport, String> {
+  let repository = state.repository_for(&request.workspace_name).await?;
+  let progress = |message: &str| {
+    let _ = app.emit(
+      "agent://setup-progress",
+      InstallAgentProgress {
+        request_id: request.request_id.clone(),
+        machine_id: request.machine_id.clone(),
+        message: message.into(),
+      },
+    );
+  };
+  repository
+    .preflight_remote_machine(&request.machine_id, bundle_directory(&app)?, &progress)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct PathPreviewRequest {
+  workspace_name: String,
+  machine_id: String,
+  smb_root: String,
+  remote_root: std::path::PathBuf,
+}
+
+#[derive(Deserialize)]
+pub struct PathCompletionRequest {
+  workspace_name: String,
+  machine_id: String,
+  path: String,
+  interactive: bool,
+}
+
+#[tauri::command]
+pub async fn complete_remote_path(
+  state: State<'_, AppState>,
+  request: PathCompletionRequest,
+) -> Result<nafm_core::PathCompletion, String> {
+  let repository = state.repository_for(&request.workspace_name).await?;
+  repository
+    .complete_remote_path(&request.machine_id, request.path, request.interactive)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_remote_path_mapping(
+  state: State<'_, AppState>,
+  request: PathPreviewRequest,
+) -> Result<nafm_core::MappingPreview, String> {
+  let repository = state.repository_for(&request.workspace_name).await?;
+  repository
+    .preview_remote_path_mapping(&request.machine_id, &request.smb_root, request.remote_root)
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn install_remote_agent(
   app: AppHandle,
@@ -27,14 +101,7 @@ pub async fn install_remote_agent(
   let _transition = state.transition_gate.lock().await;
   ensure_scans_idle(&state).await?;
   let repository = state.repository_for(&request.workspace_name).await?;
-  let directory = if cfg!(debug_assertions) {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/agents")
-  } else {
-    app
-      .path()
-      .resolve("agents", BaseDirectory::Resource)
-      .map_err(|error| error.to_string())?
-  };
+  let directory = bundle_directory(&app)?;
   let progress = |message: &str| {
     let _ = app.emit(
       "agent://install-progress",

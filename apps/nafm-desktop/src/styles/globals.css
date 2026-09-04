@@ -522,6 +522,26 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .switch-label { color: #6f7c84; font-size: 9px; }
 .management-form-card { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.018); }
 .management-form-card h3 { margin: 4px 0 6px; font-size: 16px; }
+.remote-machine-card { grid-template-columns: 35px minmax(0, 1fr); }
+.remote-machine-card > div:last-child { grid-column: 1 / -1; min-width: 0; }
+.remote-machine-setup, .path-preview, .agent-install-confirmation { display: grid; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.remote-machine-setup small, .agent-checks small { display: block; white-space: normal; }
+.agent-checks { display: grid; gap: 8px; padding-left: 18px; margin: 0; }
+.agent-checks [data-status="failed"] { color: #ef9696; }
+.agent-checks [data-status="warning"] { color: #e1c28a; }
+.agent-checks [data-status="passed"] { color: #8cd3c9; }
+.agent-install-confirmation, .path-preview { padding: 12px; border: 1px solid var(--line); border-radius: 9px; }
+.agent-install-confirmation p, .path-preview p { margin: 0; font-size: 11px; line-height: 1.5; }
+.ssh-auth-dialog { width: min(480px, calc(100vw - 40px)); padding: 24px; border: 1px solid var(--line-strong); border-radius: 16px; color: #dce5e9; background: #101821; box-shadow: 0 24px 90px #0008; }
+.ssh-auth-dialog::backdrop { background: #0009; }
+.ssh-auth-dialog h2 { margin-top: 0; font-size: 19px; }
+.ssh-auth-dialog p { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.ssh-auth-prompt { white-space: pre-wrap; padding: 12px; background: #ffffff08; border-radius: 8px; }
+.ssh-auth-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+.ssh-host-key { display: grid; gap: 6px; font-size: 12px; }
+.ssh-host-key dt { color: #8fabb8; }
+.ssh-host-key dd { margin: 0 0 8px; overflow-wrap: anywhere; user-select: text; }
+.ssh-trust-confirm { display: flex; gap: 9px; align-items: flex-start; font-size: 12px; line-height: 1.5; }
 .management-form-card > p:not(.management-form-error):not(.management-form-warning) { margin: 0 0 15px; color: #6e7b84; font-size: 9px; line-height: 1.55; }
 .management-field { display: grid; min-width: 0; gap: 5px; margin-bottom: 11px; }
 .management-field > span:first-child { color: #9ba7ad; font-size: 9px; font-weight: 650; }

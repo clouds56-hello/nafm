@@ -64,6 +64,8 @@ pub enum NafmError {
   InvalidSshTarget(String),
   #[error("remote agent error: {0}")]
   RemoteAgent(String),
+  #[error("SSH connection error: {0}")]
+  SshConnection(String),
   #[error("unsupported site location scheme: {0}")]
   UnsupportedLocationScheme(String),
   #[error("credentials path is not a regular file or directory: {0}")]

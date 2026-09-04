@@ -22,6 +22,14 @@ pub struct RemoteFileMetadata {
 /// Paths are opaque UTF-8 values on the client, interpreted only by the remote agent.
 /// Client code must not canonicalize or join these using host-native path semantics.
 pub enum RemoteAgentRequest {
+  CompletePath {
+    protocol_version: u32,
+    path: String,
+  },
+  Preview {
+    protocol_version: u32,
+    remote_root: PathBuf,
+  },
   Probe {
     protocol_version: u32,
     remote_root: Option<PathBuf>,
@@ -42,7 +50,17 @@ pub enum RemoteAgentRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RemoteAgentResponse {
+  PathCompletion {
+    paths: Vec<String>,
+    truncated: bool,
+  },
+  Preview {
+    files: Vec<RemoteFileMetadata>,
+    truncated: bool,
+  },
   Ready {
+    #[serde(default)]
+    capabilities: Vec<String>,
     protocol_version: u32,
     agent_version: String,
     hash_algorithms: Vec<String>,
@@ -66,4 +84,15 @@ pub enum RemoteAgentResponse {
   Error {
     message: String,
   },
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn legacy_ready_defaults_to_no_capabilities() {
+    let response: RemoteAgentResponse = serde_json::from_str(r#"{"event":"ready","protocol_version":2,"agent_version":"0.2.0","hash_algorithms":["blake3"],"os":"linux","arch":"x86_64","executable_hash":"abc"}"#).unwrap();
+    assert!(matches!(response, RemoteAgentResponse::Ready { capabilities, .. } if capabilities.is_empty()));
+  }
 }

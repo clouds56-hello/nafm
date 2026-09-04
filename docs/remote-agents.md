@@ -46,11 +46,68 @@ macOS before desktop packaging. Artifact transport restores executable bits.
 
 ## Install and use
 
-1. Establish working non-interactive SSH and accept the host key outside NAFM.
+1. Configure system SSH. For an unknown host, verify the server fingerprint through
+   a trusted channel before approving it in NAFM or recording it with system SSH.
 2. In Connections, register the SSH alias or user@host.
-3. Click **Install agent** (or **Update agent**).
-4. Map an SMB URL to an absolute native remote path, e.g. `/volume1/Media`,
-   `C:\Media`, or a UNC share. Mapping creation probes the path on that machine.
+3. Click **Check connection**. Separate results cover local SSH, connectivity,
+   host-key trust, authentication, OS/architecture, selected agent and bundle
+   integrity. Failed checks include suggested remedies; unconfirmed checks are
+   not marked passed. This action never installs an agent.
+4. Click **Install agent** (or **Update agent**), review the matching target and
+   destination, then confirm. Rerun the connection check after installation.
+5. Enter an SMB URL and an absolute native remote path, e.g. `/volume1/Media`,
+   `C:\Media`, or a UNC share. Click **Preview path (read only)**, inspect the sample,
+   then **Confirm and save mapping**. Editing any input invalidates the preview;
+   saving repeats the remote checks before writing local configuration.
+
+Interactive desktop connections use `StrictHostKeyChecking=ask`, with automatic
+key updates disabled and fingerprints forced to SHA256. Unknown hosts produce a
+separate fingerprint dialog showing the configured SSH target, the host/address
+reported by OpenSSH, key type, and fingerprint. Compare it through an independent
+trusted channel (for example, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on
+the server console), check the verification box, then choose **Trust fingerprint
+and connect**. The backend accepts only the displayed fingerprint, not a generic
+`yes`. OpenSSH performs the known-hosts write using its configured paths; NAFM
+does not run ssh-keyscan, rewrite SSH config, or remove old keys. Cancelling before
+approval does not authorize a known-hosts write.
+
+Changed/revoked keys and unrecognized or incomplete trust challenges fail closed;
+resolve those through system SSH after independently investigating the change.
+Non-interactive operations retain `StrictHostKeyChecking=yes`. Password prompts
+remain separate from host trust. Keys, aliases, ports, proxies and ssh-agent come
+from system SSH. See [OpenSSH's host-key policy](https://man.openbsd.org/ssh_config#StrictHostKeyChecking).
+
+The desktop first checks for an existing configured control master and reuses it
+without closing or modifying it. Its original trust decision is retained; the
+preflight reports **Using existing SSH session**, not a fresh host-key handshake.
+On macOS/Linux desktop hosts, when no master exists NAFM creates its own private
+master process and 0700 temporary socket directory. Concurrent operations for the
+same SSH target share it. NAFM closes only its own masters on normal app exit;
+dead sessions are recreated on the next operation. No SSH config is rewritten.
+On Windows desktop hosts, configured reuse is attempted, but otherwise authentication
+is per connection (the Windows client may lack multiplexing). This is independent
+of the remote agent's OS: a Mac can reuse a master connected to a Windows server.
+
+OpenSSH chooses the authentication methods. Its askpass requests open a cancellable
+dialog for passwords, key passphrases, or MFA responses only when needed. A prompt
+expires after three minutes. Answers travel through an authenticated loopback
+broker to the askpass helper, never through command arguments, environment variables,
+progress events, files, or logs. Rust answer buffers are zeroized; the frontend field
+is cleared immediately (JavaScript/OS memory copies cannot be guaranteed erased).
+NAFM does not add decrypted keys to ssh-agent or save passphrases to macOS Keychain.
+Already-loaded ssh-agent keys remain usable. CLI operations remain non-interactive
+and respect existing configured masters.
+
+Error classification is best-effort: an unrecognized SSH error appears as a session
+failure with other stages unconfirmed. Cancelling authentication does not trigger
+a second attempt using another platform probe or weaker host-key policy.
+
+Path preview traverses up to 1,000 entries, samples up to five regular files,
+and reads at most one byte per sampled file without returning contents. It does
+not follow directory symlinks. Empty/no-sample directories are explicitly reported:
+file-read permissions cannot be confirmed there. A successful sample is not a
+full permissions audit and does not prove the native root corresponds to the SMB
+share; the user must confirm that mapping. Preview does not contact the SMB share.
 
 Installation detects the native remote OS/architecture without needing an agent.
 It uploads only the selected binary over SSH into a fresh private directory:
@@ -70,18 +127,58 @@ retained, and removing a machine only removes local configuration. Remove unused
 directories manually once you know no scan uses them.
 
 Installation phases are shown in Connections. Each detection attempt is limited
-to 20 seconds, transfer to 180 seconds, and verification to 30 seconds. No password
-prompts are supported. Windows uses UTF-8 protocol text through PowerShell.
+to 20 seconds, transfer to 180 seconds, and verification to 30 seconds after session
+setup. Interactive session setup has a separate 185-second limit. On desktop hosts
+without app-owned multiplexing, bounded operations allow at least 185 seconds to
+include authentication. Windows agents use UTF-8 protocol text through PowerShell.
 
 Manual installation remains possible: build for the **remote** target and put
-`nafm-agent` on its non-interactive SSH PATH. Protocol 2 requires agent 0.2.0;
-the original protocol-1 agent must be upgraded. The protocol crate is independent
+`nafm-agent` on its non-interactive SSH PATH. Agent 0.3.0 adds the `path_preview`
+capability to protocol 2. Agent 0.2.0 remains usable for existing scans, but must
+be updated before creating mappings with preview. The original protocol-1 agent
+must be upgraded. The protocol crate is independent
 of nafm-core, SQLite, SMB and desktop libraries.
+
+### Path mapping autocomplete
+
+The SMB root field suggests Saved SMB access URLs without making SMB requests;
+you can also enter a new URL or append a subdirectory. For native paths, choose
+**Connect for suggestions** once per selected machine. This checks the agent's
+`path_completion` capability (agent 0.4.0 or newer) and allows necessary SSH prompts.
+It never installs an agent automatically.
+
+Typing then requests directory suggestions after 300 ms, with one request at a
+time and stale results discarded. These requests are strictly non-interactive:
+they reuse available SSH masters or key/agent authentication, never opening a
+password or fingerprint prompt. Failures are shown inline; editing the path retries
+without prompts, and authentication requires reconnecting explicitly. On Windows desktop clients without multiplexing,
+password-only access cannot sustain live suggestions; manual entry remains available.
+
+Paths are interpreted on the remote OS, not the desktop. Enter an absolute path;
+an empty prefix starts at `/` on POSIX or `C:\` on Windows. Append a separator to
+browse a directory's children. A request inspects at most 1,000 immediate entries
+and returns at most 50 directories, sorted within that bounded sample. It does not
+read file contents, recurse, or suggest symlink directories. Truncated results are
+marked; narrow the prefix or enter the path manually. Preview-before-save remains
+required regardless of how a path was entered.
 
 ## Validation boundaries
 
 Compile success is not a deployment test. `scripts/test-agent.ts` exercises probe,
+empty and bounded path previews,
 Unicode filenames, discovery, BLAKE3 hashes, mutation detection, path traversal
 and protocol mismatch on the real binary. CI runs it on each native OS.
 Real SSH configuration, remote directory permissions, antivirus/quarantine and
 unusual NAS shells still need testing against the intended machines.
+
+SSH broker tests use loopback sockets and an offline process fixture to cover
+one-shot replies, cancellation, master reuse and owned-session cleanup.
+`scripts/test-ssh-askpass.ts <desktop-executable>` exercises the actual executable's
+helper entry point without initializing the desktop. CI runs the desktop SSH
+tests and helper smoke test on macOS and Windows; these do not substitute for
+testing a real server's password/MFA policy or Windows OpenSSH configuration.
+
+For the first real-host acceptance test, supply an SSH alias, SMB root, and native
+directory. Compare local/remote BLAKE3 on known files, check transfer volume and
+elapsed time, and exercise cancellation, disconnect/retry, permission failure,
+and an agent update. Native CI smoke tests do not establish those results.

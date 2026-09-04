@@ -657,6 +657,46 @@ impl Repository {
       .ok_or_else(|| NafmError::RemoteAgent("agent did not return a ready response".to_owned()))
   }
 
+  async fn remote_machine_for_setup(&self, selector: &str) -> Result<RemoteMachine> {
+    let db_path = self.db_path.clone();
+    let selector = selector.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      find_remote_machine(&conn, &selector)?.ok_or_else(|| NafmError::RemoteMachineNotFound(selector))
+    })
+    .await?
+  }
+
+  pub async fn preflight_remote_machine(
+    &self,
+    selector: &str,
+    directory: PathBuf,
+    progress: &(dyn Fn(&str) + Send + Sync),
+  ) -> Result<crate::PreflightReport> {
+    let machine = self.remote_machine_for_setup(selector).await?;
+    Ok(crate::onboarding::preflight(&machine, directory, progress).await)
+  }
+
+  pub async fn preview_remote_path_mapping(
+    &self,
+    selector: &str,
+    smb_root: &str,
+    remote_root: PathBuf,
+  ) -> Result<crate::MappingPreview> {
+    let machine = self.remote_machine_for_setup(selector).await?;
+    crate::onboarding::preview(&machine, smb_root, remote_root).await
+  }
+
+  pub async fn complete_remote_path(
+    &self,
+    selector: &str,
+    path: String,
+    interactive: bool,
+  ) -> Result<crate::PathCompletion> {
+    let machine = self.remote_machine_for_setup(selector).await?;
+    crate::onboarding::complete_path(&machine, path, interactive).await
+  }
+
   pub async fn add_remote_path_mapping(
     &self,
     machine_selector: &str,
@@ -700,6 +740,10 @@ impl Repository {
       return Err(NafmError::RemoteAgent(
         "agent did not confirm the remote root".to_owned(),
       ));
+    }
+    let preview = crate::onboarding::preview(&machine, smb_root, remote_root.clone()).await?;
+    if preview.check.status != crate::CheckStatus::Passed {
+      return Err(NafmError::RemoteAgent(preview.check.message));
     }
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
