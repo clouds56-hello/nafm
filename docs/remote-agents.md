@@ -46,8 +46,8 @@ macOS before desktop packaging. Artifact transport restores executable bits.
 
 ## Install and use
 
-1. Configure system SSH and verify the server fingerprint through
-   a trusted channel before recording its host key outside NAFM.
+1. Configure system SSH. For an unknown host, verify the server fingerprint through
+   a trusted channel before approving it in NAFM or recording it with system SSH.
 2. In Connections, register the SSH alias or user@host.
 3. Click **Check connection**. Separate results cover local SSH, connectivity,
    host-key trust, authentication, OS/architecture, selected agent and bundle
@@ -60,10 +60,22 @@ macOS before desktop packaging. Artifact transport restores executable bits.
    then **Confirm and save mapping**. Editing any input invalidates the preview;
    saving repeats the remote checks before writing local configuration.
 
-New SSH connections enforce `StrictHostKeyChecking=yes` and `UpdateHostKeys=no`.
-Unknown or changed keys must be resolved outside NAFM, even if your SSH
-configuration permits automatic acceptance. Password authentication cannot fix a
-host-key error. Keys, aliases, ports, proxies and ssh-agent come from system SSH.
+Interactive desktop connections use `StrictHostKeyChecking=ask`, with automatic
+key updates disabled and fingerprints forced to SHA256. Unknown hosts produce a
+separate fingerprint dialog showing the configured SSH target, the host/address
+reported by OpenSSH, key type, and fingerprint. Compare it through an independent
+trusted channel (for example, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on
+the server console), check the verification box, then choose **Trust fingerprint
+and connect**. The backend accepts only the displayed fingerprint, not a generic
+`yes`. OpenSSH performs the known-hosts write using its configured paths; NAFM
+does not run ssh-keyscan, rewrite SSH config, or remove old keys. Cancelling before
+approval does not authorize a known-hosts write.
+
+Changed/revoked keys and unrecognized or incomplete trust challenges fail closed;
+resolve those through system SSH after independently investigating the change.
+Non-interactive operations retain `StrictHostKeyChecking=yes`. Password prompts
+remain separate from host trust. Keys, aliases, ports, proxies and ssh-agent come
+from system SSH. See [OpenSSH's host-key policy](https://man.openbsd.org/ssh_config#StrictHostKeyChecking).
 
 The desktop first checks for an existing configured control master and reuses it
 without closing or modifying it. Its original trust decision is retained; the

@@ -18,6 +18,7 @@ pub struct Prompt {
   pub ssh_target: String,
   pub message: String,
   pub confirmation: bool,
+  pub host_key: Option<super::host_key::HostKey>,
 }
 
 struct Pending {
@@ -53,6 +54,7 @@ impl PromptHub {
   }
 
   pub async fn ask(self: &Arc<Self>, target: &str, message: String, confirmation: bool) -> Option<Zeroizing<String>> {
+    let host_key = super::host_key::parse(&message).ok()?;
     let prompt_id = Uuid::new_v4().to_string();
     let (answer, response) = oneshot::channel();
     let prompt = Prompt {
@@ -60,6 +62,7 @@ impl PromptHub {
       ssh_target: target.into(),
       message,
       confirmation,
+      host_key,
     };
     self
       .pending
@@ -90,12 +93,15 @@ impl PromptHub {
     if response.as_ref().is_some_and(|value| !valid_answer(value)) {
       return Err("Response is too long or contains a newline/NUL".into());
     }
-    let pending = self
-      .pending
-      .lock()
-      .map_err(|_| "Prompt registry unavailable")?
-      .remove(id)
-      .ok_or("This SSH prompt has expired")?;
+    let mut registry = self.pending.lock().map_err(|_| "Prompt registry unavailable")?;
+    let pending = registry.get(id).ok_or("This SSH prompt has expired")?;
+    if let Some(key) = &pending.prompt.host_key
+      && response.as_ref().is_some_and(|value| value.as_str() != key.fingerprint)
+    {
+      return Err("Host trust requires approval of the displayed fingerprint".into());
+    }
+    let pending = registry.remove(id).ok_or("This SSH prompt has expired")?;
+    drop(registry);
     self.changed();
     pending
       .answer
@@ -155,6 +161,75 @@ pub fn ssh_prompt_reply(
 
 #[cfg(test)]
 mod tests {
+  #[tokio::test]
+  async fn host_trust_is_bound_to_the_displayed_fingerprint() {
+    use super::*;
+    let hub = PromptHub::for_test();
+    let asking = hub.clone();
+    let task = tokio::spawn(async move {
+      asking
+        .ask("omv.lan", super::super::host_key::tests::challenge(), false)
+        .await
+    });
+    let prompt = tokio::time::timeout(Duration::from_secs(2), async {
+      loop {
+        if let Some(prompt) = hub.list().unwrap().first() {
+          break prompt.clone();
+        }
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .unwrap();
+    let fingerprint = prompt.host_key.unwrap().fingerprint;
+    assert!(
+      hub
+        .reply(&prompt.prompt_id, Some(Zeroizing::new("yes".into())))
+        .is_err()
+    );
+    assert!(
+      hub
+        .reply(&prompt.prompt_id, Some(Zeroizing::new("SHA256:wrong".into())))
+        .is_err()
+    );
+    assert_eq!(hub.list().unwrap().len(), 1);
+    hub
+      .reply(&prompt.prompt_id, Some(Zeroizing::new(fingerprint.clone())))
+      .unwrap();
+    assert_eq!(task.await.unwrap().unwrap().as_str(), fingerprint);
+    assert!(hub.list().unwrap().is_empty());
+    let asking = hub.clone();
+    let task = tokio::spawn(async move {
+      asking
+        .ask("omv.lan", super::super::host_key::tests::challenge(), false)
+        .await
+    });
+    let id = tokio::time::timeout(Duration::from_secs(2), async {
+      loop {
+        if let Some(prompt) = hub.list().unwrap().first() {
+          break prompt.prompt_id.clone();
+        }
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .unwrap();
+    hub.reply(&id, None).unwrap();
+    assert!(task.await.unwrap().is_none());
+    assert!(hub.list().unwrap().is_empty());
+    assert!(
+      hub
+        .ask(
+          "omv.lan",
+          "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!".into(),
+          true
+        )
+        .await
+        .is_none()
+    );
+    assert!(hub.list().unwrap().is_empty());
+  }
+
   #[test]
   fn responses_cannot_inject_additional_lines() {
     assert!(super::valid_answer(""));

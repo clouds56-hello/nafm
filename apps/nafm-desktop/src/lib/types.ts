@@ -77,6 +77,7 @@ export interface SshPrompt {
   ssh_target: string;
   message: string;
   confirmation: boolean;
+  host_key: { host: string; key_type: string; fingerprint: string } | null;
 }
 
 export interface SshPromptReply {

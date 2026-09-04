@@ -56,7 +56,15 @@ fn ssh(program: &Path, interactive: bool) -> Command {
       "-o",
       if interactive { "BatchMode=no" } else { "BatchMode=yes" },
       "-o",
-      "StrictHostKeyChecking=yes",
+      if interactive {
+        "StrictHostKeyChecking=ask"
+      } else {
+        "StrictHostKeyChecking=yes"
+      },
+      "-o",
+      "FingerprintHash=sha256",
+      "-o",
+      "VisualHostKey=no",
       "-o",
       "UpdateHostKeys=no",
       "-o",
@@ -348,12 +356,15 @@ mod tests {
       .collect::<Vec<_>>();
     for option in [
       "BatchMode=no",
-      "StrictHostKeyChecking=yes",
+      "StrictHostKeyChecking=ask",
       "UpdateHostKeys=no",
       "AddKeysToAgent=no",
     ] {
       assert!(args.contains(&option));
     }
     assert!(!args.iter().any(|value| value.starts_with("PreferredAuthentications=")));
+    assert!(args.contains(&"FingerprintHash=sha256"));
+    assert!(!args.contains(&"StrictHostKeyChecking=no"));
+    assert!(!args.contains(&"StrictHostKeyChecking=accept-new"));
   }
 }

@@ -46,7 +46,7 @@ export function RemoteMachineSetup(props: Props) {
 
   return <div className="remote-machine-setup">
     <button type="button" className="ghost-button" disabled={props.busy} onClick={() => void check()}>Check connection</button>
-    <small>Read-only checks. No installation or host-key acceptance.</small>
+    <small>No agent installation. Unknown host keys require a separate confirmation before OpenSSH can save them.</small>
     {progress && <p role="status">{progress}</p>}
     {error && <p className="management-form-error" role="alert">{error}</p>}
     {report && <>

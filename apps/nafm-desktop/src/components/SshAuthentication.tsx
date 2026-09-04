@@ -32,6 +32,7 @@ export function SshAuthentication() {
 function AuthenticationDialog({ prompt }: { prompt: SshPrompt }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [response, setResponse] = useState("");
+  const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,25 +60,35 @@ function AuthenticationDialog({ prompt }: { prompt: SshPrompt }) {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!busy) void answer(prompt.confirmation ? "" : response);
+    if (!busy && (!prompt.host_key || verified)) void answer(prompt.host_key?.fingerprint ?? (prompt.confirmation ? "" : response));
   }
 
   return <dialog ref={dialog} className="ssh-auth-dialog" aria-labelledby="ssh-auth-title"
     onCancel={(event) => { event.preventDefault(); if (!busy) void answer(null); }}
     onKeyDown={(event) => event.stopPropagation()}>
     <form onSubmit={submit} autoComplete="off">
-      <h2 id="ssh-auth-title">SSH authentication</h2>
+      <h2 id="ssh-auth-title">{prompt.host_key ? "Verify SSH host fingerprint" : "SSH authentication"}</h2>
       <p>Connection: <strong>{prompt.ssh_target}</strong></p>
-      <p className="ssh-auth-prompt">{prompt.message}</p>
-      {!prompt.confirmation && <label className="management-field"><span>Password, key passphrase, or verification response</span>
+      {prompt.host_key ? <>
+        <p>This host is not yet trusted. Verify its fingerprint using the server console or another trusted channel before continuing.</p>
+        <dl className="ssh-host-key">
+          <dt>Host</dt><dd>{prompt.host_key.host}</dd>
+          <dt>Key type</dt><dd>{prompt.host_key.key_type}</dd>
+          <dt>SHA256 fingerprint</dt><dd><code>{prompt.host_key.fingerprint}</code></dd>
+        </dl>
+        <details><summary>OpenSSH details</summary><p className="ssh-auth-prompt">{prompt.message}</p></details>
+        <p>Trusting lets OpenSSH save this public host key in its configured known-hosts file. This is not a password prompt. Changed or revoked keys cannot be accepted here.</p>
+        <label className="ssh-trust-confirm"><input type="checkbox" checked={verified} disabled={busy} onChange={(event) => setVerified(event.target.checked)} />I independently verified this fingerprint.</label>
+      </> : <p className="ssh-auth-prompt">{prompt.message}</p>}
+      {!prompt.host_key && !prompt.confirmation && <label className="management-field"><span>Password, key passphrase, or verification response</span>
         <input type="password" autoFocus autoComplete="off" spellCheck={false} maxLength={8192}
           value={response} disabled={busy} onChange={(event) => setResponse(event.target.value)} />
       </label>}
-      <p>Requested by OpenSSH. Used for this authentication attempt only; never saved by NAFM. Cancel stops the attempt. Authentication times out after about three minutes.</p>
+      <p>{prompt.host_key ? "Cancel leaves this host untrusted. " : "Requested by OpenSSH. Used for this authentication attempt only; never saved by NAFM. Cancel stops the attempt. "}Authentication times out after about three minutes.</p>
       {error && <p role="alert" className="management-form-error">{error}</p>}
       <div className="ssh-auth-actions">
         <button type="button" className="ghost-button" disabled={busy} onClick={() => void answer(null)}>Cancel connection</button>
-        <button type="submit" className="primary-button" disabled={busy}>{busy ? "Sending…" : "Continue"}</button>
+        <button type="submit" className="primary-button" disabled={busy || (!!prompt.host_key && !verified)}>{busy ? "Sending…" : prompt.host_key ? "Trust fingerprint and connect" : "Continue"}</button>
       </div>
     </form>
   </dialog>;
