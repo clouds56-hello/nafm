@@ -60,6 +60,26 @@ pub struct PathPreviewRequest {
   remote_root: std::path::PathBuf,
 }
 
+#[derive(Deserialize)]
+pub struct PathCompletionRequest {
+  workspace_name: String,
+  machine_id: String,
+  path: String,
+  interactive: bool,
+}
+
+#[tauri::command]
+pub async fn complete_remote_path(
+  state: State<'_, AppState>,
+  request: PathCompletionRequest,
+) -> Result<nafm_core::PathCompletion, String> {
+  let repository = state.repository_for(&request.workspace_name).await?;
+  repository
+    .complete_remote_path(&request.machine_id, request.path, request.interactive)
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn preview_remote_path_mapping(
   state: State<'_, AppState>,

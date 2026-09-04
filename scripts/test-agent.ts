@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 interface RemoteFile {
   relative_path: string;
@@ -10,6 +10,7 @@ interface RemoteFile {
   modified_unix_nanos: string;
 }
 type AgentEvent =
+  | { event: "path_completion"; paths: string[]; truncated: boolean }
   | { event: "ready"; protocol_version: number; agent_version: string; capabilities: string[]; hash_algorithms: string[]; executable_hash: string; os: string; arch: string }
   | { event: "preview"; files: RemoteFile[]; truncated: boolean }
   | { event: "file"; file: RemoteFile }
@@ -39,8 +40,18 @@ try {
   const [ready] = request({ command: "probe", remote_root: root });
   assert.ok(ready.event === "ready");
   assert.equal(ready.protocol_version, protocol_version);
-  assert.equal(ready.agent_version, "0.3.0");
+  assert.equal(ready.agent_version, "0.4.0");
   assert.ok(ready.capabilities.includes("path_preview"));
+  assert.ok(ready.capabilities.includes("path_completion"));
+  const directory = join(root, "媒体 folder");
+  mkdirSync(directory);
+  writeFileSync(join(root, "媒体 file"), "");
+  assert.deepEqual(request({ command: "complete_path", path: join(root, "媒体") }), [{ event: "path_completion", paths: [directory + sep], truncated: false }]);
+  assert.deepEqual(request({ command: "complete_path", path: directory + sep }), [{ event: "path_completion", paths: [], truncated: false }]);
+  request({ command: "complete_path", path: "relative/path" }, false);
+  request({ command: "complete_path", path: join(root, "missing") + sep }, false);
+  rmSync(directory, { recursive: true });
+  rmSync(join(root, "媒体 file"));
   assert.deepEqual(request({ command: "preview", remote_root: root }), [{ event: "preview", files: [], truncated: false }]);
   assert.ok(ready.hash_algorithms.includes("blake3"));
   assert.match(ready.executable_hash, /^[a-f0-9]{64}$/);

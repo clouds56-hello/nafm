@@ -21,7 +21,7 @@ pub use model::{
   StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
   StorageTree, StorageViewSnapshot,
 };
-pub use onboarding::{CheckStatus, MappingPreview, PreflightReport, SetupCheck};
+pub use onboarding::{CheckStatus, MappingPreview, PathCompletion, PreflightReport, SetupCheck};
 pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};
 pub use repository::{Repository, RepositoryOptions};
 pub use ssh::{SshConnection, SshConnector, set_ssh_connector, system_ssh_command};

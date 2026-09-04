@@ -23,6 +23,9 @@ pub struct SshConnection {
 
 pub trait SshConnector: Send + Sync {
   fn connect<'a>(&'a self, target: &'a str) -> Pin<Box<dyn Future<Output = Result<SshConnection>> + Send + 'a>>;
+  fn connect_quiet<'a>(&'a self, _target: &'a str) -> Pin<Box<dyn Future<Output = Result<SshConnection>> + Send + 'a>> {
+    Box::pin(async { Ok(system_connection()) })
+  }
 }
 
 static CONNECTOR: OnceLock<Arc<dyn SshConnector>> = OnceLock::new();
@@ -51,17 +54,29 @@ pub fn system_ssh_command() -> Command {
 }
 
 pub(crate) async fn connect(machine: &RemoteMachine) -> Result<SshConnection> {
+  connect_mode(machine, true).await
+}
+
+pub(crate) async fn connect_mode(machine: &RemoteMachine, interactive: bool) -> Result<SshConnection> {
   crate::remote::validate_ssh_target(&machine.ssh_target)?;
   if let Some(connector) = CONNECTOR.get() {
-    return connector.connect(&machine.ssh_target).await;
+    return if interactive {
+      connector.connect(&machine.ssh_target).await
+    } else {
+      connector.connect_quiet(&machine.ssh_target).await
+    };
   }
-  Ok(SshConnection {
+  Ok(system_connection())
+}
+
+fn system_connection() -> SshConnection {
+  SshConnection {
     command: system_ssh_command(),
     session: "system_ssh",
     minimum_timeout: Duration::ZERO,
     guard: None,
     cancelled: None,
-  })
+  }
 }
 
 pub(crate) async fn cancellable<T>(

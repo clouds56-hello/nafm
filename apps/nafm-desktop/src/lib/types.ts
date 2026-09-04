@@ -102,6 +102,18 @@ export interface PathPreviewRequest {
   remote_root: string;
 }
 
+export interface PathCompletionRequest {
+  workspace_name: string;
+  machine_id: string;
+  path: string;
+  interactive: boolean;
+}
+
+export interface PathCompletion {
+  paths: string[];
+  truncated: boolean;
+}
+
 export interface MappingPreview {
   smb_root: string;
   remote_root: string;

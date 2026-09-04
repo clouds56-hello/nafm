@@ -139,6 +139,29 @@ be updated before creating mappings with preview. The original protocol-1 agent
 must be upgraded. The protocol crate is independent
 of nafm-core, SQLite, SMB and desktop libraries.
 
+### Path mapping autocomplete
+
+The SMB root field suggests Saved SMB access URLs without making SMB requests;
+you can also enter a new URL or append a subdirectory. For native paths, choose
+**Connect for suggestions** once per selected machine. This checks the agent's
+`path_completion` capability (agent 0.4.0 or newer) and allows necessary SSH prompts.
+It never installs an agent automatically.
+
+Typing then requests directory suggestions after 300 ms, with one request at a
+time and stale results discarded. These requests are strictly non-interactive:
+they reuse available SSH masters or key/agent authentication, never opening a
+password or fingerprint prompt. Failures are shown inline; editing the path retries
+without prompts, and authentication requires reconnecting explicitly. On Windows desktop clients without multiplexing,
+password-only access cannot sustain live suggestions; manual entry remains available.
+
+Paths are interpreted on the remote OS, not the desktop. Enter an absolute path;
+an empty prefix starts at `/` on POSIX or `C:\` on Windows. Append a separator to
+browse a directory's children. A request inspects at most 1,000 immediate entries
+and returns at most 50 directories, sorted within that bounded sample. It does not
+read file contents, recurse, or suggest symlink directories. Truncated results are
+marked; narrow the prefix or enter the path manually. Preview-before-save remains
+required regardless of how a path was entered.
+
 ## Validation boundaries
 
 Compile success is not a deployment test. `scripts/test-agent.ts` exercises probe,

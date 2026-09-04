@@ -22,6 +22,10 @@ pub struct RemoteFileMetadata {
 /// Paths are opaque UTF-8 values on the client, interpreted only by the remote agent.
 /// Client code must not canonicalize or join these using host-native path semantics.
 pub enum RemoteAgentRequest {
+  CompletePath {
+    protocol_version: u32,
+    path: String,
+  },
   Preview {
     protocol_version: u32,
     remote_root: PathBuf,
@@ -46,6 +50,10 @@ pub enum RemoteAgentRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RemoteAgentResponse {
+  PathCompletion {
+    paths: Vec<String>,
+    truncated: bool,
+  },
   Preview {
     files: Vec<RemoteFileMetadata>,
     truncated: bool,

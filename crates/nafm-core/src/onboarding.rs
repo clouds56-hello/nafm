@@ -8,6 +8,63 @@ use crate::{
   Result, SmbLocation,
 };
 
+#[derive(Serialize)]
+pub struct PathCompletion {
+  pub paths: Vec<String>,
+  pub truncated: bool,
+}
+
+pub(crate) async fn complete_path(machine: &RemoteMachine, path: String, interactive: bool) -> Result<PathCompletion> {
+  if interactive {
+    let probe = crate::remote::execute_remote_agent_mode(
+      machine,
+      &RemoteAgentRequest::Probe {
+        protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+        remote_root: None,
+      },
+      interactive,
+    )
+    .await?;
+    let supported = probe.iter().any(|response| match response {
+      RemoteAgentResponse::Ready {
+        protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+        capabilities,
+        ..
+      } => capabilities.iter().any(|value| value == "path_completion"),
+      _ => false,
+    });
+    if !supported {
+      return Err(NafmError::RemoteAgent(
+        "Install/update the remote agent to enable directory suggestions".into(),
+      ));
+    }
+    return Ok(PathCompletion {
+      paths: Vec::new(),
+      truncated: false,
+    });
+  }
+  let responses = crate::remote::execute_remote_agent_mode(
+    machine,
+    &RemoteAgentRequest::CompletePath {
+      protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
+      path,
+    },
+    false,
+  )
+  .await?;
+  for response in responses {
+    if let RemoteAgentResponse::PathCompletion { paths, truncated } = response
+      && paths.len() <= 50
+      && paths.iter().all(|path| path.len() <= 8192 && !path.contains('\0'))
+    {
+      return Ok(PathCompletion { paths, truncated });
+    }
+  }
+  Err(NafmError::RemoteAgent(
+    "Agent returned invalid directory suggestions".into(),
+  ))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {

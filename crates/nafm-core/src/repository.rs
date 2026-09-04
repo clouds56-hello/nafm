@@ -687,6 +687,16 @@ impl Repository {
     crate::onboarding::preview(&machine, smb_root, remote_root).await
   }
 
+  pub async fn complete_remote_path(
+    &self,
+    selector: &str,
+    path: String,
+    interactive: bool,
+  ) -> Result<crate::PathCompletion> {
+    let machine = self.remote_machine_for_setup(selector).await?;
+    crate::onboarding::complete_path(&machine, path, interactive).await
+  }
+
   pub async fn add_remote_path_mapping(
     &self,
     machine_selector: &str,

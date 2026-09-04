@@ -864,7 +864,7 @@ function ConnectionsSection({ snapshot, busy, setBusy, onMutation }: {
             <Field label="SSH target" hint="An alias from ~/.ssh/config or user@host"><input value={sshTarget} onChange={(event) => setSshTarget(event.target.value)} placeholder="nas" spellCheck={false} disabled={busy} /></Field>
             <button className="primary-button full-width" type="submit" disabled={busy || !remoteName.trim() || !sshTarget.trim()}><NetworkIcon />Register machine</button>
           </form>
-          <RemotePathMappingForm key={snapshot.active_workspace.name} machines={snapshot.remote_machines} workspaceName={snapshot.active_workspace.name} busy={busy} setBusy={setBusy} onMutation={onMutation} />
+          <RemotePathMappingForm key={snapshot.active_workspace.name} machines={snapshot.remote_machines} connections={snapshot.connections} workspaceName={snapshot.active_workspace.name} busy={busy} setBusy={setBusy} onMutation={onMutation} />
         </div>
       </div>
       {remoteError && <p className="management-form-error" role="alert">{remoteError}</p>}

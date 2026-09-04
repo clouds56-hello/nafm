@@ -10,7 +10,25 @@ pub(crate) async fn execute_remote_agent(
   machine: &RemoteMachine,
   request: &RemoteAgentRequest,
 ) -> Result<Vec<RemoteAgentResponse>> {
-  let connection = crate::ssh::connect(machine).await?;
+  execute_remote_agent_mode(machine, request, true).await
+}
+
+pub(crate) async fn execute_remote_agent_mode(
+  machine: &RemoteMachine,
+  request: &RemoteAgentRequest,
+  interactive: bool,
+) -> Result<Vec<RemoteAgentResponse>> {
+  let connection = if interactive {
+    crate::ssh::connect_mode(machine, true).await?
+  } else {
+    // Completion must not sit behind another operation's interactive setup indefinitely.
+    tokio::time::timeout(
+      std::time::Duration::from_secs(10),
+      crate::ssh::connect_mode(machine, false),
+    )
+    .await
+    .map_err(|_| NafmError::SshConnection("SSH session lookup timed out; reconnect for suggestions".into()))??
+  };
   let duration = std::time::Duration::from_secs(30).max(connection.minimum_timeout);
   let mut responses = Vec::new();
   tokio::time::timeout(

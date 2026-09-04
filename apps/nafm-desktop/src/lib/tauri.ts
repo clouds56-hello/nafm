@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  PathCompletion,
+  PathCompletionRequest,
   InstallAgentRequest,
   SshPrompt,
   SshPromptReply,
@@ -28,6 +30,10 @@ import type {
   StorageTree,
   StorageViewSnapshot,
 } from "./types";
+
+export function completeRemotePath(request: PathCompletionRequest): Promise<PathCompletion> {
+  return invoke<PathCompletion>("complete_remote_path", { request });
+}
 
 export function installRemoteAgent(request: InstallAgentRequest): Promise<ManagementMutationResult> {
   return invoke<ManagementMutationResult>("install_remote_agent", { request });

@@ -1,17 +1,20 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useId, useState } from "react";
+import { RemotePathInput } from "./RemotePathInput";
 import { addRemotePathMapping, previewRemotePathMapping } from "../lib/tauri";
-import type { ManagementMutationResult, MappingPreview, RemoteMachine } from "../lib/types";
+import type { ManagementMutationResult, MappingPreview, RemoteMachine, SavedConnection } from "../lib/types";
 import { formatBytes } from "../lib/format";
 
 interface Props {
   machines: RemoteMachine[];
+  connections: SavedConnection[];
   workspaceName: string;
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onMutation: (result: ManagementMutationResult, dashboardChanged: boolean) => void;
 }
 
-export function RemotePathMappingForm({ machines, workspaceName, busy, setBusy, onMutation }: Props) {
+export function RemotePathMappingForm({ machines, connections, workspaceName, busy, setBusy, onMutation }: Props) {
+  const smbListId = useId();
   const [machineId, setMachineId] = useState("");
   const [smbRoot, setSmbRoot] = useState("");
   const [remoteRoot, setRemoteRoot] = useState("");
@@ -67,8 +70,10 @@ export function RemotePathMappingForm({ machines, workspaceName, busy, setBusy, 
       <option value="">Select a machine</option>
       {machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}
     </select></label>
-    <label className="management-field"><span>SMB root</span><input value={smbRoot} disabled={busy} spellCheck={false} placeholder="smb://nas/Media" onChange={(event) => change(setSmbRoot, event.target.value)} /></label>
-    <label className="management-field"><span>Native remote root</span><input value={remoteRoot} disabled={busy} spellCheck={false} placeholder="/volume1/Media or C:\\Media" onChange={(event) => change(setRemoteRoot, event.target.value)} /></label>
+    <label className="management-field"><span>SMB root</span><input list={smbListId} autoComplete="off" value={smbRoot} disabled={busy} spellCheck={false} placeholder="smb://nas/Media" onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }} onChange={(event) => change(setSmbRoot, event.target.value)} />
+      <datalist id={smbListId}>{[...new Set(connections.map((connection) => connection.url))].map((url) => <option key={url} value={url} />)}</datalist>
+    </label>
+    <RemotePathInput key={`${workspaceName}:${machineId}`} workspaceName={workspaceName} machineId={machineId} value={remoteRoot} disabled={busy} setBusy={setBusy} onChange={(value) => change(setRemoteRoot, value)} />
     <button type="submit" className="ghost-button" disabled={busy || !machineId || !smbRoot.trim() || !remoteRoot.trim()}>Preview path (read only)</button>
     {phase && <p role="status">{phase}</p>}
     {error && <p role="alert" className="management-form-error">{error}</p>}

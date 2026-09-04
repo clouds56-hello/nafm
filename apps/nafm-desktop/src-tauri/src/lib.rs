@@ -72,6 +72,7 @@ pub fn run() {
       commands::agents::install_remote_agent,
       commands::agents::preflight_remote_machine,
       commands::agents::preview_remote_path_mapping,
+      commands::agents::complete_remote_path,
       commands::management::add_remote_path_mapping,
       commands::management::remove_remote_path_mapping,
     ])

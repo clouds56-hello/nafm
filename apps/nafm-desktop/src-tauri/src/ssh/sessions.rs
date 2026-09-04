@@ -125,6 +125,10 @@ impl Sessions {
   }
 
   async fn prepare(&self, target: &str) -> nafm_core::Result<SshConnection> {
+    self.prepare_mode(target, true).await
+  }
+
+  async fn prepare_mode(&self, target: &str, interactive: bool) -> nafm_core::Result<SshConnection> {
     let gate = self
       .gates
       .lock()
@@ -166,10 +170,17 @@ impl Sessions {
         }
         self.owned.lock().map_err(error)?.remove(target);
       }
-      self.start_master(target).await
+      if interactive {
+        self.start_master(target).await
+      } else {
+        Ok(leased(ssh(&self.program, false), "system_ssh"))
+      }
     }
     #[cfg(not(unix))]
     {
+      if !interactive {
+        return Ok(leased(ssh(&self.program, false), "system_ssh"));
+      }
       // Windows OpenSSH clients do not consistently implement multiplexing.
       // Preserve configured reuse if supported; otherwise prompt per connection.
       let broker = Broker::start(self.hub.clone(), target.into()).await.map_err(error)?;
@@ -274,6 +285,12 @@ fn owned_connection(program: &Path, path: &Path) -> SshConnection {
 }
 
 impl SshConnector for Sessions {
+  fn connect_quiet<'a>(
+    &'a self,
+    target: &'a str,
+  ) -> Pin<Box<dyn Future<Output = nafm_core::Result<SshConnection>> + Send + 'a>> {
+    Box::pin(self.prepare_mode(target, false))
+  }
   fn connect<'a>(
     &'a self,
     target: &'a str,
@@ -366,5 +383,31 @@ mod tests {
     assert!(args.contains(&"FingerprintHash=sha256"));
     assert!(!args.contains(&"StrictHostKeyChecking=no"));
     assert!(!args.contains(&"StrictHostKeyChecking=accept-new"));
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn quiet_completion_reuses_masters_without_creating_auth_prompts() {
+    use nafm_core::SshConnector;
+    let (_directory, sessions) = fixture();
+    assert_eq!(
+      sessions.connect_quiet("external").await.unwrap().session,
+      "existing_master"
+    );
+    let connection = sessions.connect_quiet("owned").await.unwrap();
+    assert_eq!(connection.session, "system_ssh");
+    let args = connection
+      .command
+      .as_std()
+      .get_args()
+      .map(|value| value.to_str().unwrap())
+      .collect::<Vec<_>>();
+    assert!(args.contains(&"BatchMode=yes"));
+    assert!(args.contains(&"StrictHostKeyChecking=yes"));
+    assert!(sessions.owned.lock().unwrap().is_empty());
+    assert!(sessions.hub.list().unwrap().is_empty());
+    sessions.connect("owned").await.unwrap();
+    assert_eq!(sessions.connect_quiet("owned").await.unwrap().session, "app_master");
+    sessions.shutdown();
   }
 }
