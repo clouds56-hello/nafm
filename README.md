@@ -162,6 +162,13 @@ in two durable passes:
    metadata;
 2. hash only files whose content has not been verified for that inventory.
 
+Unchanged local and direct-SMB files reuse verified hashes when size, modification
+time, algorithm, and source identity match. Completed SMB hashes also survive an
+interrupted scan and are reused on resume. SMB entries with unavailable modification
+times are rehashed. Remote-agent hashes additionally require the same path mapping.
+Already-stale hashes are not automatically promoted to verified: they still need
+rehashing because their original verification metadata may no longer be available.
+
 If only a file's modification time changes, NAFM retains the previous digest as
 stale information but does not use it for duplicate, health, coverage, or
 cleanup decisions until the file is hashed again. A cancellation during
