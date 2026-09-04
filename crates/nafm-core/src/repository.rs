@@ -2474,6 +2474,9 @@ fn publish_inventory_atomically(
     for (index, file) in files.into_iter().enumerate() {
       let existing = existing_record(conn, &file.path)?;
       let cached = cached_scan_record(conn, &site.id, &file, hash_algorithm)?;
+      // SMB discovery uses zero when no modification timestamp is available.
+      // Otherwise unchanged SMB metadata supports the same reuse policy as local files.
+      let metadata_reusable = !matches!(file.source, FileSource::Smb { .. }) || file.modified_unix_nanos != 0;
       let exact_verified = existing.as_ref().is_some_and(|record| {
         record.site_id == site.id
           && record.hash_algorithm == hash_algorithm
@@ -2482,7 +2485,7 @@ fn publish_inventory_atomically(
           && record.size_bytes == file.size_bytes
           && record.modified_unix_nanos == file.modified_unix_nanos
           && record.hash_source_key.as_deref() == file.hash_source_key()
-          && !matches!(file.source, FileSource::Smb { .. })
+          && metadata_reusable
       });
       let (content_hash, hash_revision) = if exact_verified {
         preparation.files_reused += 1;
@@ -2490,7 +2493,9 @@ fn publish_inventory_atomically(
           existing.as_ref().and_then(|record| record.content_hash.clone()),
           Some(inventory_revision),
         )
-      } else if matches!(file.source, FileSource::Local)
+      } else if metadata_reusable
+        // Legacy cache entries have no remote mapping identity; never reuse them for agents.
+        && !matches!(file.source, FileSource::Remote { .. })
         && let Some(cached) = cached
       {
         preparation.files_reused += 1;
@@ -5030,6 +5035,9 @@ fn hidden_policy_from_db(value: &str) -> HiddenPolicy {
     _ => HiddenPolicy::Include,
   }
 }
+
+#[cfg(test)]
+mod scan_reuse_tests;
 
 #[cfg(test)]
 mod transaction_tests {
