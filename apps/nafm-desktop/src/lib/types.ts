@@ -65,6 +65,51 @@ export interface InstallAgentRequest {
   request_id: string;
 }
 
+export interface SetupCheck {
+  stage: string;
+  status: "passed" | "failed" | "skipped" | "warning";
+  message: string;
+  remedy: string | null;
+}
+
+export interface SshPrompt {
+  prompt_id: string;
+  ssh_target: string;
+  message: string;
+  confirmation: boolean;
+}
+
+export interface SshPromptReply {
+  prompt_id: string;
+  response: string | null;
+}
+
+export interface PreflightReport {
+  machine_id: string;
+  ssh_target: string;
+  checked_at: string;
+  checks: SetupCheck[];
+  target: string | null;
+  can_install: boolean;
+  agent_ready: boolean;
+}
+
+export interface PathPreviewRequest {
+  workspace_name: string;
+  machine_id: string;
+  smb_root: string;
+  remote_root: string;
+}
+
+export interface MappingPreview {
+  smb_root: string;
+  remote_root: string;
+  checked_at: string;
+  check: SetupCheck;
+  files: { relative_path: string; size_bytes: number; modified_unix_nanos: number }[];
+  truncated: boolean;
+}
+
 export interface InstallAgentProgress {
   request_id: string;
   machine_id: string;

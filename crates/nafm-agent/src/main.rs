@@ -7,6 +7,8 @@ use nafm_protocol::{
 };
 use walkdir::WalkDir;
 
+mod preview;
+
 fn main() {
   if let Err(error) = run() {
     let _ = write_response(&RemoteAgentResponse::Error {
@@ -19,6 +21,13 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let request: RemoteAgentRequest = serde_json::from_reader(BufReader::new(io::stdin().lock()))?;
   match request {
+    RemoteAgentRequest::Preview {
+      protocol_version,
+      remote_root,
+    } => {
+      require_protocol(protocol_version)?;
+      write_response(&preview::preview(&remote_root)?)?;
+    }
     RemoteAgentRequest::Probe {
       protocol_version,
       remote_root,
@@ -28,6 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         canonical_root(&remote_root)?;
       }
       write_response(&RemoteAgentResponse::Ready {
+        capabilities: vec!["path_preview".to_owned()],
         protocol_version: REMOTE_AGENT_PROTOCOL_VERSION,
         agent_version: env!("CARGO_PKG_VERSION").to_owned(),
         hash_algorithms: vec!["blake3".to_owned()],

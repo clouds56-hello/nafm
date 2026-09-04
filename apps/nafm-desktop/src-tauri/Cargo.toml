@@ -24,8 +24,11 @@ nafm-core = { path = "../../../crates/nafm-core" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 zeroize.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

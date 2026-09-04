@@ -7,7 +7,6 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use nafm_bundle::{AgentManifest, TARGETS, target_for};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 use crate::{NafmError, REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteMachine, Result};
 
@@ -57,55 +56,69 @@ fn powershell_command(script: &str) -> String {
 }
 
 /// One bounded SSH operation. stdin and both output streams are serviced concurrently.
-async fn ssh(machine: &RemoteMachine, script: &str, input: &[u8], duration: Duration) -> Result<String> {
-  crate::remote::validate_ssh_target(&machine.ssh_target)?;
-  tokio::time::timeout(duration, async {
-    let mut child = Command::new("ssh")
-      .args([
-        "-T",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        &machine.ssh_target,
-        script,
-      ])
-      .stdin(Stdio::piped())
-      .stdout(Stdio::piped())
-      .stderr(Stdio::piped())
-      .kill_on_drop(true)
-      .spawn()
-      .map_err(remote_error)?;
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = child.stdout.take().unwrap().take(65537);
-    let mut stderr = child.stderr.take().unwrap().take(65537);
-    let mut output = Vec::new();
-    let mut errors = Vec::new();
-    let send = async {
-      stdin.write_all(input).await?;
-      stdin.shutdown().await?;
-      drop(stdin);
-      Ok::<_, std::io::Error>(())
-    };
-    let (_, _, _, status) = tokio::try_join!(
-      send,
-      stdout.read_to_end(&mut output),
-      stderr.read_to_end(&mut errors),
-      child.wait()
-    )?;
-    if !status.success() {
-      return Err(remote_error(format!(
-        "SSH operation failed ({status}): {}",
-        String::from_utf8_lossy(&errors).trim()
-      )));
-    }
-    if output.len() > 65536 || errors.len() > 65536 {
-      return Err(remote_error("SSH output exceeded limit"));
-    }
-    String::from_utf8(output).map_err(remote_error)
-  })
+pub(crate) async fn ssh(machine: &RemoteMachine, script: &str, input: &[u8], duration: Duration) -> Result<String> {
+  ssh_with_session(machine, script, input, duration)
+    .await
+    .map(|(output, _)| output)
+}
+
+pub(crate) async fn ssh_with_session(
+  machine: &RemoteMachine,
+  script: &str,
+  input: &[u8],
+  duration: Duration,
+) -> Result<(String, &'static str)> {
+  let mut connection = crate::ssh::connect(machine).await?;
+  let cancelled = connection.cancelled.clone();
+  tokio::time::timeout(
+    duration.max(connection.minimum_timeout),
+    crate::ssh::cancellable(cancelled, None, async {
+      let mut child = connection
+        .command
+        .args([&machine.ssh_target, script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| NafmError::SshConnection(error.to_string()))?;
+      let mut stdin = child.stdin.take().unwrap();
+      let mut stdout = child.stdout.take().unwrap().take(65537);
+      let mut stderr = child.stderr.take().unwrap().take(65537);
+      let mut output = Vec::new();
+      let mut errors = Vec::new();
+      let send = async {
+        stdin.write_all(input).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+        Ok::<_, std::io::Error>(())
+      };
+      let (_, _, _, status) = tokio::try_join!(
+        send,
+        stdout.read_to_end(&mut output),
+        stderr.read_to_end(&mut errors),
+        child.wait()
+      )
+      .map_err(|error| NafmError::SshConnection(error.to_string()))?;
+      if !status.success() {
+        if status.code() == Some(255) {
+          return Err(NafmError::SshConnection(String::from_utf8_lossy(&errors).trim().into()));
+        }
+        return Err(remote_error(format!(
+          "SSH operation failed ({status}): {}",
+          String::from_utf8_lossy(&errors).trim()
+        )));
+      }
+      if output.len() > 65536 || errors.len() > 65536 {
+        return Err(remote_error("SSH output exceeded limit"));
+      }
+      String::from_utf8(output)
+        .map(|output| (output, connection.session))
+        .map_err(remote_error)
+    }),
+  )
   .await
-  .map_err(|_| remote_error("SSH operation timed out; verify connectivity and retry"))?
+  .map_err(|_| NafmError::SshConnection("SSH operation timed out; verify connectivity and retry".into()))?
 }
 
 fn parse_platform(output: &str) -> Result<&'static str> {
@@ -120,7 +133,7 @@ fn parse_platform(output: &str) -> Result<&'static str> {
   target_for(os, arch).map_err(remote_error)
 }
 
-async fn detect_platform(machine: &RemoteMachine) -> Result<&'static str> {
+pub(crate) async fn detect_platform(machine: &RemoteMachine) -> Result<&'static str> {
   let posix = ssh(
     machine,
     "os=$(uname -s); arch=$(uname -m); if [ \"$os\" = Darwin ] && [ \"$(sysctl -n hw.optional.arm64 2>/dev/null)\" = 1 ]; then arch=arm64; fi; printf 'NAFM_PLATFORM\\t%s\\t%s\\n' \"$os\" \"$arch\"",
@@ -129,12 +142,14 @@ async fn detect_platform(machine: &RemoteMachine) -> Result<&'static str> {
   )
   .await;
   match posix {
+    Err(error @ NafmError::SshConnection(_)) => Err(error),
     Ok(output) if output.lines().any(|line| line.starts_with("NAFM_PLATFORM\t")) => parse_platform(&output),
     posix => {
       let script = "$arch = $env:PROCESSOR_ARCHITEW6432; if (!$arch) { $arch = $env:PROCESSOR_ARCHITECTURE }; [Console]::WriteLine(\"NAFM_PLATFORM`tWindows`t\" + $arch)";
       let windows = ssh(machine, &powershell_command(script), &[], Duration::from_secs(20)).await;
       match windows {
         Ok(output) => parse_platform(&output),
+        Err(error @ NafmError::SshConnection(_)) => Err(error),
         Err(error) => Err(remote_error(format!(
           "Could not detect remote OS/architecture. POSIX probe: {posix:?}; Windows probe: {error}"
         ))),
@@ -222,6 +237,7 @@ pub(crate) async fn install(
       os,
       arch,
       executable_hash,
+      ..
     } => {
       *protocol_version == REMOTE_AGENT_PROTOCOL_VERSION
         && agent_version == &installation.agent_version

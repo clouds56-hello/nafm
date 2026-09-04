@@ -10,7 +10,8 @@ interface RemoteFile {
   modified_unix_nanos: string;
 }
 type AgentEvent =
-  | { event: "ready"; protocol_version: number; agent_version: string; hash_algorithms: string[]; executable_hash: string; os: string; arch: string }
+  | { event: "ready"; protocol_version: number; agent_version: string; capabilities: string[]; hash_algorithms: string[]; executable_hash: string; os: string; arch: string }
+  | { event: "preview"; files: RemoteFile[]; truncated: boolean }
   | { event: "file"; file: RemoteFile }
   | { event: "discovery_complete" | "hash_complete"; file_count: number }
   | { event: "hash"; relative_path: string; content_hash: string }
@@ -38,12 +39,19 @@ try {
   const [ready] = request({ command: "probe", remote_root: root });
   assert.ok(ready.event === "ready");
   assert.equal(ready.protocol_version, protocol_version);
-  assert.equal(ready.agent_version, "0.2.0");
+  assert.equal(ready.agent_version, "0.3.0");
+  assert.ok(ready.capabilities.includes("path_preview"));
+  assert.deepEqual(request({ command: "preview", remote_root: root }), [{ event: "preview", files: [], truncated: false }]);
   assert.ok(ready.hash_algorithms.includes("blake3"));
   assert.match(ready.executable_hash, /^[a-f0-9]{64}$/);
   const file_name = "O'Neil & 照片.txt";
   writeFileSync(join(root, file_name), "abc");
   writeFileSync(join(root, ".hidden"), "");
+  const [preview] = request({ command: "preview", remote_root: root });
+  assert.ok(preview.event === "preview");
+  assert.equal(preview.truncated, false);
+  assert.equal(preview.files.length, 2);
+  assert.ok(preview.files.some((file) => file.relative_path === file_name && file.size_bytes === 3));
   const discovery = request({ command: "discover", remote_root: root, hidden_policy: "skip" });
   assert.deepEqual(discovery.at(-1), { event: "discovery_complete", file_count: 1 });
   const discovered = discovery.find((event) => event.event === "file");
@@ -60,6 +68,13 @@ try {
   assert.ok(changed.event === "error");
   assert.match(changed.message, /file changed/);
   request({ command: "probe", remote_root: "relative/path" }, false);
+  request({ command: "preview", remote_root: "relative/path" }, false);
+  request({ command: "preview", remote_root: join(root, "missing") }, false);
+  for (let index = 0; index < 6; index += 1) writeFileSync(join(root, `sample-${index}`), "abc");
+  const [bounded] = request({ command: "preview", remote_root: root });
+  assert.ok(bounded.event === "preview");
+  assert.equal(bounded.files.length, 5);
+  assert.equal(bounded.truncated, true);
   request({ protocol_version: 999, command: "probe", remote_root: null }, false);
   request({ command: "hash", remote_root: root, hash_algorithm: "blake3", files: [{ relative_path: "../escape", size_bytes: 0, modified_unix_nanos: "0" }] }, false);
   console.log(`Agent smoke test passed: ${ready.os}/${ready.arch}`);

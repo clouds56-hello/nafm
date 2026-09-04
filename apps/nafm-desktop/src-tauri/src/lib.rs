@@ -1,9 +1,16 @@
 mod commands;
+mod ssh;
 mod state;
+
+use std::sync::Arc;
+use tauri::Manager;
 
 use nafm_core::{CredentialStore, DEFAULT_WORKSPACE_NAME, Repository, RepositoryOptions, WorkspaceManager};
 
 pub fn run() {
+  if let Some(code) = ssh::run_helper() {
+    std::process::exit(code);
+  }
   let state = tauri::async_runtime::block_on(async {
     let workspace_manager =
       WorkspaceManager::from_default_root().expect("application data directory should be available");
@@ -24,7 +31,19 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .manage(state)
+    .setup(|app| {
+      let hub = Arc::new(ssh::prompts::PromptHub::new(app.handle().clone()));
+      let sessions = Arc::new(ssh::Sessions::new(hub.clone()));
+      if !nafm_core::set_ssh_connector(sessions.clone()) {
+        return Err("SSH adapter already initialized".into());
+      }
+      app.manage(hub);
+      app.manage(sessions);
+      Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
+      ssh::prompts::ssh_prompts,
+      ssh::prompts::ssh_prompt_reply,
       commands::dashboard::load_dashboard,
       commands::dashboard::get_storage_tree,
       commands::dashboard::get_storage_location,
@@ -51,11 +70,18 @@ pub fn run() {
       commands::management::remove_remote_machine,
       commands::management::probe_remote_machine,
       commands::agents::install_remote_agent,
+      commands::agents::preflight_remote_machine,
+      commands::agents::preview_remote_path_mapping,
       commands::management::add_remote_path_mapping,
       commands::management::remove_remote_path_mapping,
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running NAFM");
+    .build(tauri::generate_context!())
+    .expect("error while building NAFM")
+    .run(|app, event| {
+      if matches!(event, tauri::RunEvent::Exit) {
+        app.state::<Arc<ssh::Sessions>>().shutdown();
+      }
+    });
 }
 
 async fn open_startup_workspace(
