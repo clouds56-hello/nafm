@@ -42,9 +42,8 @@ button:disabled { cursor: default; }
   display: grid;
   min-height: 0;
   min-width: 0;
-  grid-template-columns: clamp(172px, 15vw, 202px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
-  gap: 12px;
   padding: 12px;
 }
 
@@ -150,7 +149,6 @@ button:disabled { cursor: default; }
   font: 10px/1.45 var(--atlas-mono);
 }
 
-.atlas-map-guide { margin: 0; }
 .atlas-map-footer:empty { display: none; }
 .atlas-view-error, .atlas-map-empty-help { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; font-size: 12px; overflow-wrap: anywhere; }
 
@@ -173,8 +171,7 @@ button:disabled { cursor: default; }
 }
 
 @media (max-width: 760px) {
-  .atlas-main { grid-template-columns: minmax(0, 1fr); gap: 9px; padding: 8px; }
-  .atlas-main > .atlas-site-rail { display: none; }
+  .atlas-main { padding: 8px; }
 }
 
 .atlas-alert {
@@ -198,7 +195,7 @@ button:disabled { cursor: default; }
 .atlas-alert button { flex: none; white-space: nowrap; }
 
 @media (max-width: 760px) {
-  .atlas-shell[data-inspector-open] .atlas-alert { top: calc(var(--atlas-toolbar-height, 54px) + 8px); bottom: auto; }
+  .atlas-shell[data-overlay-open] .atlas-alert { top: calc(var(--atlas-toolbar-height, 54px) + 8px); bottom: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

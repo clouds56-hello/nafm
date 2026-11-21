@@ -16,7 +16,7 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The desktop app shares workspaces with the CLI. Use the **Sites** rail or
+The desktop app shares workspaces with the CLI. Use the floating **Sites** button or
 **Workspace actions** → **Sources** to choose sites, add a local folder or SMB
 share, and start or stop a scan. **Workspace actions** also contains
 **Scan all**, **Review**, and **Settings**.
@@ -30,7 +30,7 @@ pnpm tauri dev
 Choose an arc to open a folder or select a file. Use the floating
 **Contents & details** button on the atlas to open the inspector. Choose
 **Contents** to browse the current folder or **Details** to inspect the
-selection. Arc length shows storage used, and each ring goes one level deeper.
+selection.
 In **Map options**, choose **Space health** to see duplication or **Coverage**
 to compare against another source. Details lets you find similar folders or
 exact copies and stage verified duplicates. **Review** previews cleanup.

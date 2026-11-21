@@ -23,7 +23,8 @@ export function WorkspaceAtlas({
   workspace, toolbarExtension,
 }: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
-  const [inspectorView, setInspectorView] = useState<InspectorView | null>(null);
+  const [activePane, setActivePane] = useState<"sites" | InspectorView | null>(null);
+  const inspectorView = activePane === "sites" ? null : activePane;
   const sourcesOpen = sourcesView !== null;
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null);
@@ -42,15 +43,15 @@ export function WorkspaceAtlas({
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
-  const closeInspector = useCallback(() => setInspectorView(null), []);
+  const closePane = useCallback(() => setActivePane(null), []);
 
   const { goBack, goForward, goUp, canGoBack, canGoForward, canGoUp } = state;
   useEffect(() => {
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || sourcesOpen || state.reviewOpen || workspace.managementOpen) return;
-      if (event.key === "Escape" && inspectorView && !document.querySelector("dialog[open]")) {
+      if (event.key === "Escape" && activePane && !document.querySelector("dialog[open]")) {
         event.preventDefault();
-        closeInspector();
+        closePane();
         return;
       }
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
@@ -67,7 +68,7 @@ export function WorkspaceAtlas({
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [canGoBack, canGoForward, canGoUp, closeInspector, goBack, goForward, goUp, inspectorView, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
+  }, [activePane, canGoBack, canGoForward, canGoUp, closePane, goBack, goForward, goUp, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
@@ -75,7 +76,7 @@ export function WorkspaceAtlas({
   }
 
   return (
-    <div className="atlas-shell" data-inspector-open={inspectorView ? "" : undefined}>
+    <div className="atlas-shell" data-overlay-open={activePane ? "" : undefined}>
       <AtlasToolbar
         workspace={{
           name: workspace.management?.active_workspace.name ?? null,
@@ -118,22 +119,25 @@ export function WorkspaceAtlas({
       />
 
       <main className="atlas-main">
-        <SiteRail
-          sites={dashboard?.sites ?? []}
-          activeId={site?.id ?? null}
-          scanRequests={state.scanRequestBySite}
-          blockedIds={state.scanBlockedSiteIds}
-          scanAllRequests={state.scanAllRequestIds}
-          cancellingRequests={state.cancellingRequestIds}
-          progressBySite={state.progressBySite}
-          onSelect={(id) => void state.selectSite(id)}
-          onScan={(id) => void state.scan(id)}
-          onCancel={(id) => void state.cancel(id)}
-          onAdd={() => setSourcesView("add")}
-          onManage={(id) => workspace.openManagement("sites", id)}
-        />
-
         <section className="atlas-visualization" aria-label="Circular storage map">
+          <SiteRail
+            sites={dashboard?.sites ?? []}
+            activeId={site?.id ?? null}
+            scanRequests={state.scanRequestBySite}
+            blockedIds={state.scanBlockedSiteIds}
+            scanAllRequests={state.scanAllRequestIds}
+            cancellingRequests={state.cancellingRequestIds}
+            progressBySite={state.progressBySite}
+            open={activePane === "sites"}
+            restoreFocus={activePane === null}
+            onOpen={() => setActivePane("sites")}
+            onClose={closePane}
+            onSelect={(id) => { void state.selectSite(id); closePane(); }}
+            onScan={(id) => void state.scan(id)}
+            onCancel={(id) => void state.cancel(id)}
+            onAdd={() => setSourcesView("add")}
+            onManage={(id) => workspace.openManagement("sites", id)}
+          />
           <div className="atlas-chart-well">
             {folder ? (
               <RadialAtlas
@@ -159,12 +163,9 @@ export function WorkspaceAtlas({
                 <span>Add a folder or network share to map its files.</span>
                 <button className="atlas-text-button" type="button" onClick={() => setSourcesView("add")}>Add a source</button>
               </div>
-            ) : folder && (
+            ) : folder && (analysisNotice || metric) && (
               <>
                 {analysisNotice && <p className="atlas-map-notice" role="status">{analysisNotice}</p>}
-                <p className="atlas-map-guide">
-                  {folder.total_bytes > 0 ? "Arc length shows size." : "Arc length shows file count."} Each ring goes one level deeper.
-                </p>
                 {metric && (
                   <div className="atlas-health-key" role="group" aria-label="Health scale runs from 0 to 100. Gray indicates pending or unavailable data.">
                     <span>0</span>
@@ -180,8 +181,9 @@ export function WorkspaceAtlas({
             <AtlasInspector
               view={inspectorView}
               initialView={selected?.kind === "file" ? "details" : "contents"}
-              onViewChange={setInspectorView}
-              onClose={closeInspector}
+              restoreFocus={activePane === null}
+              onViewChange={setActivePane}
+              onClose={closePane}
               details={location ? (
                 <StorageDetails
                   location={location}
@@ -223,7 +225,7 @@ export function WorkspaceAtlas({
                     error={state.childrenError}
                     onSelect={(node) => {
                       state.selectNode(node);
-                      if (node.kind === "file") setInspectorView("details");
+                        if (node.kind === "file") setActivePane("details");
                     }}
                     onPrevious={state.loadPreviousChildren}
                     onNext={state.loadNextChildren}

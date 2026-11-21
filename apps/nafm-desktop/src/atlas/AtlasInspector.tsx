@@ -8,6 +8,7 @@ export type InspectorView = "contents" | "details";
 interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
+  restoreFocus: boolean;
   onViewChange: (view: InspectorView) => void;
   onClose: () => void;
   contents: ReactNode;
@@ -19,7 +20,7 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-export function AtlasInspector({ view, initialView, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
+export function AtlasInspector({ view, initialView, restoreFocus, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const contentsTab = useRef<HTMLButtonElement>(null);
@@ -30,11 +31,11 @@ export function AtlasInspector({ view, initialView, onViewChange, onClose, conte
   useLayoutEffect(() => {
     if (view) {
       activeTab.current?.focus({ preventScroll: true });
-    } else if (wasOpen.current) {
+    } else if (wasOpen.current && restoreFocus) {
       trigger.current?.focus({ preventScroll: true });
     }
     wasOpen.current = view !== null;
-  }, [view, activeTab]);
+  }, [view, activeTab, restoreFocus]);
 
   if (!view) {
     return (

@@ -1,21 +1,50 @@
+.atlas-sites-trigger {
+  position: absolute;
+  z-index: 3;
+  inset: 10px auto auto 10px;
+  grid-row: 1 / 2;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid #41445d;
+  border-radius: 6px;
+  background: var(--atlas-surface);
+  box-shadow: 0 5px 16px #08091366;
+  color: var(--atlas-ink);
+  font: 550 11px/1.2 var(--atlas-mono);
+}
+
+.atlas-sites-trigger:hover { border-color: #626891; background: #252742; }
+.atlas-sites-trigger:focus-visible { outline-offset: 2px; }
+.atlas-sites-trigger svg { width: 16px; height: 16px; flex: none; color: var(--atlas-accent); }
+.atlas-sites-trigger span { color: var(--atlas-muted); }
+
 .atlas-site-rail {
+  position: absolute;
+  z-index: 3;
+  inset: 10px auto auto 10px;
   display: grid;
+  width: min(238px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
   min-width: 0;
   min-height: 0;
+  grid-row: 1 / 2;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid var(--atlas-border);
-  border-radius: 12px;
+  border: 1px solid #41445d;
+  border-radius: 8px;
   background: var(--atlas-surface);
-  background: color-mix(in srgb, var(--atlas-surface), transparent 9%);
+  box-shadow: 0 12px 32px #08091380;
 }
 
 .atlas-site-rail-header {
   display: flex;
-  min-height: 53px;
+  min-height: 43px;
   align-items: center;
-  gap: 9px;
-  padding: 8px 11px 8px 14px;
+  gap: 7px;
+  padding: 5px 8px 5px 14px;
   border-bottom: 1px solid var(--atlas-border);
 }
 
@@ -64,6 +93,13 @@
   border-color: #4b5172;
   background: #22253b;
   color: var(--atlas-accent);
+}
+
+.atlas-site-rail .atlas-site-rail-close {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
 }
 
 .atlas-site-rail svg { width: 14px; height: 14px; flex: none; }
@@ -206,14 +242,13 @@
 .atlas-site-rail-empty { margin: 13px 14px 15px; color: var(--atlas-muted); font-size: 12px; }
 
 @media (max-width: 760px) {
-  .atlas-site-rail-header { min-height: 42px; }
-  .atlas-site-rail-list {
-    grid-auto-columns: clamp(152px, 50%, 194px);
-    grid-auto-flow: column;
-    overflow: auto hidden;
-    scroll-snap-type: x proximity;
+  .atlas-site-rail {
+    position: fixed;
+    inset: auto 8px max(8px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: min(72vh, 520px);
+    max-height: min(72dvh, 520px);
   }
-  .atlas-site-rail-item { scroll-snap-align: start; }
   .atlas-site-rail .atlas-site-rail-scan,
   .atlas-site-rail .atlas-site-rail-manage { height: 30px; }
   .atlas-site-rail .atlas-site-rail-manage { width: 27px; }

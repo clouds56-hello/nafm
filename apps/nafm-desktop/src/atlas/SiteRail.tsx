@@ -1,11 +1,13 @@
-import { useId } from "react";
+import { useId, useLayoutEffect, useRef } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
-import { DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
+import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
 import "./site-rail.css";
 
 interface SiteRailProps {
+  open: boolean;
+  restoreFocus: boolean;
   sites: SiteOverview[];
   activeId: string | null;
   scanRequests: ReadonlyMap<string, number>;
@@ -13,6 +15,8 @@ interface SiteRailProps {
   scanAllRequests: ReadonlySet<number>;
   cancellingRequests: ReadonlySet<number>;
   progressBySite: ReadonlyMap<string, ScanProgressView>;
+  onOpen: () => void;
+  onClose: () => void;
   onSelect: (id: string) => void;
   onScan: (id: string) => void;
   onCancel: (requestId: number) => void;
@@ -38,6 +42,8 @@ function scanProgressValue(progress: ScanProgressView | undefined) {
 }
 
 export function SiteRail({
+  open,
+  restoreFocus,
   sites,
   activeId,
   scanRequests,
@@ -45,6 +51,8 @@ export function SiteRail({
   scanAllRequests,
   cancellingRequests,
   progressBySite,
+  onOpen,
+  onClose,
   onSelect,
   onScan,
   onCancel,
@@ -52,6 +60,34 @@ export function SiteRail({
   onManage,
 }: SiteRailProps) {
   const titleId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+
+  useLayoutEffect(() => {
+    if (open && !wasOpen.current) {
+      closeButton.current?.focus({ preventScroll: true });
+    } else if (!open && wasOpen.current && restoreFocus) {
+      trigger.current?.focus({ preventScroll: true });
+    }
+    wasOpen.current = open;
+  }, [open, restoreFocus]);
+
+  if (!open) {
+    return (
+      <button
+        className="atlas-sites-trigger"
+        type="button"
+        ref={trigger}
+        aria-expanded={false}
+        onClick={onOpen}
+      >
+        <DriveIcon />
+        Sites
+        <span aria-hidden="true">{formatCount(sites.length)}</span>
+      </button>
+    );
+  }
 
   return (
     <aside className="atlas-site-rail" aria-labelledby={titleId}>
@@ -67,6 +103,15 @@ export function SiteRail({
           onClick={onAdd}
         >
           <PlusIcon />
+        </button>
+        <button
+          className="atlas-site-rail-close"
+          type="button"
+          ref={closeButton}
+          aria-label="Close sites"
+          onClick={onClose}
+        >
+          <CloseIcon />
         </button>
       </header>
       {sites.length === 0 ? <p className="atlas-site-rail-empty">No sites configured</p> : (
