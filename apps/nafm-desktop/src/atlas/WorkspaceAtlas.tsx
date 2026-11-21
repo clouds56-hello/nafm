@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
+import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { DirectoryContents } from "./DirectoryContents";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
@@ -28,6 +29,10 @@ function EmptyOrbit({ label }: { label: string }) {
 
 export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof useWorkspace> }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
+  const [inspectorView, setInspectorView] = useState<InspectorView | null>(null);
+  const inspectorId = useId();
+  const inspectorTrigger = useRef<HTMLButtonElement | null>(null);
+  const breadcrumbList = useRef<HTMLOListElement>(null);
   const sourcesOpen = sourcesView !== null;
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null);
@@ -47,10 +52,31 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
+  useEffect(() => {
+    const list = breadcrumbList.current;
+    if (list) list.scrollLeft = list.scrollWidth;
+  }, [folder?.id]);
+
+  const closeInspector = useCallback(() => {
+    setInspectorView(null);
+    inspectorTrigger.current?.focus({ preventScroll: true });
+  }, []);
+
+  function toggleInspector(view: InspectorView, trigger: HTMLButtonElement) {
+    inspectorTrigger.current = trigger;
+    if (view === inspectorView) closeInspector();
+    else setInspectorView(view);
+  }
+
   const { goBack, goForward, goUp, canGoBack, canGoForward, canGoUp } = state;
   useEffect(() => {
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || sourcesOpen || state.reviewOpen || workspace.managementOpen) return;
+      if (event.key === "Escape" && inspectorView && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        closeInspector();
+        return;
+      }
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
       if (((event.altKey && event.key === "ArrowLeft") || (event.metaKey && event.key === "[")) && canGoBack) {
         event.preventDefault();
@@ -65,7 +91,7 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [canGoBack, canGoForward, canGoUp, goBack, goForward, goUp, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
+  }, [canGoBack, canGoForward, canGoUp, closeInspector, goBack, goForward, goUp, inspectorView, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
@@ -73,7 +99,7 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
   }
 
   return (
-    <div className="atlas-shell">
+    <div className="atlas-shell" data-inspector-open={inspectorView ? "" : undefined}>
       <header className={`atlas-topbar${hasTrafficLights ? " atlas-native-inset" : ""}`} data-tauri-drag-region>
         <div className="atlas-brand" data-tauri-drag-region>
           <span className="atlas-brand-symbol" aria-hidden="true" />
@@ -131,10 +157,9 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
           onManage={(id) => workspace.openManagement("sites", id)}
         />
 
-        <div className="atlas-workspace" data-inspecting={site ? "" : undefined}>
+        <div className="atlas-workspace">
           <header className="atlas-heading">
             <div className="atlas-heading-identity">
-              <p className="atlas-kicker">Storage map</p>
               <h1 id="atlas-site-heading" title={site?.name}>{site?.name ?? "Explore your storage"}</h1>
             </div>
             {site && (
@@ -175,26 +200,53 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
 
           <section className="atlas-visualization" aria-label="Circular storage map">
             <div className="atlas-map-top">
-              {folder && (
-                <nav className="atlas-crumbs" aria-label="Folder path">
-                  <div className="atlas-history">
-                    <button type="button" aria-label="Previous location" disabled={!canGoBack} onClick={goBack}>←</button>
-                    <button type="button" aria-label="Next location" disabled={!canGoForward} onClick={goForward}>→</button>
-                    {parent && <button type="button" aria-label={`Up to ${parent.name}`} disabled={!canGoUp} onClick={goUp}>↑</button>}
+              {site && (
+                <div className="atlas-map-tools">
+                  <nav className="atlas-crumbs" aria-label="Folder path">
+                    <div className="atlas-history">
+                      <button type="button" aria-label="Previous location" disabled={!canGoBack} onClick={goBack}>←</button>
+                      <button type="button" aria-label="Next location" disabled={!canGoForward} onClick={goForward}>→</button>
+                      {parent && <button type="button" aria-label={`Up to ${parent.name}`} disabled={!canGoUp} onClick={goUp}>↑</button>}
+                    </div>
+                    <ol ref={breadcrumbList}>
+                      {breadcrumbs.map((crumb, index) => (
+                        <li key={crumb.id}>
+                          {index > 0 && <span className="atlas-crumb-divider" aria-hidden="true">/</span>}
+                          {index === breadcrumbs.length - 1 ? (
+                            <span className="atlas-crumb-current" aria-current="location" title={crumb.name}>{crumb.name}</span>
+                          ) : (
+                            <button type="button" onClick={() => state.navigateBreadcrumb(crumb)} title={crumb.name}>{crumb.name}</button>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  </nav>
+                  <div className="atlas-inspector-controls" role="group" aria-label="Explore selection">
+                    <button
+                      type="button"
+                      aria-expanded={inspectorView === "contents"}
+                      aria-controls={inspectorId}
+                      onClick={(event) => toggleInspector("contents", event.currentTarget)}
+                    >
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path d="M5.5 4h7m-7 4h7m-7 4h7M3 4h.01M3 8h.01M3 12h.01" strokeLinecap="round" strokeWidth="1.4" />
+                      </svg>
+                      Contents
+                    </button>
+                    <button
+                      type="button"
+                      aria-expanded={inspectorView === "details"}
+                      aria-controls={inspectorId}
+                      onClick={(event) => toggleInspector("details", event.currentTarget)}
+                    >
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+                        <circle cx="8" cy="8" r="5.5" strokeWidth="1.2" />
+                        <path d="M8 7.5v3M8 5.4h.01" strokeLinecap="round" strokeWidth="1.4" />
+                      </svg>
+                      Details
+                    </button>
                   </div>
-                  <ol>
-                    {breadcrumbs.map((crumb, index) => (
-                      <li key={crumb.id}>
-                        {index > 0 && <span className="atlas-crumb-divider" aria-hidden="true">/</span>}
-                        {index === breadcrumbs.length - 1 ? (
-                          <span className="atlas-crumb-current" aria-current="location" title={crumb.name}>{crumb.name}</span>
-                        ) : (
-                          <button type="button" onClick={() => state.navigateBreadcrumb(crumb)} title={crumb.name}>{crumb.name}</button>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </nav>
+                </div>
               )}
               {(analysis?.message || (coverage && !target)) && (
                 <p className="atlas-map-notice" role="status">{analysis?.message ?? "Add another source to compare coverage."}</p>
@@ -242,55 +294,71 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
                 </>
               )}
             </footer>
-          </section>
-
-          {site && (
-            <aside className="atlas-inspector" aria-label="Inspector">
-              {location ? (
-                <StorageDetails
-                  location={location}
-                  entries={state.childrenPage?.children ?? []}
-                  selected={selected}
-                  focusRevision={state.duplicateJumpRevision}
-                  metric={metric}
-                  targetCompleteness={targetCompleteness}
-                  targetName={target?.name ?? null}
-                >
-                  {dashboard && selectedNode && (
-                    <ContentActions
-                      workspaceName={dashboard.workspace_name}
-                      siteId={site.id}
-                      contentRevision={state.contentRevision}
-                      node={selectedNode}
-                      metric={state.healthMetric}
-                      sourceAnalysisReady={siteAnalysisReady(site)}
-                      staged={state.isSelectedStaged}
-                      stagingBusy={state.stagingBusy}
-                      onStage={() => void state.stageSelected()}
-                      onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                      onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
+            {site && (
+              <AtlasInspector
+                id={inspectorId}
+                view={inspectorView}
+                onViewChange={setInspectorView}
+                onClose={closeInspector}
+                details={location ? (
+                  <StorageDetails
+                    location={location}
+                    entries={state.childrenPage?.children ?? []}
+                    selected={selected}
+                    focusRevision={state.duplicateJumpRevision}
+                    metric={metric}
+                    targetCompleteness={targetCompleteness}
+                    targetName={target?.name ?? null}
+                  >
+                    {dashboard && selectedNode && (
+                      <ContentActions
+                        workspaceName={dashboard.workspace_name}
+                        siteId={site.id}
+                        contentRevision={state.contentRevision}
+                        node={selectedNode}
+                        metric={state.healthMetric}
+                        sourceAnalysisReady={siteAnalysisReady(site)}
+                        staged={state.isSelectedStaged}
+                        stagingBusy={state.stagingBusy}
+                        onStage={() => void state.stageSelected()}
+                        onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
+                        onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
+                      />
+                    )}
+                  </StorageDetails>
+                ) : (
+                  <p className="atlas-inspector-status" role="status">
+                    {state.treeError ? "Folder details are unavailable." : "Loading folder details…"}
+                  </p>
+                )}
+                contents={(
+                  <>
+                    <DirectoryContents
+                      location={location}
+                      page={state.childrenPage}
+                      selection={selected}
+                      loading={state.childrenLoading}
+                      error={state.childrenError}
+                      onSelect={(node) => {
+                        state.selectNode(node);
+                        if (node.kind === "file") setInspectorView("details");
+                      }}
+                      onPrevious={state.loadPreviousChildren}
+                      onNext={state.loadNextChildren}
+                      onRetry={state.retryChildren}
                     />
-                  )}
-                </StorageDetails>
-              ) : (
-                <p className="atlas-inspector-status" role="status">{state.treeError ? "Folder details are unavailable." : "Loading folder details…"}</p>
-              )}
-              <DirectoryContents
-                location={location}
-                page={state.childrenPage}
-                selection={selected}
-                loading={state.childrenLoading}
-                error={state.childrenError}
-                onSelect={state.selectNode}
-                onPrevious={state.loadPreviousChildren}
-                onNext={state.loadNextChildren}
-                onRetry={state.retryChildren}
+                    {!location && (
+                      <p className="atlas-inspector-status" role="status">
+                        {state.treeError ? "Folder contents are unavailable." : "Loading folder contents…"}
+                      </p>
+                    )}
+                  </>
+                )}
               />
-            </aside>
-          )}
+            )}
+          </section>
         </div>
       </main>
-
 
       {state.notice && !sourcesOpen && !state.reviewOpen && (
         <div className="atlas-alert" role="status">

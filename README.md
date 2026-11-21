@@ -27,12 +27,13 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose an arc or an entry in the right inspector’s **Contents** list to open
-a folder or inspect a file.
-The arc length shows storage used, and each ring goes one level deeper. Select
-**Space health** to see duplication or **Coverage** to compare against another
-source. The details area opens similar folders or exact copies and lets you
-stage verified duplicates. **Review** runs a cleanup preview for staged copies.
+Choose an arc to open a folder or select a file. Open **Contents** above the
+map to browse the current folder and **Details** to inspect a selection or
+open analysis actions. The arc length shows storage used, and each ring goes
+one level deeper. Select **Space health** to see duplication or **Coverage**
+to compare against another source. The details area opens similar folders or
+exact copies and lets you stage verified duplicates. **Review** runs a cleanup
+preview for staged copies.
 
 ### Interactive mock dashboard
 

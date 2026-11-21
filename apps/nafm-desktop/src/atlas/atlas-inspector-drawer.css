@@ -1,0 +1,87 @@
+.atlas-inspector.atlas-inspector-drawer {
+  position: absolute;
+  z-index: 3;
+  inset: 10px 10px auto auto;
+  display: grid;
+  width: min(350px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
+  grid-row: 2 / 3;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-color: #41445d;
+  box-shadow: 0 12px 32px #08091380;
+}
+
+.atlas-inspector-bar {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  padding-inline: var(--atlas-inspector-padding, 14px) 8px;
+  border-bottom: 1px solid var(--atlas-border);
+}
+
+.atlas-inspector-tabs {
+  display: flex;
+  min-width: 0;
+  gap: 15px;
+}
+
+.atlas-inspector-tabs button {
+  min-height: 42px;
+  padding: 0 3px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--atlas-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.atlas-inspector-tabs button:hover { color: var(--atlas-ink); }
+.atlas-inspector-tabs button[aria-selected="true"] {
+  border-color: var(--atlas-accent);
+  color: var(--atlas-ink);
+}
+
+.atlas-inspector-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  align-self: center;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-muted);
+}
+
+.atlas-inspector-close:hover { border-color: var(--atlas-border); color: var(--atlas-ink); }
+.atlas-inspector-close svg { width: 15px; height: 15px; }
+
+.atlas-inspector-tabs button:focus-visible,
+.atlas-inspector-close:focus-visible,
+.atlas-inspector-pane:focus-visible { outline-offset: -3px; }
+
+.atlas-inspector-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+}
+
+.atlas-inspector-pane[hidden] { display: none; }
+.atlas-inspector-pane > .atlas-directory { border-top: 0; }
+
+@media (max-width: 760px) {
+  .atlas-inspector.atlas-inspector-drawer {
+    position: fixed;
+    inset: auto 8px max(8px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: min(72vh, 520px);
+    max-height: min(72dvh, 520px);
+  }
+}

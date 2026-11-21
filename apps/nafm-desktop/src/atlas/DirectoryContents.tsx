@@ -61,7 +61,7 @@ export function DirectoryContents({
   return (
     <section className="atlas-directory" aria-labelledby={labelId}>
       <header className="atlas-directory-header">
-        <h2 id={labelId} ref={headingRef} tabIndex={-1}>Contents</h2>
+        <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
         <div className="atlas-directory-pages" role="group" aria-label="Directory pages">
           {total > 0 && (
             <span className="atlas-directory-range" aria-live="polite">

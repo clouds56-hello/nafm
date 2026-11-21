@@ -22,10 +22,15 @@
 }
 
 .atlas-directory-header h2 {
+  min-width: 0;
+  flex: 1 1 112px;
+  overflow: hidden;
   margin: 0;
   font-size: 14px;
   font-weight: 620;
   line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .atlas-directory-pages { gap: 4px; }
