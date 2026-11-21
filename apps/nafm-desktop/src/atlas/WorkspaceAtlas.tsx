@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
@@ -24,8 +24,6 @@ export function WorkspaceAtlas({
 }: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
   const [inspectorView, setInspectorView] = useState<InspectorView | null>(null);
-  const inspectorId = useId();
-  const inspectorTrigger = useRef<HTMLButtonElement | null>(null);
   const sourcesOpen = sourcesView !== null;
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null);
@@ -44,16 +42,7 @@ export function WorkspaceAtlas({
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
-  const closeInspector = useCallback(() => {
-    setInspectorView(null);
-    inspectorTrigger.current?.focus({ preventScroll: true });
-  }, []);
-
-  function toggleInspector(view: InspectorView, trigger: HTMLButtonElement) {
-    inspectorTrigger.current = trigger;
-    if (view === inspectorView) closeInspector();
-    else setInspectorView(view);
-  }
+  const closeInspector = useCallback(() => setInspectorView(null), []);
 
   const { goBack, goForward, goUp, canGoBack, canGoForward, canGoUp } = state;
   useEffect(() => {
@@ -114,11 +103,6 @@ export function WorkspaceAtlas({
           onSwap: () => void state.swapCoverageSites(),
           canScanTarget: Boolean(target && !state.scanBlockedSiteIds.has(target.id)),
           onScanTarget: () => { if (target) void state.scan(target.id); },
-        }}
-        inspector={{
-          id: inspectorId,
-          view: inspectorView,
-          onToggle: toggleInspector,
         }}
         actions={{
           ready: dashboard !== null,
@@ -194,8 +178,8 @@ export function WorkspaceAtlas({
           </footer>
           {site && (
             <AtlasInspector
-              id={inspectorId}
               view={inspectorView}
+              initialView={selected?.kind === "file" ? "details" : "contents"}
               onViewChange={setInspectorView}
               onClose={closeInspector}
               details={location ? (

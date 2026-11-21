@@ -1,3 +1,25 @@
+.atlas-inspector-trigger {
+  position: absolute;
+  z-index: 3;
+  inset: 10px 10px auto auto;
+  display: inline-flex;
+  min-height: 34px;
+  grid-row: 1 / 2;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid #41445d;
+  border-radius: 6px;
+  background: var(--atlas-surface);
+  box-shadow: 0 5px 16px #08091366;
+  color: var(--atlas-ink);
+  font: 550 11px/1.2 var(--atlas-mono);
+}
+
+.atlas-inspector-trigger:hover { border-color: #626891; background: #252742; }
+.atlas-inspector-trigger:focus-visible { outline-offset: 2px; }
+.atlas-inspector-trigger svg { width: 16px; height: 16px; flex: none; color: var(--atlas-accent); }
+
 .atlas-inspector.atlas-inspector-drawer {
   position: absolute;
   z-index: 3;

@@ -81,7 +81,7 @@
   border-inline-start: 1px solid var(--atlas-border);
 }
 
-.atlas-toolbar-history, .atlas-toolbar-controls, .atlas-toolbar-inspector {
+.atlas-toolbar-history, .atlas-toolbar-controls {
   display: flex;
   flex: none;
   align-items: center;
@@ -145,7 +145,6 @@
 .atlas-toolbar-separator { color: #797fa6; }
 
 .atlas-toolbar-controls { gap: 5px; }
-.atlas-toolbar-inspector { padding-inline: 3px; border-inline: 1px solid var(--atlas-border); }
 
 .atlas-toolbar-button {
   display: inline-flex;
@@ -303,7 +302,6 @@
   .atlas-toolbar-navigation { padding-inline-start: 4px; }
   .atlas-toolbar-site-fallback, .atlas-toolbar-breadcrumbs button, .atlas-toolbar-current { max-width: 93px; }
   .atlas-toolbar-controls { gap: 3px; }
-  .atlas-toolbar-inspector { padding-inline: 1px; gap: 2px; }
   .atlas-toolbar-button { min-width: 28px; min-height: 32px; padding-inline: 4px; }
   .atlas-toolbar-disclosure { position: static; }
   .atlas-toolbar-panel { inset-block-start: calc(100% + 5px); inset-inline-end: 8px; }

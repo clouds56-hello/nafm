@@ -27,8 +27,9 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose an arc to open a folder or select a file. In the toolbar, use
-**Contents** to browse the current folder and **Details** to inspect a
+Choose an arc to open a folder or select a file. Use the floating
+**Contents & details** button on the atlas to open the inspector. Choose
+**Contents** to browse the current folder or **Details** to inspect the
 selection. Arc length shows storage used, and each ring goes one level deeper.
 In **Map options**, choose **Space health** to see duplication or **Coverage**
 to compare against another source. Details lets you find similar folders or

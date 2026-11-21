@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { CloseIcon } from "../management/Icons";
 import "./inspector.css";
 import "./atlas-inspector-drawer.css";
@@ -6,8 +6,8 @@ import "./atlas-inspector-drawer.css";
 export type InspectorView = "contents" | "details";
 
 interface AtlasInspectorProps {
-  id: string;
   view: InspectorView | null;
+  initialView: InspectorView;
   onViewChange: (view: InspectorView) => void;
   onClose: () => void;
   contents: ReactNode;
@@ -19,16 +19,40 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-export function AtlasInspector({ id, view, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
+export function AtlasInspector({ view, initialView, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
   const contentsTab = useRef<HTMLButtonElement>(null);
   const detailsTab = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
   const activeTab = view === "contents" ? contentsTab : detailsTab;
 
   useLayoutEffect(() => {
-    if (view) activeTab.current?.focus({ preventScroll: true });
+    if (view) {
+      activeTab.current?.focus({ preventScroll: true });
+    } else if (wasOpen.current) {
+      trigger.current?.focus({ preventScroll: true });
+    }
+    wasOpen.current = view !== null;
   }, [view, activeTab]);
 
-  if (!view) return null;
+  if (!view) {
+    return (
+      <button
+        className="atlas-inspector-trigger"
+        type="button"
+        ref={trigger}
+        aria-expanded={false}
+        onClick={() => onViewChange(initialView)}
+      >
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="10" rx="1.5" />
+          <path d="M7 3v10m2.5-7h2m-2 2h2m-2 2h2" />
+        </svg>
+        Contents &amp; details
+      </button>
+    );
+  }
 
   function handleTabKeys(event: KeyboardEvent<HTMLDivElement>) {
     if (event.altKey || event.ctrlKey || event.metaKey) return;

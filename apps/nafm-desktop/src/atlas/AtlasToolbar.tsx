@@ -3,7 +3,6 @@ import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
 import type { SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, WorkspaceIcon } from "../management/Icons";
-import type { InspectorView } from "./AtlasInspector";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import "./atlas-toolbar.css";
 
@@ -42,11 +41,6 @@ export interface AtlasToolbarProps {
     onSwap: () => void;
     canScanTarget: boolean;
     onScanTarget: () => void;
-  };
-  inspector: {
-    id: string;
-    view: InspectorView | null;
-    onToggle: (view: InspectorView, trigger: HTMLButtonElement) => void;
   };
   actions: {
     ready: boolean;
@@ -232,7 +226,7 @@ function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "acti
   );
 }
 
-export function AtlasToolbar({ workspace, navigation, map, inspector, actions, extension }: AtlasToolbarProps) {
+export function AtlasToolbar({ workspace, navigation, map, actions, extension }: AtlasToolbarProps) {
   const hasTrafficLights = isTauri() && /Mac/.test(navigator.platform);
   return (
     <header className="atlas-toolbar" data-native-inset={hasTrafficLights || undefined} data-tauri-drag-region>
@@ -252,37 +246,7 @@ export function AtlasToolbar({ workspace, navigation, map, inspector, actions, e
       <FolderNavigation navigation={navigation} />
 
       <div className="atlas-toolbar-controls">
-        {navigation.siteName && (
-          <>
-            <MapOptions map={map} />
-            <div className="atlas-toolbar-inspector" role="group" aria-label="Explore selection">
-              <button
-                className="atlas-toolbar-button"
-                type="button"
-                title="Contents"
-                aria-label="Contents"
-                aria-expanded={inspector.view === "contents"}
-                aria-controls={inspector.id}
-                onClick={(event) => inspector.onToggle("contents", event.currentTarget)}
-              >
-                <ToolbarIcon><path d="M7 5h9M7 10h9M7 15h9M4 5h.01M4 10h.01M4 15h.01" /></ToolbarIcon>
-                <span className="atlas-toolbar-label">Contents</span>
-              </button>
-              <button
-                className="atlas-toolbar-button"
-                type="button"
-                title="Details"
-                aria-label="Details"
-                aria-expanded={inspector.view === "details"}
-                aria-controls={inspector.id}
-                onClick={(event) => inspector.onToggle("details", event.currentTarget)}
-              >
-                <ToolbarIcon><circle cx="10" cy="10" r="7" /><path d="M10 9.5v4m0-7h.01" /></ToolbarIcon>
-                <span className="atlas-toolbar-label">Details</span>
-              </button>
-            </div>
-          </>
-        )}
+        {navigation.siteName && <MapOptions map={map} />}
         <WorkspaceActions actions={actions} navigation={navigation} />
         {extension}
       </div>
