@@ -6,6 +6,8 @@ pub type Result<T> = std::result::Result<T, NafmError>;
 
 #[derive(Debug, Error)]
 pub enum NafmError {
+  #[error("Folder similarity exceeded its analysis budget; use a smaller workspace")]
+  FolderSimilarityLimit,
   #[error("workspace not found: {0}")]
   WorkspaceNotFound(String),
   #[error("workspace already exists: {0}")]

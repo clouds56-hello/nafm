@@ -416,3 +416,50 @@ export interface ScanCompletionView {
   hashed_files: number | null;
   reused_files: number | null;
 }
+export interface FolderContentSummary {
+  site_id: string;
+  site_name: string;
+  node_id: string;
+  path: string;
+  file_count: number;
+  verified_file_count: number;
+  pending_hash_count: number;
+  distinct_content_count: number;
+  distinct_bytes: number;
+  extra_copy_count: number;
+  inventory_ready: boolean;
+}
+
+export interface FolderSimilarityMatch {
+  folder: FolderContentSummary;
+  similarity: number;
+  source_coverage: number;
+  target_coverage: number;
+  shared_content_count: number;
+  shared_bytes: number;
+  source_only_count: number;
+  target_only_count: number;
+  source_only_bytes: number;
+  target_only_bytes: number;
+  partial: boolean;
+  identical_content: boolean;
+}
+
+export interface FolderSimilarityPage {
+  source: FolderContentSummary;
+  matches: FolderSimilarityMatch[];
+  total_matches: number;
+  offset: number;
+  limit: number;
+  workspace_pending_hash_count: number;
+  workspace_incomplete_site_count: number;
+  generated_at: string;
+}
+
+export interface FolderSimilarityRequest {
+  workspace_name: string;
+  site_id: string;
+  node_id: string;
+  offset: number;
+  limit: number;
+}

@@ -65,6 +65,31 @@ remain drafts because the current bundles are not notarized for macOS or signed
 for Windows. Configure platform signing before publishing a release to end
 users.
 
+## Folder similarity
+
+Select an indexed folder in the storage explorer and choose **Similar folders**.
+The inspector ranks other indexed folders across the active workspace and shows
+shared content, content unique to each side, and directional coverage.
+
+Comparison uses recursive sets of verified `(hash algorithm, content hash, size)`
+identities. Names and directory structure do not affect the score. Repeated copies
+count once for similarity; their extra-copy counts are shown separately.
+The score is shared distinct bytes divided by union distinct bytes, as a percentage.
+If both sets contain only zero-byte files, distinct-content counts are used instead.
+An empty/unhashed source has no score. “Same content” requires equal sets and
+complete verification, not just a rounded 100% byte score.
+
+Only hashes verified for the published inventory are included. Partial comparisons
+are marked explicitly; pending hashes and incomplete inventories may hide matches
+or change scores. Results are read-only snapshots, not authorization to delete.
+Self, same-site ancestors, and same-site descendants are excluded. Empty directories
+not represented in the file index cannot be discovered by this feature.
+
+Queries run in a background Rust task within one SQLite read transaction, without
+SMB/SSH or source-file reads. Results are paginated (at most 50 per request), with a
+cooperative 10-second analysis budget and a one-million file-to-folder membership limit.
+Exceeding a budget returns an error rather than a silently truncated ranking.
+
 ## SMB credentials
 
 Save credentials for an SMB share with:

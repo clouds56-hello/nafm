@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { FolderSimilarity } from "./FolderSimilarity";
 import {
   fileName,
   formatBytes,
@@ -34,6 +35,9 @@ import {
 } from "./Icons";
 
 interface InspectorPanelProps {
+  workspaceName: string;
+  sourceSiteId: string;
+  contentRevision: number;
   node: StorageNode;
   previewing: boolean;
   metric: HealthMetric;
@@ -150,6 +154,9 @@ function canOpen(node: StorageNode): boolean {
 }
 
 export function InspectorPanel({
+  workspaceName,
+  sourceSiteId,
+  contentRevision,
   node,
   previewing,
   metric,
@@ -191,6 +198,10 @@ export function InspectorPanel({
   onPointerLeave,
 }: InspectorPanelProps) {
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const [similaritySelection, setSimilaritySelection] = useState<string | null>(null);
+  const selectionKey = `${workspaceName}:${sourceSiteId}:${node.id}:${contentRevision}`;
+  const canCompare = !previewing && ["directory", "local_root", "smb_root"].includes(node.kind);
+  const showSimilarity = canCompare && similaritySelection === selectionKey;
   const DetailIcon = node.kind === "file" ? FileIcon : FolderIcon;
   const nodeAnalysisReady = sourceAnalysisReady && node.pending_hash_count === 0;
   const spacePresentation = nodeHealthPresentation(node, "space_health");
@@ -280,6 +291,7 @@ export function InspectorPanel({
       <div className="inspector-facts">
         <span><small>Size</small><strong>{formatBytes(node.total_bytes)}</strong></span>
         <span><small>Files</small><strong>{formatCount(node.file_count)}</strong></span>
+        {canCompare && <button type="button" className="ghost-button similarity-toggle" aria-pressed={showSimilarity} onClick={() => setSimilaritySelection(showSimilarity ? null : selectionKey)}>{showSimilarity ? "Contents" : "Similar folders"}</button>}
         {previewing ? (
           <span className="inspector-readonly">Click or press Enter</span>
         ) : metric === "space_health" ? (
@@ -299,6 +311,10 @@ export function InspectorPanel({
         )}
       </div>
 
+      {showSimilarity ? <FolderSimilarity
+        key={selectionKey}
+        workspaceName={workspaceName} siteId={sourceSiteId} nodeId={node.id}
+      /> : (
       <section className="inspector-contents" aria-labelledby="contents-title">
         {inspectingFile ? (
           <DuplicateList
@@ -338,6 +354,7 @@ export function InspectorPanel({
           />
         )}
       </section>
+      )}
     </aside>
   );
 }

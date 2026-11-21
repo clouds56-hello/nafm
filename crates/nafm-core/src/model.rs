@@ -126,6 +126,49 @@ pub struct StorageLocation {
   pub root: StorageNode,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct FolderContentSummary {
+  pub site_id: String,
+  pub site_name: String,
+  pub node_id: String,
+  pub path: PathBuf,
+  pub file_count: u64,
+  pub verified_file_count: u64,
+  pub pending_hash_count: u64,
+  pub distinct_content_count: u64,
+  pub distinct_bytes: u64,
+  pub extra_copy_count: u64,
+  pub inventory_ready: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FolderSimilarityMatch {
+  pub folder: FolderContentSummary,
+  pub similarity: f64,
+  pub source_coverage: f64,
+  pub target_coverage: f64,
+  pub shared_content_count: u64,
+  pub shared_bytes: u64,
+  pub source_only_count: u64,
+  pub target_only_count: u64,
+  pub source_only_bytes: u64,
+  pub target_only_bytes: u64,
+  pub partial: bool,
+  pub identical_content: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FolderSimilarityPage {
+  pub source: FolderContentSummary,
+  pub matches: Vec<FolderSimilarityMatch>,
+  pub total_matches: u64,
+  pub offset: u64,
+  pub limit: u64,
+  pub workspace_pending_hash_count: u64,
+  pub workspace_incomplete_site_count: u64,
+  pub generated_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageChildrenPage {
   pub site: Site,

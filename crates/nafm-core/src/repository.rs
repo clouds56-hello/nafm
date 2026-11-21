@@ -27,6 +27,8 @@ use crate::remote::{
   execute_remote_agent_cancellable, execute_remote_agent_with_handler,
 };
 
+mod folder_similarity;
+
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
 type ScanCancellationCallback = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -1652,6 +1654,25 @@ impl Repository {
       let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       file_content_matches_page(&conn, &site.id, &path, offset, limit)
+    })
+    .await?
+  }
+
+  pub async fn folder_similarity(
+    &self,
+    site_id: &str,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+  ) -> Result<crate::FolderSimilarityPage> {
+    let db_path = self.db_path.clone();
+    let site_id = site_id.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || {
+        folder_similarity::search(&conn, &site_id, &node_id, offset, limit)
+      })
     })
     .await?
   }
