@@ -10,7 +10,7 @@ type SampleRoot = { name: string; path: string; entries: readonly SampleEntry[] 
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
-const INVENTORY_DATE = "2025-11-04T10:15:00.000Z";
+export const INVENTORY_DATE = "2025-11-04T10:15:00.000Z";
 
 const months = [
   "January", "February", "March", "April", "May", "June",
@@ -35,6 +35,7 @@ const projects: readonly SampleEntry[] = [
   ["Typography study", [["Type specimens.pdf", 270 * MiB], ["Notes.txt", 18 * 1024]]],
   ["Encoding tests", [["Test patterns.mov", 4 * GiB], ["Unrendered.txt", 0]]],
   ["Design references", [["Reference scans.zip", 3 * GiB]]],
+  ["Backup campaign", [["Trailer master.mov", 92 * GiB], ["Campaign assembly.mov", 19 * GiB]]],
   ...months.map<SampleEntry>((month, index) => [
     `2024 ${month}`,
     [["Contact sheet.pdf", (16 + index * 7) * MiB], ["Production notes.txt", (8 + index) * 1024]],
@@ -75,6 +76,7 @@ const teamFiles: readonly SampleEntry[] = [
   ["Incoming", [["Dailies.mov", 21 * GiB], ["Camera reports.pdf", 17 * MiB]]],
   ["Handoff", [["Screening copy.mov", 15 * GiB], ["Artwork.zip", 2 * GiB]]],
   ["Shared references", [["Design library.zip", 870 * MiB], ["Brief.pdf", 34 * MiB]]],
+  ["Campaign mirror", [["Trailer master.mov", 92 * GiB], ["Camera originals.mxf", 67 * GiB]]],
 ];
 
 function joinPath(directory: string, name: string) {
@@ -86,7 +88,7 @@ function leafName(path: string, fallback: string) {
   return path.replace(/[/\\]+$/, "").split(/[/\\]/).at(-1) || fallback;
 }
 
-function folder(
+export function buildFolder(
   id: string,
   name: string,
   path: string | null,
@@ -98,43 +100,58 @@ function folder(
     file_count: sum.file_count + child.file_count,
     verified_file_count: sum.verified_file_count + child.verified_file_count,
     pending_hash_count: sum.pending_hash_count + child.pending_hash_count,
-  }), { total_bytes: 0, file_count: 0, verified_file_count: 0, pending_hash_count: 0 });
+    verified_bytes: sum.verified_bytes + child.verified_bytes,
+  }), { total_bytes: 0, file_count: 0, verified_file_count: 0, pending_hash_count: 0, verified_bytes: 0 });
 
   children.sort((a, b) => b.total_bytes - a.total_bytes || a.name.localeCompare(b.name));
-  return { id, name, path, kind, ...totals, children };
+  return populateMetrics({ id, name, path, kind, ...totals, children });
 }
 
-function buildTree(site: SampleSite, roots: readonly SampleRoot[], partial = false): StorageNode {
+function populateMetrics(node: Omit<StorageNode,
+  "duplicate_bytes" | "duplicate_file_count" | "space_health" | "coverage_health" |
+  "estimated_space_health" | "estimated_coverage_health" | "space_healthy_file_equivalents" |
+  "space_total_files" | "coverage_covered_files" | "coverage_total_files"
+>): StorageNode {
+  return {
+    ...node,
+    duplicate_bytes: 0, duplicate_file_count: 0, space_health: null, coverage_health: null,
+    estimated_space_health: null, estimated_coverage_health: null, space_healthy_file_equivalents: 0,
+    space_total_files: node.file_count, coverage_covered_files: 0, coverage_total_files: 0,
+  };
+}
+
+function buildTree(site: SampleSite, roots: readonly SampleRoot[], partial = false, rootId?: string): StorageNode {
   let nextFile = 0;
 
   function buildEntry(directoryId: string, directoryPath: string, [name, contents]: SampleEntry): StorageNode {
     const id = `${directoryId}/${name}`;
     const path = joinPath(directoryPath, name);
     if (typeof contents !== "number") {
-      return folder(id, name, path, "directory", contents.map((entry) => buildEntry(id, path, entry)));
+      return buildFolder(id, name, path, "directory", contents.map((entry) => buildEntry(id, path, entry)));
     }
 
     const pending = partial && nextFile++ % 4 === 0;
-    return {
+    return populateMetrics({
       id, name, path, kind: "file", total_bytes: contents, file_count: 1,
-      verified_file_count: pending ? 0 : 1, pending_hash_count: pending ? 1 : 0, children: [],
-    };
+      verified_file_count: pending ? 0 : 1, pending_hash_count: pending ? 1 : 0,
+      verified_bytes: pending ? 0 : contents, children: [],
+    });
   }
 
   const kind = site.kind === "local" ? "local_root" : "smb_root";
   const children = roots.map(({ name, path, entries }, index) => {
-    const id = `site_folder:${site.id}:${index}`;
-    return folder(id, name, path, kind, entries.map((entry) => buildEntry(id, path, entry)));
+    const id = rootId ?? `site_folder:${site.id}:${index}`;
+    return buildFolder(id, name, path, kind, entries.map((entry) => buildEntry(id, path, entry)));
   });
-  return folder(`site:${site.id}`, site.name, null, "site", children);
+  return buildFolder(`site:${site.id}`, site.name, null, "site", children);
 }
 
-export function createSampleTree(site: SampleSite): StorageNode {
+export function createSampleTree(site: SampleSite, rootId?: string): StorageNode {
   return buildTree(site, [{
     name: leafName(site.location, site.name),
     path: site.location,
     entries: site.kind === "local" ? fieldNotes : teamFiles,
-  }]);
+  }], false, rootId);
 }
 
 export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview[]; trees: Map<string, StorageNode> } {
@@ -179,6 +196,11 @@ export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview
       last_scanned_at: partial ? null : INVENTORY_DATE,
       total_files: tree.file_count,
       total_bytes: tree.total_bytes,
+      verified_file_count: tree.verified_file_count,
+      verified_bytes: tree.verified_bytes,
+      pending_hash_count: tree.pending_hash_count,
+      duplicate_files: 0,
+      duplicate_bytes: 0,
     };
   });
 

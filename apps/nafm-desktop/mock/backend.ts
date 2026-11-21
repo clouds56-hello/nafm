@@ -1,145 +1,31 @@
 import type { InvokeArgs, InvokeOptions } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { Dashboard, ScanPhase, ScanTaskEvent, SiteOverview, StorageNode, StorageViewSnapshot } from "../src/lib/types";
-import { createFixtures, createSampleTree, PREVIEW_WORKSPACE, type PreviewScenario } from "./fixtures";
+import type {
+  CancelScanReport, Dashboard, ScanPhase, ScanSelector, ScanSummary, ScanTask, ScanTaskEvent, ScanTaskSiteState,
+  SiteOverview, StorageNode,
+} from "../src/lib/types";
+import { buildFolder, createSampleTree, INVENTORY_DATE, type PreviewScenario } from "./fixtures";
+import { createManagementApi } from "./management";
+import { createStorageApi } from "./storage";
+import { checkWorkspace, getSite, getTree, numberArg, record, setTree, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
 
 const SCAN_EVENT = "task://scan/events";
 const SCAN_STEPS: ReadonlyArray<readonly [ScanPhase, number]> = [
-  ["discovering", 0],
-  ["discovering", 0.35],
-  ["publishing_metadata", 1],
-  ["hashing", 0.2],
-  ["hashing", 0.75],
-  ["finalizing", 1],
+  ["discovering", 0], ["discovering", 0.35], ["publishing_metadata", 1],
+  ["hashing", 0.25], ["hashing", 0.65], ["finalizing", 1],
 ];
 
+interface PreviewInventory {
+  site: SiteOverview;
+  tree: StorageNode;
+}
+
 interface PreviewScan {
-  request_id: number;
-  site_id: string;
-  phase: ScanPhase;
-  status: "running" | "cancelling";
+  task: ScanTask;
+  inventories: Map<string, PreviewInventory>;
   step: number;
   timer: number | undefined;
-  inventory: StorageNode;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-    throw new Error("Invalid preview command arguments.");
-  }
-  return value as Record<string, unknown>;
-}
-
-function stringArg(value: unknown, label: string) {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing ${label}.`);
-  return value.trim();
-}
-
-function numberArg(value: unknown, label: string) {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`Invalid ${label}.`);
-  }
-  return value;
-}
-
-function checkWorkspace(value: unknown) {
-  if (value !== PREVIEW_WORKSPACE) throw new Error("The preview workspace changed. Reload and try again.");
-}
-
-function smbPath(value: string) {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Invalid SMB URL. Use smb://server/share.");
-  }
-  if (url.protocol !== "smb:" || !url.hostname || !url.pathname.split("/").some(Boolean)) {
-    throw new Error("Invalid SMB URL. Use smb://server/share.");
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("SMB URLs cannot include credentials, a query, or a fragment.");
-  }
-  url.hostname = url.hostname.toLowerCase();
-  return url.href.replace(/\/+$/, "");
-}
-
-function compareText(left: string, right: string) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function orderedChildren(node: StorageNode) {
-  return [...node.children].sort((left, right) => (
-    right.total_bytes - left.total_bytes || compareText(left.name, right.name) || compareText(left.id, right.id)
-  ));
-}
-
-function findPath(node: StorageNode, id: string): StorageNode[] | undefined {
-  if (node.id === id) return [node];
-  for (const child of node.children) {
-    const path = findPath(child, id);
-    if (path) return [node, ...path];
-  }
-}
-
-function summary(node: StorageNode): StorageNode {
-  return { ...node, children: [] };
-}
-
-function boundedNode(node: StorageNode, depth: number, limit: number): StorageNode {
-  if (depth === 0 || limit === 0) return summary(node);
-  const children = orderedChildren(node);
-  if (children.length <= limit) {
-    return { ...node, children: children.map((child) => boundedNode(child, depth - 1, limit)) };
-  }
-
-  const kept = limit - 1;
-  const remaining = children.slice(kept);
-  const group: StorageNode = {
-    id: `smaller_items:${kept}:${node.id}`,
-    name: "Smaller items",
-    path: null,
-    kind: "smaller_items",
-    total_bytes: remaining.reduce((total, child) => total + child.total_bytes, 0),
-    file_count: remaining.reduce((total, child) => total + child.file_count, 0),
-    verified_file_count: remaining.reduce((total, child) => total + child.verified_file_count, 0),
-    pending_hash_count: remaining.reduce((total, child) => total + child.pending_hash_count, 0),
-    children: [],
-  };
-  return {
-    ...node,
-    children: [...children.slice(0, kept).map((child) => boundedNode(child, depth - 1, limit)), group],
-  };
-}
-
-function emptyTree(tree: StorageNode): StorageNode {
-  const empty = (node: StorageNode): StorageNode => ({
-    ...summary(node),
-    total_bytes: 0,
-    file_count: 0,
-    verified_file_count: 0,
-    pending_hash_count: 0,
-  });
-  return { ...empty(tree), children: tree.children.map(empty) };
-}
-
-function verifiedTree(node: StorageNode): StorageNode {
-  if (node.pending_hash_count === 0) return node;
-  return {
-    ...node,
-    verified_file_count: node.file_count,
-    pending_hash_count: 0,
-    children: node.children.map(verifiedTree),
-  };
-}
-
-function scanTask(scan: PreviewScan) {
-  return {
-    request_id: scan.request_id,
-    selector: { site_id: scan.site_id, all: false },
-    site_states: [{ site_id: scan.site_id, status: "running" as const }],
-    status: scan.status,
-  };
 }
 
 function registerPreviewIpc(handler: Parameters<typeof mockIPC>[0]) {
@@ -159,192 +45,214 @@ function registerPreviewIpc(handler: Parameters<typeof mockIPC>[0]) {
   };
 }
 
+function verifiedInventory(root: StorageNode, count: number): StorageNode {
+  let remaining = count;
+
+  function visit(node: StorageNode): StorageNode {
+    if (node.kind === "file") {
+      const verified = remaining-- > 0;
+      return {
+        ...node, verified_file_count: verified ? 1 : 0, pending_hash_count: verified ? 0 : 1,
+        verified_bytes: verified ? node.total_bytes : 0,
+      };
+    }
+    return buildFolder(node.id, node.name, node.path, node.kind, node.children.map(visit));
+  }
+
+  return visit(root);
+}
+
+function usedInventory(workspace: PreviewWorkspace, site: SiteOverview) {
+  const root = getTree(workspace, site.id);
+  const roots = root.children.map((child) => {
+    if (child.file_count > 0 || !child.path || workspace.folders.get(child.id)?.added_at === INVENTORY_DATE) return child;
+    return createSampleTree({
+      ...site, location: child.path, kind: child.kind === "smb_root" ? "smb" : "local",
+    }, child.id).children[0];
+  });
+  return buildFolder(root.id, root.name, root.path, root.kind, roots);
+}
+
+function notify(
+  task: ScanTask,
+  kind: ScanTaskEvent["kind"],
+  state: ScanTaskSiteState | null = null,
+  summary: ScanSummary | null = null,
+) {
+  void emit<ScanTaskEvent>(SCAN_EVENT, {
+    request_id: task.request_id, scope: state ? "site" : "task", site_id: state?.site_id ?? null, kind,
+    phase: state?.phase ?? null, processed_files: state?.processed_files ?? null,
+    total_files: state?.total_files ?? null, hashed_files: state?.hashed_files ?? null,
+    reused_files: state?.reused_files ?? null, hashes_pending: state?.hashes_pending ?? null,
+    current_path: state?.current_path ?? null, site_states: state ? null : task.site_states,
+    summary, message: null,
+  });
+}
+
 export function installPreviewBackend(scenario: PreviewScenario) {
-  const { sites: seedSites, trees } = createFixtures(scenario);
-  const sites = new Map(seedSites.map((site) => [site.id, site]));
-  const knownShares = new Set(seedSites.filter((site) => site.kind === "smb").map((site) => smbPath(site.location)));
   const scans = new Map<number, PreviewScan>();
   let nextRequest = 1;
-  let nextSource = 1;
+  const management = createManagementApi(scenario, () => scans.size > 0);
+  const storage = createStorageApi(management.current);
 
-  function getSite(id: string) {
-    const site = sites.get(id);
-    if (!site) throw new Error(`Site not found: ${id}`);
-    return site;
-  }
+  function startScan(selector: ScanSelector, stepTime = 900): ScanTask {
+    const workspace = management.current();
+    const sites = selector.all ? [...workspace.sites.values()] : [getSite(workspace, selector.site_id!)];
+    if (!sites.length) throw new Error("Add a source before scanning.");
+    const activeIds = new Set([...scans.values()].flatMap((scan) => [...scan.inventories.keys()]));
+    if (sites.some((site) => activeIds.has(site.id))) throw new Error("A scan is already running for this selection.");
 
-  function notify(
-    scan: PreviewScan,
-    scope: ScanTaskEvent["scope"],
-    kind: ScanTaskEvent["kind"],
-  ) {
-    const siteEvent = scope === "site";
-    const totalFiles = scan.inventory.file_count;
-    void emit<ScanTaskEvent>(SCAN_EVENT, {
-      request_id: scan.request_id,
-      scope,
-      site_id: siteEvent ? scan.site_id : null,
-      kind,
-      phase: siteEvent ? scan.phase : null,
-      processed_files: siteEvent ? Math.round(totalFiles * SCAN_STEPS[scan.step][1]) : null,
-      total_files: siteEvent ? totalFiles : null,
-      message: null,
-    });
-  }
-
-  function startScan(site: SiteOverview, stepTime = 900) {
-    if ([...scans.values()].some((scan) => scan.site_id === site.id)) {
-      throw new Error("A scan is already running for this source.");
-    }
-    const inventory = trees.get(site.id);
+    const inventories = new Map(sites.map((site) => [site.id, { site, tree: usedInventory(workspace, site) }]));
     const scan: PreviewScan = {
-      request_id: nextRequest++,
-      site_id: site.id,
-      phase: SCAN_STEPS[0][0],
-      status: "running",
-      step: 0,
-      timer: undefined,
-      inventory: inventory?.file_count ? verifiedTree(inventory) : createSampleTree(site),
+      inventories, step: 0, timer: undefined,
+      task: {
+        request_id: nextRequest++, selector, status: "running", created_at: new Date().toISOString(),
+        site_states: sites.map((site) => ({
+          site_id: site.id, status: "running", phase: "discovering", processed_files: 0, total_files: null,
+          hashed_files: 0, reused_files: site.verified_file_count, hashes_pending: site.pending_hash_count,
+          current_path: null,
+        })),
+      },
     };
-    scans.set(scan.request_id, scan);
-    notify(scan, "site", "started");
+    scans.set(scan.task.request_id, scan);
+    scan.task.site_states.forEach((state) => notify(scan.task, "started", state));
     scan.timer = window.setInterval(() => {
-      scan.step += 1;
-      const nextStep = SCAN_STEPS[scan.step];
-      if (nextStep) {
-        scan.phase = nextStep[0];
-        notify(scan, "site", "progress");
+      const step = SCAN_STEPS[++scan.step];
+      if (step) {
+        const [phase, progress] = step;
+        scan.task.site_states = scan.task.site_states.map((state) => {
+          const { site, tree } = scan.inventories.get(state.site_id)!;
+          const known = phase === "hashing" || phase === "finalizing";
+          const total = tree.file_count;
+          const reused = Math.min(total, site.verified_file_count);
+          const hashed = known ? Math.round((total - reused) * progress) : 0;
+          const pending = total - reused - hashed;
+          if (known) {
+            setTree(workspace, {
+              ...site, hash_status: pending > 0 ? "pending" : "ready",
+              latest_inventory_at: new Date().toISOString(),
+            }, verifiedInventory(tree, reused + hashed).children);
+          }
+          return {
+            ...state, phase, processed_files: known ? reused + hashed : Math.round(total * progress),
+            total_files: total, hashed_files: hashed, reused_files: reused, hashes_pending: pending,
+            current_path: phase === "finalizing" ? null : tree.children[0]?.path ?? null,
+          };
+        });
+        scan.task.site_states.forEach((state) => notify(scan.task, "progress", state));
         return;
       }
+
       window.clearInterval(scan.timer);
-      scans.delete(scan.request_id);
-      trees.set(site.id, scan.inventory);
-      const now = new Date().toISOString();
-      sites.set(site.id, {
-        ...site,
-        hash_status: "ready",
-        scan_state: "done",
-        latest_inventory_at: now,
-        last_scanned_at: now,
-        total_files: scan.inventory.file_count,
-        total_bytes: scan.inventory.total_bytes,
-      });
-      notify(scan, "task", "completed");
+      scans.delete(scan.task.request_id);
+      scan.task.status = "completed";
+      scan.task.site_states = scan.task.site_states.map((state) => ({ ...state, status: "completed", current_path: null }));
+      for (const state of scan.task.site_states) {
+        const { site, tree } = scan.inventories.get(state.site_id)!;
+        const now = new Date().toISOString();
+        setTree(workspace, {
+          ...site, scan_state: "done", hash_status: "ready", latest_inventory_at: now, last_scanned_at: now,
+        }, verifiedInventory(tree, tree.file_count).children);
+        const updated = storage.siteInventory(getSite(workspace, site.id));
+        const summary: ScanSummary = {
+          site_id: site.id, site_name: site.name, files_seen: tree.file_count,
+          files_hashed: state.hashed_files, files_reused: state.reused_files, files_pending: 0, files_removed: 0,
+          bytes_hashed: updated.verified_bytes, duplicate_files: updated.duplicate_files,
+          duplicate_groups: storage.cleanup().duplicate_group_count_before,
+        };
+        notify(scan.task, "completed", state, summary);
+      }
+      notify(scan.task, "completed");
     }, stepTime);
-    return scanTask(scan);
+    return { ...scan.task };
   }
 
-  function cancelScan(id: number) {
+  function cancelScan(id: number): CancelScanReport {
     const scan = scans.get(id);
     if (!scan) return { request_id: id, outcome: "not_found", status: null, effective_mode: null };
-    const result = { request_id: id, status: "cancelling", effective_mode: "graceful" };
-    if (scan.status === "cancelling") return { ...result, outcome: "already_requested" };
-    scan.status = "cancelling";
+    if (scan.task.status === "cancelling") {
+      return { request_id: id, outcome: "already_requested", status: "cancelling", effective_mode: "graceful" };
+    }
+    scan.task.status = "cancelling";
     window.clearInterval(scan.timer);
-    notify(scan, "task", "cancelling");
+    notify(scan.task, "cancelling");
     window.setTimeout(() => {
       scans.delete(id);
-      notify(scan, "task", "cancelled");
+      scan.task.status = "cancelled";
+      for (const state of scan.task.site_states) notify(scan.task, "cancelled", state);
+      notify(scan.task, "cancelled");
     }, 350);
-    return { ...result, outcome: "requested" };
+    return { request_id: id, outcome: "requested", status: "cancelling", effective_mode: "graceful" };
   }
 
   function loadDashboard(): Dashboard {
-    const active = [...scans.values()];
+    const workspace = management.current();
+    const active = [...scans.values()].map(({ task }) => task);
+    const cleanup = storage.cleanup();
     return {
-      workspace_name: PREVIEW_WORKSPACE,
-      sites: [...sites.values()].map((site) => {
-        const scan = active.find((task) => task.site_id === site.id);
-        if (!scan) return site;
-        return { ...site, scan_state: scan.status === "cancelling" ? scan.status : scan.phase };
+      workspace_name: workspace.name, workspace_path: management.load().active_workspace.path,
+      sites: [...workspace.sites.values()].map((site) => {
+        const current = storage.siteInventory(site);
+        const task = active.find((scan) => scan.site_states.some((state) => state.site_id === site.id));
+        const phase = task?.site_states.find((state) => state.site_id === site.id)?.phase;
+        return {
+          ...current,
+          scan_state: task?.status === "cancelling" ? "cancelling" : phase ?? current.scan_state,
+        };
       }),
-      active_tasks: active.map(scanTask),
+      active_tasks: active.map((task) => ({ ...task })), staged: cleanup.staged_files,
+      staged_hashes_pending: cleanup.hashes_pending, staged_cleanup_ready: cleanup.cleanup_ready,
+      staged_warnings: cleanup.warnings, last_updated_at: new Date().toISOString(),
     };
   }
 
-  function getSnapshot(args: Record<string, unknown>): StorageViewSnapshot {
-    checkWorkspace(args.expectedWorkspace);
-    const site = getSite(stringArg(args.siteId, "source ID"));
-    const nodeId = stringArg(args.nodeId, "storage node");
-    const root = trees.get(site.id);
-    const breadcrumbs = root && findPath(root, nodeId);
-    const selected = breadcrumbs?.at(-1);
-    if (!breadcrumbs || !selected) throw new Error(`storage node not found: ${nodeId}`);
-    if (selected.kind === "file" || selected.kind === "smaller_items") {
-      throw new Error(`storage node is not navigable: ${nodeId}`);
-    }
-    const depth = numberArg(args.maxDepth, "map depth");
-    const width = numberArg(args.maxChildren, "map branch limit");
-    const pageLimit = Math.min(200, Math.max(1, numberArg(args.limit, "page limit")));
-    const requestedOffset = numberArg(args.offset, "page offset");
-    const children = orderedChildren(selected);
-    const lastPage = Math.max(0, Math.floor((children.length - 1) / pageLimit) * pageLimit);
-    const offset = requestedOffset >= children.length ? lastPage : requestedOffset;
-    return {
-      location: { root: boundedNode(selected, depth, width), breadcrumbs: breadcrumbs.map(summary) },
-      page: {
-        children: children.slice(offset, offset + pageLimit).map(summary),
-        total_children: children.length,
-        offset,
-      },
-    };
-  }
+  const handlers: Record<string, (args: CommandArgs) => unknown> = {
+    "plugin:dialog|open": () => "/demo/Sample Folder",
+    load_dashboard: loadDashboard,
+    load_management: management.load,
+    create_workspace: management.createWorkspace,
+    switch_workspace: management.switchWorkspace,
+    create_site: management.createSite,
+    rename_site: management.renameSite,
+    remove_site: management.removeSite,
+    add_site_folder: management.addFolder,
+    remove_site_folder: management.removeFolder,
+    connect_smb: management.connectSmb,
+    match_smb_connection: management.matchSmb,
+    add_remote_machine: management.addMachine,
+    remove_remote_machine: management.removeMachine,
+    probe_remote_machine: management.probeMachine,
+    preflight_remote_machine: (args) => management.preflight(record(args.request)),
+    install_remote_agent: (args) => management.install(record(args.request)),
+    preview_remote_path_mapping: (args) => management.previewMapping(record(args.request)),
+    complete_remote_path: (args) => management.completePath(record(args.request)),
+    add_remote_path_mapping: management.addMapping,
+    remove_remote_path_mapping: management.removeMapping,
+    ssh_prompts: management.listPrompts,
+    ssh_prompt_reply: (args) => management.replyPrompt(record(args.request)),
+    get_storage_tree: storage.tree,
+    get_storage_location: storage.location,
+    get_storage_children: storage.children,
+    get_storage_view_snapshot: storage.snapshot,
+    get_storage_file_reveal: storage.reveal,
+    get_file_content_matches: storage.fileContentMatches,
+    find_similar_folders: (args) => storage.similarFolders(record(args.request)),
+    stage_path: storage.stage,
+    unstage_path: storage.unstage,
+    preview_cleanup: storage.cleanup,
+    start_scan(args) {
+      checkWorkspace(management.current(), args.expectedWorkspace);
+      const selector = record(args.selector);
+      return startScan(selector.all === true ? { all: true } : { site_id: stringArg(selector.site_id, "source ID") });
+    },
+    cancel_scan: (args) => cancelScan(numberArg(args.requestId, "scan ID")),
+  };
 
-  function addSource(args: Record<string, unknown>) {
-    checkWorkspace(args.workspaceName);
-    if (scans.size > 0) throw new Error("Finish all active scans before adding a source.");
-    const name = stringArg(args.name, "source name");
-    const path = stringArg(args.folderPath, "folder path");
-    if ([...sites.values()].some((site) => site.name === name)) throw new Error(`site already exists: ${name}`);
-    const kind = /^smb:\/\//i.test(path) ? "smb" : "local";
-    const location = kind === "smb" ? smbPath(path) : path;
-    if (kind === "smb" && ![...knownShares].some((url) => url === location || location.startsWith(`${url}/`))) {
-      throw new Error(`no saved credentials for SMB location: ${location}`);
-    }
-    const site: SiteOverview = {
-      id: `sample-source-${nextSource++}`,
-      name,
-      location,
-      kind,
-      connection_state: "connected",
-      scan_state: "idle",
-      hash_status: "unscanned",
-      latest_inventory_at: null,
-      last_scanned_at: null,
-      total_files: 0,
-      total_bytes: 0,
-    };
-    trees.set(site.id, emptyTree(createSampleTree(site)));
-    sites.set(site.id, site);
-    return null;
-  }
+  registerPreviewIpc((command, payload) => {
+    if (!Object.hasOwn(handlers, command)) throw new Error(`Unsupported preview command: ${command}`);
+    return handlers[command](payload === undefined ? {} : record(payload));
+  });
 
-  function invoke(command: string, payload?: InvokeArgs) {
-    if (command === "load_dashboard") return loadDashboard();
-    if (command === "plugin:dialog|open") return "/demo/Sample Folder";
-
-    const args = payload === undefined ? {} : record(payload);
-    switch (command) {
-      case "get_storage_view_snapshot":
-        return getSnapshot(args);
-      case "create_site":
-        return addSource(args);
-      case "connect_smb":
-        stringArg(args.username, "SMB username");
-        stringArg(args.password, "SMB password");
-        knownShares.add(smbPath(stringArg(args.url, "SMB URL")));
-        return null;
-      case "start_scan":
-        checkWorkspace(args.expectedWorkspace);
-        return startScan(getSite(stringArg(record(args.selector).site_id, "source ID")));
-      case "cancel_scan":
-        return cancelScan(numberArg(args.requestId, "scan ID"));
-      default:
-        throw new Error(`Unsupported preview command: ${command}`);
-    }
-  }
-
-  registerPreviewIpc(invoke);
-  const first = seedSites[0];
-  if (scenario === "scanning" && first) startScan(first, 5000);
+  const first = management.current().sites.values().next().value;
+  if (scenario === "scanning" && first) startScan({ site_id: first.id }, 5000);
 }

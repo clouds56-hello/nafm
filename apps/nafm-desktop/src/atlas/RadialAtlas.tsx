@@ -1,11 +1,14 @@
 import { useId, useMemo, useState, type KeyboardEvent } from "react";
-import { fileName, formatBytes, formatCount } from "../lib/format";
-import type { StorageNode } from "../lib/types";
+import { fileName, formatBytes, formatCount, formatHealth } from "../lib/format";
+import { formatCompleteness, healthAriaDescription, nodeHealthPresentation } from "../lib/health";
+import type { HealthMetric, StorageNode } from "../lib/types";
 import "./radial.css";
 
 interface RadialAtlasProps {
   root: StorageNode;
   selectedId: string | null;
+  metric: HealthMetric | null;
+  targetCompleteness: number;
   onSelect: (node: StorageNode) => void;
 }
 
@@ -129,39 +132,68 @@ export function RadialAtlas(props: RadialAtlasProps) {
   return <RadialPlot key={props.root.id} {...props} />;
 }
 
-function RadialPlot({ root, selectedId, onSelect }: RadialAtlasProps) {
+function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: RadialAtlasProps) {
   const descriptionId = useId();
   const gradientId = useId();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [tabStop, setTabStop] = useState<string | null>(null);
   const sectors = useMemo(
     () => branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2),
     [root],
   );
   const highlight = sectors.find((sector) => sector.node.id === (hoveredId ?? focusedId))
     ?? sectors.find((sector) => sector.node.id === selectedId);
+  const tabStopId = sectors.find((sector) => sector.node.id === (tabStop ?? selectedId))?.node.id
+    ?? sectors[0]?.node.id;
   const shownNode = highlight?.node ?? root;
+  const metricLabel = metric === "coverage_health" ? "Coverage" : "Space health";
+  const score = metric ? nodeHealthPresentation(shownNode, metric, targetCompleteness) : null;
+  const rootScore = metric ? nodeHealthPresentation(root, metric, targetCompleteness) : null;
   const rootCanHaveChildren = root.kind !== "file" && root.kind !== "smaller_items";
-  const caption = highlight
-    ? `${formatCount(shownNode.file_count)} ${shownNode.file_count === 1 ? "file" : "files"}`
-    : sectors.length === 0 && rootCanHaveChildren ? "No mapped entries" : null;
+  let caption = sectors.length === 0 && rootCanHaveChildren ? "No mapped entries" : null;
+  if (score?.state === "partial") caption = `Estimated · ${formatCompleteness(score.completeness)} verified`;
+  else if (score?.state === "unavailable" && !caption) caption = "Score unavailable";
+  else if (!score && highlight) {
+    caption = `${formatCount(shownNode.file_count)} ${shownNode.file_count === 1 ? "file" : "files"}`;
+  }
   const formattedSize = formatBytes(shownNode.total_bytes);
   const unitStart = formattedSize.lastIndexOf(" ");
   const size = formattedSize.slice(0, unitStart);
   const unit = formattedSize.slice(unitStart + 1);
 
-  function handleSelect(event: KeyboardEvent<SVGGElement>, node: StorageNode) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    if (!event.repeat) onSelect(node);
+  function handleSectorKey(event: KeyboardEvent<SVGGElement>, node: StorageNode, index: number) {
+    if (event.altKey || event.metaKey || event.ctrlKey) return;
+    switch (event.key) {
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        if (!event.repeat) onSelect(node);
+        return;
+      case "Escape":
+        setHoveredId(null);
+        setFocusedId(null);
+        return;
+      case "ArrowLeft":
+      case "ArrowUp":
+      case "ArrowRight":
+      case "ArrowDown": {
+        event.preventDefault();
+        const direction = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+        const next = (index + direction + sectors.length) % sectors.length;
+        event.currentTarget.ownerSVGElement
+          ?.querySelectorAll<SVGGElement>(".radial-atlas__sector").item(next)?.focus();
+      }
+    }
   }
 
   return (
     <figure className="radial-atlas" aria-describedby={descriptionId}>
       <figcaption id={descriptionId} className="radial-atlas__sr-only">
         {labelFor(root)}, {formatBytes(root.total_bytes)}, {formatCount(root.file_count)} {root.file_count === 1 ? "file" : "files"}.
+        {rootScore && ` ${healthAriaDescription(rootScore, metric === "coverage_health" ? "coverage" : "space", root.file_count > 0)}.`}
         {sectors.length > 0
-          ? " Circular storage map. Segment lengths show data size and outer rings show deeper folders. Tab to a segment and press Enter or Space to select it."
+          ? " Circular storage map. Segment lengths show data size and outer rings show deeper folders. Use the arrow keys to move between segments and Enter or Space to select one."
           : rootCanHaveChildren && " No mapped entries."}
       </figcaption>
       <svg viewBox="0 0 600 600" role="group" aria-label={`${labelFor(root)} storage map`} className="radial-atlas__chart">
@@ -188,43 +220,54 @@ function RadialPlot({ root, selectedId, onSelect }: RadialAtlasProps) {
           <circle className="radial-atlas__dial" cx={CENTER} cy={CENTER} r="102" fill={`url(#${gradientId})`} />
           {sectors.filter((sector) => sector.tier === 0).map((sector) => {
             const point = polar(112, (sector.from + sector.to) / 2);
-            return <circle key={sector.node.id} cx={point.x} cy={point.y} r="1.7" fill={sector.color} stroke="none" />;
+            const color = metric ? nodeHealthPresentation(sector.node, metric, targetCompleteness).color : sector.color;
+            return <circle key={sector.node.id} cx={point.x} cy={point.y} r="1.7" fill={color} stroke="none" />;
           })}
         </g>
 
-        {sectors.map((sector) => {
+        {sectors.map((sector, index) => {
           const { node, color, path, weight, tier, branch } = sector;
           const active = highlight?.node.id === node.id;
           const dimmed = Boolean(highlight && highlight.branch !== branch);
+          const entryScore = metric ? nodeHealthPresentation(node, metric, targetCompleteness) : null;
+          const partial = entryScore?.state === "partial";
           return (
             <g
               key={node.id}
               className="radial-atlas__sector"
-              style={{ color }}
+              style={{ color: entryScore?.color ?? color }}
               data-tier={tier}
               data-active={active || undefined}
               data-dimmed={dimmed || undefined}
-              tabIndex={0}
+              tabIndex={node.id === tabStopId ? 0 : -1}
               role="button"
               aria-current={node.id === selectedId || undefined}
-              aria-label={`${labelFor(node)}, ${kindLabel(node)}, ${formatBytes(node.total_bytes)}`}
+              aria-label={`${labelFor(node)}, ${kindLabel(node)}, ${formatBytes(node.total_bytes)}${entryScore
+                ? `, ${healthAriaDescription(entryScore, metric === "coverage_health" ? "coverage" : "space", node.file_count > 0)}`
+                : ""}`}
               onPointerEnter={() => setHoveredId(node.id)}
               onPointerLeave={() => setHoveredId((current) => current === node.id ? null : current)}
-              onFocus={() => setFocusedId(node.id)}
+              onFocus={() => { setFocusedId(node.id); setTabStop(node.id); }}
               onBlur={() => setFocusedId((current) => current === node.id ? null : current)}
-              onKeyDown={(event) => handleSelect(event, node)}
+              onKeyDown={(event) => handleSectorKey(event, node, index)}
               onClick={() => onSelect(node)}
             >
               <path className="radial-atlas__target" d={path} strokeWidth={Math.max(weight, 14)} />
               <path className="radial-atlas__ring-focus" d={path} strokeWidth={weight + 5} />
-              <path className="radial-atlas__ring" d={path} strokeWidth={weight} />
+              {partial && <path className="radial-atlas__ring-track" d={path} strokeWidth={weight} />}
+              <path className="radial-atlas__ring" d={path} strokeWidth={partial ? Math.max(1, weight * entryScore.completeness) : weight} />
             </g>
           );
         })}
       </svg>
       <div className="radial-atlas__reading" aria-hidden="true">
-        <span className="radial-atlas__kind" style={{ color: highlight?.color }}>{kindLabel(shownNode)}</span>
-        <strong className="radial-atlas__size">{size}<span>{unit}</span></strong>
+        <span className="radial-atlas__kind" style={{ color: score?.color ?? highlight?.color }}>
+          {score ? metricLabel : kindLabel(shownNode)}
+        </span>
+        <strong className="radial-atlas__size">
+          {score ? formatHealth(score.value) : size}
+          <span>{score ? score.value === null ? "" : "/100" : unit}</span>
+        </strong>
         <span className="radial-atlas__name" title={labelFor(shownNode)}>{labelFor(shownNode)}</span>
         {caption && <span className="radial-atlas__detail">{caption}</span>}
       </div>

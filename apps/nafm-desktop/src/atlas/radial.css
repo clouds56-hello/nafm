@@ -73,9 +73,12 @@
 }
 
 .radial-atlas__ring-focus,
+.radial-atlas__ring-track,
 .radial-atlas__ring {
   pointer-events: none;
 }
+
+.radial-atlas__ring-track { stroke: #656774; opacity: .65; }
 
 .radial-atlas__ring {
   stroke: currentColor;

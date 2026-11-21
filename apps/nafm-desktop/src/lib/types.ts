@@ -1,28 +1,186 @@
 export type SiteKind = "local" | "smb";
+export type ConnectionState = "connected" | "offline" | "unknown";
+export type ScanState = "idle" | "queued" | "discovering" | "publishing_metadata" | "hashing" | "finalizing" | "cancelling" | "done" | "failed";
 export type ScanPhase = "discovering" | "publishing_metadata" | "hashing" | "finalizing";
+export type ScanTaskStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+export type CancelScanMode = "graceful";
+export type CancelScanOutcome = "requested" | "already_requested" | "not_found";
+export type HealthMetric = "space_health" | "coverage_health";
+export type HiddenPolicy = "include" | "skip";
+export type SiteHashStatus = "unscanned" | "pending" | "ready";
 
-export interface SiteOverview {
+export interface WorkspaceSummary {
+  name: string;
+  path: string;
+  active: boolean;
+}
+
+export interface ManagedSiteFolder {
+  id: string;
+  site_id: string;
+  kind: SiteKind;
+  path: string;
+  hidden_policy: HiddenPolicy;
+  added_at: string;
+}
+
+export interface ManagedSite {
   id: string;
   name: string;
-  location: string;
-  kind: SiteKind;
-  connection_state: "connected" | "offline" | "unknown";
-  scan_state: "idle" | "queued" | ScanPhase | "cancelling" | "done" | "failed";
-  hash_status: "unscanned" | "pending" | "ready";
+  added_at: string;
+  folders: ManagedSiteFolder[];
+  hash_status: SiteHashStatus;
+  verified_file_count: number;
+  verified_bytes: number;
+  pending_hash_count: number;
   latest_inventory_at: string | null;
   last_scanned_at: string | null;
   total_files: number;
   total_bytes: number;
 }
 
+export interface SavedConnection {
+  url: string;
+  username: string;
+}
+
+export interface RemoteMachine {
+  id: string;
+  name: string;
+  ssh_target: string;
+  agent_installation: AgentInstallation | null;
+  added_at: string;
+}
+
+export interface AgentInstallation {
+  target: string;
+  agent_version: string;
+  executable_path: string;
+  executable_hash: string;
+}
+
+export interface InstallAgentRequest {
+  workspace_name: string;
+  machine_id: string;
+  request_id: string;
+}
+
+export interface SetupCheck {
+  stage: string;
+  status: "passed" | "failed" | "skipped" | "warning";
+  message: string;
+  remedy: string | null;
+}
+
+export interface SshPrompt {
+  prompt_id: string;
+  ssh_target: string;
+  message: string;
+  confirmation: boolean;
+  host_key: { host: string; key_type: string; fingerprint: string } | null;
+}
+
+export interface SshPromptReply {
+  prompt_id: string;
+  response: string | null;
+}
+
+export interface PreflightReport {
+  machine_id: string;
+  ssh_target: string;
+  checked_at: string;
+  checks: SetupCheck[];
+  target: string | null;
+  can_install: boolean;
+  agent_ready: boolean;
+}
+
+export interface PathPreviewRequest {
+  workspace_name: string;
+  machine_id: string;
+  smb_root: string;
+  remote_root: string;
+}
+
+export interface PathCompletionRequest {
+  workspace_name: string;
+  machine_id: string;
+  path: string;
+  interactive: boolean;
+}
+
+export interface PathCompletion {
+  paths: string[];
+  truncated: boolean;
+}
+
+export interface MappingPreview {
+  smb_root: string;
+  remote_root: string;
+  checked_at: string;
+  check: SetupCheck;
+  files: { relative_path: string; size_bytes: number; modified_unix_nanos: number }[];
+  truncated: boolean;
+}
+
+export interface InstallAgentProgress {
+  request_id: string;
+  machine_id: string;
+  message: string;
+}
+
+export interface RemotePathMapping {
+  id: string;
+  remote_machine_id: string;
+  smb_root: string;
+  remote_root: string;
+  added_at: string;
+}
+
+export interface ManagementSnapshot {
+  active_workspace: WorkspaceSummary;
+  workspaces: WorkspaceSummary[];
+  sites: ManagedSite[];
+  connections: SavedConnection[];
+  remote_machines: RemoteMachine[];
+  remote_path_mappings: RemotePathMapping[];
+}
+
+export interface ManagementMutationResult {
+  snapshot: ManagementSnapshot | null;
+  active_workspace: WorkspaceSummary;
+  refresh_error: string | null;
+}
+
+export interface SiteOverview {
+  id: string;
+  name: string;
+  location: string;
+  kind: SiteKind;
+  connection_state: ConnectionState;
+  scan_state: ScanState;
+  hash_status: SiteHashStatus;
+  verified_file_count: number;
+  verified_bytes: number;
+  pending_hash_count: number;
+  latest_inventory_at: string | null;
+  last_scanned_at: string | null;
+  total_files: number;
+  total_bytes: number;
+  duplicate_files: number;
+  duplicate_bytes: number;
+}
+
 export interface Dashboard {
   workspace_name: string;
+  workspace_path: string;
   sites: SiteOverview[];
-  active_tasks: {
-    request_id: number;
-    selector: { all?: boolean };
-    site_states: { site_id: string; status: "queued" | "running" | "completed" }[];
-  }[];
+  active_tasks: ScanTask[];
+  staged: DuplicateFile[];
+  staged_hashes_pending: number;
+  staged_cleanup_ready: boolean;
+  staged_warnings: StageWarning[];
+  last_updated_at: string;
 }
 
 export interface StorageNode {
@@ -31,15 +189,141 @@ export interface StorageNode {
   path: string | null;
   kind: "site" | "local_root" | "smb_root" | "directory" | "file" | "smaller_items";
   file_count: number;
-  total_bytes: number;
   verified_file_count: number;
+  verified_bytes: number;
   pending_hash_count: number;
+  total_bytes: number;
+  duplicate_bytes: number;
+  duplicate_file_count: number;
+  space_health: number | null;
+  coverage_health: number | null;
+  estimated_space_health: number | null;
+  estimated_coverage_health: number | null;
+  space_healthy_file_equivalents: number;
+  space_total_files: number;
+  coverage_covered_files: number;
+  coverage_total_files: number;
   children: StorageNode[];
 }
 
+export interface StorageTree {
+  site_id: string;
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
+  root: StorageNode;
+}
+
+export interface StorageLocation {
+  site_id: string;
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
+  breadcrumbs: StorageNode[];
+  root: StorageNode;
+}
+
+export interface StorageChildrenPage {
+  site: {
+    id: string;
+    name: string;
+    added_at: string;
+  };
+  coverage_target: {
+    id: string;
+    name: string;
+    added_at: string;
+  } | null;
+  parent: StorageNode;
+  children: StorageNode[];
+  total_children: number;
+  offset: number;
+  limit: number;
+}
+
 export interface StorageViewSnapshot {
-  location: { breadcrumbs: StorageNode[]; root: StorageNode };
-  page: { children: StorageNode[]; total_children: number; offset: number };
+  tree: StorageTree;
+  location: StorageLocation;
+  page: StorageChildrenPage;
+}
+
+export interface StorageFileReveal {
+  tree: StorageTree;
+  location: StorageLocation;
+  page: StorageChildrenPage;
+  selected_file: StorageNode;
+}
+
+export type FileContentMatchStatus = "ready" | "not_hashed" | "needs_verification";
+
+export interface FileContentMatch {
+  file_id: string;
+  site_id: string;
+  site_name: string;
+  site_folder_id: string;
+  site_folder_kind: SiteKind;
+  path: string;
+  size_bytes: number;
+  is_current: boolean;
+}
+
+export interface FileContentMatchesPage {
+  status: FileContentMatchStatus;
+  workspace_pending_hash_count: number;
+  workspace_incomplete_site_count: number;
+  matches: FileContentMatch[];
+  total_matches: number;
+  offset: number;
+  limit: number;
+}
+
+export interface ScanSelector {
+  site_id?: string;
+  all?: boolean;
+}
+
+export interface ScanTask {
+  request_id: number;
+  selector: ScanSelector;
+  status: ScanTaskStatus;
+  created_at: string;
+  site_states: ScanTaskSiteState[];
+}
+
+export interface ScanTaskSiteState {
+  site_id: string;
+  status: "queued" | "running" | "completed";
+  phase: ScanPhase | null;
+  processed_files: number;
+  total_files: number | null;
+  hashed_files: number;
+  reused_files: number;
+  hashes_pending: number;
+  current_path: string | null;
+}
+
+export interface CancelScanReport {
+  request_id: number;
+  outcome: CancelScanOutcome;
+  status: "cancelling" | null;
+  effective_mode: CancelScanMode | null;
+}
+
+export interface ScanSummary {
+  site_id: string;
+  site_name: string;
+  files_seen: number;
+  files_hashed: number;
+  files_reused: number;
+  files_pending: number;
+  files_removed: number;
+  bytes_hashed: number;
+  duplicate_groups: number;
+  duplicate_files: number;
 }
 
 export interface ScanTaskEvent {
@@ -50,5 +334,132 @@ export interface ScanTaskEvent {
   phase: ScanPhase | null;
   processed_files: number | null;
   total_files: number | null;
+  hashed_files: number | null;
+  reused_files: number | null;
+  hashes_pending: number | null;
+  current_path: string | null;
+  site_states: ScanTaskSiteState[] | null;
+  summary: ScanSummary | null;
   message: string | null;
+}
+
+export interface DuplicateFile {
+  file_id: string;
+  site_id: string;
+  site_folder_id: string;
+  path: string;
+  size_bytes: number;
+  modified_unix_nanos: number;
+}
+
+export type StageWarningReason =
+  | "not_tracked"
+  | "not_duplicate"
+  | "already_staged"
+  | "not_staged"
+  | "would_remove_last_copy";
+
+export interface StageWarning {
+  path: string;
+  reason: StageWarningReason;
+}
+
+export interface StageAddReport {
+  staged_files: DuplicateFile[];
+  warnings: StageWarning[];
+}
+
+export interface StageRemoveReport {
+  removed_files: DuplicateFile[];
+  warnings: StageWarning[];
+}
+
+export interface CleanupPreview {
+  staged_files: DuplicateFile[];
+  hashes_pending: number;
+  cleanup_ready: boolean;
+  warnings: StageWarning[];
+  tracked_file_count_before: number;
+  tracked_file_count_after: number;
+  duplicate_group_count_before: number;
+  duplicate_group_count_after: number;
+  duplicate_file_count_before: number;
+  duplicate_file_count_after: number;
+  db_entry_count_stable: boolean;
+  duplicate_groups_after: Array<{
+    group_id: string;
+    size_bytes: number;
+    files: DuplicateFile[];
+  }>;
+}
+
+export interface ScanProgressView {
+  request_id: number;
+  site_id: string;
+  phase: ScanPhase;
+  processed_files: number;
+  total_files: number | null;
+  hashed_files: number;
+  reused_files: number;
+  hashes_pending: number;
+  current_path: string | null;
+}
+
+export interface ScanCompletionView {
+  request_id: number | null;
+  site_id: string;
+  source: "event" | "snapshot";
+  status: "indexed" | "complete";
+  should_announce: boolean;
+  total_files: number;
+  pending_files: number;
+  hashed_files: number | null;
+  reused_files: number | null;
+}
+export interface FolderContentSummary {
+  site_id: string;
+  site_name: string;
+  node_id: string;
+  path: string;
+  file_count: number;
+  verified_file_count: number;
+  pending_hash_count: number;
+  distinct_content_count: number;
+  distinct_bytes: number;
+  extra_copy_count: number;
+  inventory_ready: boolean;
+}
+
+export interface FolderSimilarityMatch {
+  folder: FolderContentSummary;
+  similarity: number;
+  source_coverage: number;
+  target_coverage: number;
+  shared_content_count: number;
+  shared_bytes: number;
+  source_only_count: number;
+  target_only_count: number;
+  source_only_bytes: number;
+  target_only_bytes: number;
+  partial: boolean;
+  identical_content: boolean;
+}
+
+export interface FolderSimilarityPage {
+  source: FolderContentSummary;
+  matches: FolderSimilarityMatch[];
+  total_matches: number;
+  offset: number;
+  limit: number;
+  workspace_pending_hash_count: number;
+  workspace_incomplete_site_count: number;
+  generated_at: string;
+}
+
+export interface FolderSimilarityRequest {
+  workspace_name: string;
+  site_id: string;
+  node_id: string;
+  offset: number;
+  limit: number;
 }

@@ -16,9 +16,10 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The desktop app opens the active workspace shared with the CLI. Use
-**Sources** to add a local folder or SMB share, choose which site to explore,
-and start or stop a scan.
+The desktop app shares workspaces with the CLI. Use **Sources** to add a
+local folder or SMB share, choose a site, and start or stop a scan. Use
+**Scan all** to scan the workspace, and **Settings** to manage workspaces,
+site folders, SMB connections, and remote SSH agents.
 
 ```sh
 cd apps/nafm-desktop
@@ -26,12 +27,11 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose an arc to open a folder or inspect a file. Arc size represents space
-used, and each ring goes one level deeper. The directory strip below the map
-lists the current folder's entries and lets you page through them.
-
-Use the CLI to switch workspaces, manage existing sites, or run duplicate
-analysis and cleanup workflows.
+Choose an arc or an entry in **Contents** to open a folder or inspect a file.
+The arc length shows storage used, and each ring goes one level deeper. Select
+**Space health** to see duplication or **Coverage** to compare against another
+source. The details area opens similar folders or exact copies and lets you
+stage verified duplicates. **Review** runs a cleanup preview for staged copies.
 
 ### Interactive mock dashboard
 
@@ -80,8 +80,9 @@ users.
 
 ## Folder similarity
 
-The core SDK can rank other indexed folders across the active workspace and
-report shared content, content unique to each side, and directional coverage.
+Choose **Similar folders** in the atlas details to rank indexed folders across
+the active workspace. Select a match to see shared content, content unique to
+each side, and directional coverage.
 
 Comparison uses recursive sets of verified `(hash algorithm, content hash, size)`
 identities. Names and directory structure do not affect the score. Repeated copies
@@ -135,8 +136,8 @@ transferring every byte over SMB. The desktop keeps ownership of the workspace
 database; the remote machine runs a stateless `nafm-agent` process on demand.
 
 Desktop releases bundle agents for Linux x64, Windows x64, and macOS ARM64.
-Use the CLI to register SSH targets and configure path mappings. The desktop
-app uses saved mappings when scanning an SMB source.
+Use **Settings** → **Connections** to register SSH targets, install an agent,
+and verify the native path for an SMB share.
 
 For local cross-build prerequisites, compatibility requirements, and manual CLI
 installation, see [Bundled SSH agents](docs/remote-agents.md).

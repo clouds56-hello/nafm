@@ -171,7 +171,7 @@
 .source-open {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(200px, 1fr) minmax(117px, .39fr) minmax(75px, .21fr) 92px;
+  grid-template-columns: minmax(200px, 1fr) minmax(117px, .39fr) minmax(75px, .21fr) 178px;
   column-gap: clamp(12px, 2.5vw, 34px);
   align-items: center;
 }
@@ -297,8 +297,10 @@
   font: 12px/1.35 var(--source-mono);
 }
 
-.source-row .source-action {
-  justify-self: end;
+.source-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .source-empty {
@@ -477,6 +479,8 @@
     min-height: 34px;
     padding-inline: 7px;
   }
+
+  .source-row-actions { display: grid; gap: 4px; padding-block: 5px; }
 
   .source-size,
   .source-column-labels > span:nth-child(3) {

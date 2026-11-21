@@ -1,8 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { formatBytes, formatCount } from "../lib/format";
+import { scanPhaseLabel } from "../lib/scanView";
 import { connectSmb, createSite } from "../lib/tauri";
-import type { SiteKind, SiteOverview } from "../lib/types";
+import type { ScanProgressView, SiteKind, SiteOverview } from "../lib/types";
 import "./sources.css";
 
 interface SourceLibraryProps {
@@ -13,8 +14,13 @@ interface SourceLibraryProps {
   onClose: () => void;
   onChanges: () => void;
   onScan: (site_id: string) => void;
-  scanningIds: ReadonlySet<string>;
-  onCancelScan: (site_id: string) => void;
+  scanRequests: ReadonlyMap<string, number>;
+  blockedIds: ReadonlySet<string>;
+  scanAllRequests: ReadonlySet<number>;
+  cancellingRequests: ReadonlySet<number>;
+  progressBySite: ReadonlyMap<string, ScanProgressView>;
+  onCancelScan: (requestId: number) => void;
+  onManage: (site_id: string) => void;
   error?: string | null;
   errorAction?: { label: string; run: () => void };
 }
@@ -29,7 +35,10 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
   return "Awaiting scan";
 }
 
-export function SourceLibrary({ sites, workspaceName, activeId, onSelect, onClose, onChanges, onScan, scanningIds, onCancelScan, error, errorAction }: SourceLibraryProps) {
+export function SourceLibrary({
+  sites, workspaceName, activeId, onSelect, onClose, onChanges, onScan, scanRequests, blockedIds,
+  scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction,
+}: SourceLibraryProps) {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -68,7 +77,7 @@ export function SourceLibrary({ sites, workspaceName, activeId, onSelect, onClos
             ref={addRef}
             type="button"
             className="source-primary"
-            disabled={adding || !workspaceName || scanningIds.size > 0}
+            disabled={adding || !workspaceName || blockedIds.size > 0}
             onClick={() => setAdding(true)}
           >
             <span aria-hidden="true">+</span> Add source
@@ -84,7 +93,7 @@ export function SourceLibrary({ sites, workspaceName, activeId, onSelect, onClos
           <AddSource
             workspaceName={workspaceName}
             busy={busy}
-            blocked={scanningIds.size > 0}
+            blocked={blockedIds.size > 0}
             setBusy={setBusy}
             onCancel={finishAdding}
             onAdd={() => {
@@ -93,19 +102,22 @@ export function SourceLibrary({ sites, workspaceName, activeId, onSelect, onClos
             }}
           />
         )}
-        {scanningIds.size > 0 && <p className="source-scan-note" role="status">You can add sources when all scans finish.</p>}
+        {blockedIds.size > 0 && <p className="source-scan-note" role="status">You can add sources when all scans finish.</p>}
         {sites.length > 0 ? (
           <section className="source-directory" aria-label="Storage sources">
             <div className="source-column-labels" aria-hidden="true">
               <span>Source</span>
               <span>Inventory</span>
               <span>Size</span>
-              <span>Scan</span>
+              <span>Actions</span>
             </div>
             <ul className="source-list">
               {sites.map((site) => {
-                const scanning = scanningIds.has(site.id);
-                const stopping = site.scan_state === "cancelling";
+                const requestId = scanRequests.get(site.id);
+                const scanning = requestId !== undefined;
+                const stopping = scanning && cancellingRequests.has(requestId);
+                const scanAll = scanning && scanAllRequests.has(requestId);
+                const progress = scanning ? progressBySite.get(site.id) : undefined;
                 return (
                   <li key={site.id} className="source-row">
                     <button
@@ -125,20 +137,27 @@ export function SourceLibrary({ sites, workspaceName, activeId, onSelect, onClos
                         </span>
                       </span>
                       <span id={`source-inventory-${site.id}`} className="source-inventory" data-scanning={scanning}>
-                        <span>{inventoryLabel(site, scanning)}</span>
-                        {(site.latest_inventory_at || site.total_files > 0) && <small>{formatCount(site.total_files)} files</small>}
+                        <span>{stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase) : inventoryLabel(site, scanning)}</span>
+                        {progress ? (
+                          <small title={progress.current_path ?? undefined}>
+                            {formatCount(progress.processed_files)}{progress.total_files === null ? "" : ` / ${formatCount(progress.total_files)}`} files
+                          </small>
+                        ) : (site.latest_inventory_at || site.total_files > 0) && <small>{formatCount(site.total_files)} files</small>}
                       </span>
                       <span className="source-size">{site.latest_inventory_at || site.total_files > 0 ? formatBytes(site.total_bytes) : "—"}</span>
                     </button>
-                    {scanning ? (
-                      <button className="source-action" type="button" aria-label={stopping ? "Scan is stopping" : `Stop scan of ${site.name}`} disabled={busy || stopping} onClick={() => onCancelScan(site.id)}>
-                        {stopping ? "Stopping…" : "Stop scan"}
-                      </button>
-                    ) : (
-                      <button className="source-action" type="button" aria-label={`Scan ${site.name}`} disabled={busy} onClick={() => onScan(site.id)}>
-                        {site.latest_inventory_at ? "Rescan" : "Scan"}<span aria-hidden="true">↗</span>
-                      </button>
-                    )}
+                    <div className="source-row-actions">
+                      {scanning ? (
+                        <button className="source-action" type="button" aria-label={stopping ? "Scan is stopping" : scanAll ? "Stop remaining scans" : `Stop scan of ${site.name}`} disabled={busy || stopping} onClick={() => onCancelScan(requestId)}>
+                          {stopping ? "Stopping…" : scanAll ? "Stop all" : "Stop scan"}
+                        </button>
+                      ) : (
+                        <button className="source-action" type="button" aria-label={`Scan ${site.name}`} disabled={busy || blockedIds.has(site.id)} onClick={() => onScan(site.id)}>
+                          {site.latest_inventory_at ? "Rescan" : "Scan"}
+                        </button>
+                      )}
+                      <button className="source-action" type="button" aria-label={`Manage ${site.name}`} disabled={busy} onClick={() => onManage(site.id)}>Manage</button>
+                    </div>
                   </li>
                 );
               })}
