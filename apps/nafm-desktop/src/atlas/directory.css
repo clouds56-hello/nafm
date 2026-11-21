@@ -2,10 +2,9 @@
   display: grid;
   min-width: 0;
   align-content: start;
-  gap: 8px;
-  padding: 12px var(--atlas-gutter) 17px;
+  gap: 5px;
+  padding: 9px var(--atlas-inspector-padding, 14px) 12px;
   border-top: 1px solid var(--atlas-border);
-  background: #12131d;
 }
 
 .atlas-directory-header,
@@ -19,12 +18,12 @@
 .atlas-directory-header {
   min-height: 29px;
   justify-content: space-between;
-  gap: 8px 18px;
+  gap: 6px 10px;
 }
 
 .atlas-directory-header h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 620;
   line-height: 1.25;
 }
@@ -32,7 +31,7 @@
 .atlas-directory-pages { gap: 4px; }
 
 .atlas-directory-range {
-  margin-inline-end: 8px;
+  margin-inline-end: 4px;
   color: var(--atlas-muted);
   font: 11px/1.4 var(--atlas-mono);
   white-space: nowrap;
@@ -40,8 +39,8 @@
 
 .atlas-directory-page {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 25px;
+  height: 25px;
   flex: none;
   place-items: center;
   padding: 0;
@@ -68,11 +67,6 @@
 .atlas-directory-chevron { transform: translateX(-1px) rotate(225deg); }
 
 .atlas-directory-list {
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(var(--directory-rows), minmax(36px, auto));
-  column-gap: clamp(18px, 3.2vw, 50px);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -83,12 +77,11 @@
 .atlas-directory-entry {
   display: grid;
   width: 100%;
-  min-height: 35px;
-  height: 100%;
-  grid-template-columns: minmax(0, 1fr) max-content minmax(62px, max-content) 12px;
+  min-height: 37px;
+  grid-template-columns: minmax(0, 1fr) max-content 8px;
   align-items: center;
-  gap: clamp(8px, 1vw, 16px);
-  padding: 5px 9px;
+  gap: 8px;
+  padding: 5px 6px;
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -107,21 +100,26 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 9px;
-  font-size: 13px;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 550;
+  line-height: 1.2;
 }
 
-.atlas-directory-name > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atlas-directory-identity {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
 
-.atlas-directory-count,
+.atlas-directory-identity > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .atlas-directory-size {
   justify-self: end;
   font: 11px/1.3 var(--atlas-mono);
   white-space: nowrap;
 }
 
-.atlas-directory-count { color: var(--atlas-muted); }
+.atlas-directory-count { color: var(--atlas-muted); font: 10px/1.15 var(--atlas-mono); white-space: nowrap; }
 .atlas-directory-size { font-weight: 540; }
 .atlas-directory-chevron { justify-self: center; color: #868bb3; }
 .atlas-directory-entry:hover .atlas-directory-chevron { color: var(--atlas-accent); }
@@ -172,16 +170,6 @@
   outline-offset: -2px;
 }
 
-@media (max-width: 810px) {
-  .atlas-directory-list {
-    grid-auto-flow: row;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: none;
-    grid-auto-rows: minmax(36px, auto);
-  }
-}
-
 @media (max-width: 360px) {
-  .atlas-directory-entry { grid-template-columns: minmax(0, 1fr) max-content 10px; }
   .atlas-directory-count { display: none; }
 }

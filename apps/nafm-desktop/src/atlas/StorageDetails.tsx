@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatHealth } from "../lib/format";
 import { formatCompleteness, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import "./inspector.css";
 
 const percentage = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
 
@@ -46,10 +47,12 @@ function HealthDetail({
   label, score, evidence, active, emptyLabel = "Unavailable",
 }: { label: string; score: HealthPresentation; evidence: string | null; active: boolean; emptyLabel?: string }) {
   return (
-    <div className="atlas-detail-metric" data-active={active || undefined}>
+    <div className="atlas-detail-health" data-active={active || undefined}>
       <dt>{label}</dt>
       <dd>
-        {score.value === null ? emptyLabel : `${score.state === "partial" ? "~" : ""}${formatHealth(score.value)}/100`}
+        <span className="atlas-detail-score">
+          {score.value === null ? emptyLabel : `${score.state === "partial" ? "~" : ""}${formatHealth(score.value)}/100`}
+        </span>
         {evidence && score.value !== null && <span className="atlas-detail-note">{evidence}</span>}
         {score.state === "partial" && <span className="atlas-detail-note">{formatCompleteness(score.completeness)} verified</span>}
       </dd>
@@ -80,9 +83,11 @@ export function StorageDetails({ location, entries, selected, focusRevision, met
     : node.kind === "site" ? "Current source" : "Current folder";
 
   return (
-    <aside className="atlas-readout" aria-label="Storage details" ref={panelRef} tabIndex={-1}>
-      <p className="atlas-kicker">{heading}</p>
-      {node.kind !== "site" && <h2>{node.name}</h2>}
+    <section className="atlas-readout" aria-label="Storage details" ref={panelRef} tabIndex={-1}>
+      <header className="atlas-readout-heading">
+        <p className="atlas-kicker">{heading}</p>
+        <h2>{node.name}</h2>
+      </header>
       <dl className="atlas-details">
         <div className="atlas-detail-path">
           <dt>Path</dt>
@@ -111,6 +116,6 @@ export function StorageDetails({ location, entries, selected, focusRevision, met
           evidence={node.coverage_total_files > 0 ? `${formatCount(node.coverage_covered_files)} of ${formatCount(node.coverage_total_files)} content groups` : null} />
       </dl>
       {children}
-    </aside>
+    </section>
   );
 }

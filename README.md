@@ -16,10 +16,10 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The desktop app shares workspaces with the CLI. Use **Sources** to add a
-local folder or SMB share, choose a site, and start or stop a scan. Use
-**Scan all** to scan the workspace, and **Settings** to manage workspaces,
-site folders, SMB connections, and remote SSH agents.
+The desktop app shares workspaces with the CLI. Use the **Sites** rail to
+switch sites, add a local folder or SMB share, and start or stop a scan.
+Use **Scan all** to scan the workspace, and **Settings** to manage
+workspaces, site folders, SMB connections, and remote SSH agents.
 
 ```sh
 cd apps/nafm-desktop
@@ -27,7 +27,8 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose an arc or an entry in **Contents** to open a folder or inspect a file.
+Choose an arc or an entry in the right inspector’s **Contents** list to open
+a folder or inspect a file.
 The arc length shows storage used, and each ring goes one level deeper. Select
 **Space health** to see duplication or **Coverage** to compare against another
 source. The details area opens similar folders or exact copies and lets you

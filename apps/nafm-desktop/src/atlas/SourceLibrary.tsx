@@ -7,6 +7,7 @@ import type { ScanProgressView, SiteKind, SiteOverview } from "../lib/types";
 import "./sources.css";
 
 interface SourceLibraryProps {
+  initiallyAdding?: boolean;
   sites: SiteOverview[];
   workspaceName: string | null;
   activeId: string | null;
@@ -36,10 +37,10 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 }
 
 export function SourceLibrary({
-  sites, workspaceName, activeId, onSelect, onClose, onChanges, onScan, scanRequests, blockedIds,
+  initiallyAdding = false, sites, workspaceName, activeId, onSelect, onClose, onChanges, onScan, scanRequests, blockedIds,
   scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction,
 }: SourceLibraryProps) {
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState(initiallyAdding);
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -49,9 +50,10 @@ export function SourceLibrary({
     const dialog = dialogRef.current;
     if (!dialog) return;
     dialog.showModal();
-    headingRef.current?.focus();
+    const initialFocus = initiallyAdding ? dialog.querySelector<HTMLInputElement>("form input:enabled") : null;
+    (initialFocus ?? headingRef.current)?.focus();
     return () => dialog.close();
-  }, []);
+  }, [initiallyAdding]);
 
   function finishAdding() {
     setAdding(false);

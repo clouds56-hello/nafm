@@ -1,0 +1,168 @@
+import { useId } from "react";
+import { formatBytes, formatCount, percent } from "../lib/format";
+import { scanPhaseLabel } from "../lib/scanView";
+import type { ScanProgressView, SiteOverview } from "../lib/types";
+import { DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
+import "./site-rail.css";
+
+interface SiteRailProps {
+  sites: SiteOverview[];
+  activeId: string | null;
+  scanRequests: ReadonlyMap<string, number>;
+  blockedIds: ReadonlySet<string>;
+  scanAllRequests: ReadonlySet<number>;
+  cancellingRequests: ReadonlySet<number>;
+  progressBySite: ReadonlyMap<string, ScanProgressView>;
+  onSelect: (id: string) => void;
+  onScan: (id: string) => void;
+  onCancel: (requestId: number) => void;
+  onAdd: () => void;
+  onManage: (id: string) => void;
+}
+
+function inventoryStatus(site: SiteOverview) {
+  if (site.scan_state === "failed") return "Scan failed";
+  if (site.connection_state === "offline") return "Offline";
+  if (site.pending_hash_count > 0) {
+    return `${formatCount(site.pending_hash_count)} ${site.pending_hash_count === 1 ? "hash" : "hashes"} pending`;
+  }
+  if (site.hash_status === "pending") return "Finalization pending";
+  return site.hash_status === "ready" ? "Indexed" : "Awaiting scan";
+}
+
+function scanProgressValue(progress: ScanProgressView | undefined) {
+  if (!progress) return undefined;
+  if (progress.phase === "finalizing") return 100;
+  if (progress.phase !== "hashing" || !progress.total_files) return undefined;
+  return Math.round(percent(progress.processed_files, progress.total_files));
+}
+
+export function SiteRail({
+  sites,
+  activeId,
+  scanRequests,
+  blockedIds,
+  scanAllRequests,
+  cancellingRequests,
+  progressBySite,
+  onSelect,
+  onScan,
+  onCancel,
+  onAdd,
+  onManage,
+}: SiteRailProps) {
+  const titleId = useId();
+
+  return (
+    <aside className="atlas-site-rail" aria-labelledby={titleId}>
+      <header className="atlas-site-rail-header">
+        <h2 id={titleId}>Sites</h2>
+        <span className="atlas-site-rail-count" aria-label={`${sites.length} sites`}>{formatCount(sites.length)}</span>
+        <button
+          className="atlas-site-rail-add"
+          type="button"
+          aria-label="Add site"
+          title={blockedIds.size ? "Finish active scans to add a site" : "Add site"}
+          disabled={blockedIds.size > 0}
+          onClick={onAdd}
+        >
+          <PlusIcon />
+        </button>
+      </header>
+      {sites.length === 0 ? <p className="atlas-site-rail-empty">No sites configured</p> : (
+        <ul className="atlas-site-rail-list">
+          {sites.map((site) => {
+            const requestId = scanRequests.get(site.id);
+            const scanning = requestId !== undefined;
+            const stopping = scanning && cancellingRequests.has(requestId);
+            const scanAll = scanning && scanAllRequests.has(requestId);
+            const previousProgress = progressBySite.get(site.id);
+            const progress = scanning && previousProgress?.request_id === requestId ? previousProgress : undefined;
+            const progressValue = scanProgressValue(progress);
+            const status = stopping ? "Stopping…" : progress ? scanPhaseLabel(progress.phase)
+              : scanning ? "Starting scan…" : inventoryStatus(site);
+            const scanLabel = scanning
+              ? scanAll ? "Stop all" : "Stop"
+              : site.latest_inventory_at ? "Rescan" : "Scan";
+            const scanActionLabel = stopping ? `Scan is stopping for ${site.name}`
+              : scanning ? scanAll ? `Stop remaining scans from ${site.name}` : `Stop scan of ${site.name}`
+                : `Scan ${site.name}`;
+            const hasInventory = site.latest_inventory_at !== null || site.hash_status === "ready" || site.total_files > 0;
+            const selected = activeId === site.id;
+            const DeviceIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
+
+            return (
+              <li key={site.id} className="atlas-site-rail-item" data-active={selected || undefined}>
+                <button
+                  className="atlas-site-rail-select"
+                  type="button"
+                  aria-current={selected || undefined}
+                  aria-label={`Open ${site.name} in Atlas`}
+                  onClick={() => onSelect(site.id)}
+                >
+                  <span className="atlas-site-rail-device"><DeviceIcon /></span>
+                  <span className="atlas-site-rail-identity">
+                    <strong title={site.name}>{site.name}</strong>
+                    <span title={site.location}>{site.location}</span>
+                  </span>
+                </button>
+                {hasInventory && (
+                  <p className="atlas-site-rail-stats">
+                    <span>{formatCount(site.total_files)} {site.total_files === 1 ? "file" : "files"}</span>
+                    <span className="atlas-site-rail-divider" aria-hidden="true">·</span>
+                    <span>{formatBytes(site.total_bytes)}</span>
+                  </p>
+                )}
+                {scanning && (
+                  <div className="atlas-site-rail-progress">
+                    <progress
+                      max={100}
+                      value={progressValue}
+                      aria-label={`Scan progress for ${site.name}`}
+                      aria-valuetext={status}
+                    />
+                    {progress && (
+                      <span title={progress.current_path ?? undefined}>
+                        {formatCount(progress.processed_files)}
+                        {progress.total_files !== null ? ` / ${formatCount(progress.total_files)}` : ""}
+                        {" files"}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="atlas-site-rail-footer">
+                  <span className="atlas-site-rail-status" data-scanning={scanning || undefined} title={status}>{status}</span>
+                  <div className="atlas-site-rail-actions">
+                    <button
+                      className="atlas-site-rail-scan"
+                      type="button"
+                      aria-label={scanActionLabel}
+                      title={scanActionLabel}
+                      disabled={stopping || (!scanning && blockedIds.has(site.id))}
+                      onClick={() => {
+                        if (requestId === undefined) onScan(site.id);
+                        else onCancel(requestId);
+                      }}
+                    >
+                      {scanning ? <span className="atlas-site-rail-stop" aria-hidden="true" /> : <RefreshIcon />}
+                      {scanLabel}
+                    </button>
+                    <button
+                      className="atlas-site-rail-manage"
+                      type="button"
+                      aria-label={`Manage ${site.name}`}
+                      title={`Manage ${site.name}`}
+                      onClick={() => onManage(site.id)}
+                    >
+                      <span aria-hidden="true">⋯</span>
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </aside>
+  );
+}

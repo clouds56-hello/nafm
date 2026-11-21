@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type CSSProperties } from "react";
+import { useEffect, useId, useRef } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import type { StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
 import "./directory.css";
@@ -99,10 +99,7 @@ export function DirectoryContents({
             <button type="button" className="atlas-text-button" onClick={onRetry}>Retry</button>
           </div>
         ) : children.length > 0 ? (
-          <ul
-            className="atlas-directory-list"
-            style={{ "--directory-rows": Math.ceil(children.length / 2) } as CSSProperties}
-          >
+          <ul className="atlas-directory-list">
             {children.map((node) => {
               const isFile = node.kind === "file";
               return (
@@ -115,10 +112,14 @@ export function DirectoryContents({
                   >
                     <span className="atlas-directory-name" title={node.name}>
                       <span className="atlas-directory-icon" data-kind={node.kind} aria-hidden="true" />
-                      <span>{node.name}</span>
-                    </span>
-                    <span className="atlas-directory-count">
-                      {isFile ? "File" : `${formatCount(node.file_count)} ${node.file_count === 1 ? "file" : "files"}`}
+                      <span className="atlas-directory-identity">
+                        <span>{node.name}</span>
+                        {!isFile && (
+                          <span className="atlas-directory-count">
+                            {formatCount(node.file_count)} {node.file_count === 1 ? "file" : "files"}
+                          </span>
+                        )}
+                      </span>
                     </span>
                     <span className="atlas-directory-size">{formatBytes(node.total_bytes)}</span>
                     {!isFile && <span className="atlas-directory-chevron" aria-hidden="true" />}

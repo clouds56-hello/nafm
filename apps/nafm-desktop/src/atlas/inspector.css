@@ -1,0 +1,97 @@
+.atlas-inspector {
+  --atlas-inspector-padding: 14px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+  border: 1px solid var(--atlas-border);
+  border-radius: 8px;
+  background: var(--atlas-surface);
+}
+
+.atlas-inspector-status {
+  margin: 0;
+  padding: var(--atlas-inspector-padding);
+  color: var(--atlas-muted);
+  font: 12px/1.4 var(--atlas-mono);
+}
+
+.atlas-readout {
+  min-width: 0;
+  padding: 13px var(--atlas-inspector-padding) 10px;
+}
+
+.atlas-readout:focus-visible { outline-offset: -3px; }
+.atlas-readout-heading .atlas-kicker { margin-bottom: 3px; }
+
+.atlas-readout-heading h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 620;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.atlas-details {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 7px;
+  margin: 0;
+}
+
+.atlas-details dt { min-width: 0; color: var(--atlas-muted); font-size: 11px; overflow-wrap: anywhere; }
+.atlas-details dd { min-width: 0; margin: 0; color: var(--atlas-ink); font: 11px/1.45 var(--atlas-mono); overflow-wrap: anywhere; }
+
+.atlas-detail-path {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 2px;
+  padding-bottom: 6px;
+}
+
+.atlas-detail-path code { font: inherit; white-space: pre-wrap; }
+
+.atlas-detail-metric {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--atlas-border);
+}
+
+.atlas-detail-metric dd { text-align: end; }
+.atlas-details .atlas-verification[data-status="verified"] { color: #c6d99b; }
+.atlas-details .atlas-verification[data-status="pending"] { color: #f1bfae; }
+
+.atlas-detail-health {
+  min-width: 0;
+  margin-top: 5px;
+  padding: 7px 8px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 5px;
+  background: #181a29;
+}
+
+.atlas-detail-health[data-active] { border-color: #535881; }
+.atlas-detail-health[data-active] dt { color: var(--atlas-accent); }
+.atlas-detail-score { display: block; margin-top: 3px; font-size: 13px; font-weight: 550; }
+.atlas-detail-note { display: block; margin-top: 2px; color: var(--atlas-muted); font-size: 10px; }
+
+.atlas-inspector .atlas-content-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+}
+
+.atlas-inspector .atlas-content-actions button {
+  width: auto;
+  min-height: 29px;
+  flex: 1 1 auto;
+}
