@@ -1,0 +1,186 @@
+.radial-atlas {
+  width: min(100%, 620px);
+  aspect-ratio: 1;
+  position: relative;
+  isolation: isolate;
+  container-type: inline-size;
+  margin: 0;
+  color: #eee9de;
+}
+
+.radial-atlas__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.radial-atlas__chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.radial-atlas__guides {
+  fill: none;
+  stroke: #424659;
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.radial-atlas__limit {
+  stroke: #2c3041;
+  stroke-dasharray: 1.5 4;
+}
+
+.radial-atlas__track {
+  stroke: #343749;
+}
+
+.radial-atlas__guides .radial-atlas__tick--major {
+  stroke: #696e90;
+}
+
+.radial-atlas__dial {
+  stroke: #363b52;
+}
+
+.radial-atlas__sector {
+  cursor: pointer;
+  transition: opacity 140ms ease;
+}
+
+.radial-atlas__sector:focus-visible {
+  outline: none;
+}
+
+.radial-atlas__sector[data-dimmed] {
+  opacity: .29;
+}
+
+.radial-atlas__sector path {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.radial-atlas__target {
+  stroke: transparent;
+  pointer-events: stroke;
+}
+
+.radial-atlas__ring-focus,
+.radial-atlas__ring {
+  pointer-events: none;
+}
+
+.radial-atlas__ring {
+  stroke: currentColor;
+}
+
+.radial-atlas__sector[data-tier="1"] .radial-atlas__ring {
+  opacity: .59;
+}
+
+.radial-atlas__sector[data-tier="2"] .radial-atlas__ring {
+  opacity: .39;
+}
+
+.radial-atlas__sector[data-active] .radial-atlas__ring,
+.radial-atlas__sector:focus .radial-atlas__ring {
+  opacity: 1;
+}
+
+.radial-atlas__ring-focus {
+  stroke: #eee9de;
+  opacity: 0;
+}
+
+.radial-atlas__sector:focus .radial-atlas__ring-focus {
+  opacity: 1;
+}
+
+.radial-atlas__sector:focus:not(:focus-visible) .radial-atlas__ring-focus {
+  opacity: 0;
+}
+
+.radial-atlas__reading {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  width: 31%;
+  justify-items: center;
+  gap: 4px;
+  text-align: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.radial-atlas__kind,
+.radial-atlas__detail,
+.radial-atlas__size > span {
+  font-family: var(--atlas-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.radial-atlas__kind {
+  color: #a9afff;
+  font-size: 10px;
+  font-size: clamp(7px, 1.9cqw, 11px);
+  font-weight: 650;
+  letter-spacing: .12em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.radial-atlas__size {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: .13em;
+  max-width: 100%;
+  margin: 1px 0 3px;
+  font-size: 44px;
+  font-size: clamp(20px, 8.4cqw, 52px);
+  font-weight: 570;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.085em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.radial-atlas__size > span {
+  color: #adb1cb;
+  font-size: .33em;
+  font-weight: 500;
+  letter-spacing: -.04em;
+}
+
+.radial-atlas__name,
+.radial-atlas__detail {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radial-atlas__name {
+  font-size: 13px;
+  font-size: clamp(9px, 2.7cqw, 15px);
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+.radial-atlas__detail {
+  color: #a6a9bf;
+  font-size: 10px;
+  font-size: clamp(7px, 1.9cqw, 11px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .radial-atlas__sector {
+    transition: none;
+  }
+}

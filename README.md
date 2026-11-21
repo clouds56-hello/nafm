@@ -11,16 +11,14 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 - `nafm-core`: async Rust library/SDK with replaceable hash algorithms.
 - `nafm-cli`: non-TUI command line interface.
-- `nafm-desktop`: Tauri 2 + React desktop interface with a bounded radial
-  storage map, live multi-site scans, and safe cleanup staging.
+- `nafm-desktop`: Tauri 2 + React desktop interface for scanning sources and
+  exploring disk usage on a circular map.
 
 ## Desktop app
 
-The desktop app shares workspace and credential state with the CLI. It can
-create and switch workspaces, manage multi-root sites, verify SMB connections,
-scan all sites concurrently, cancel scans cooperatively, explore a radial map
-of space and cross-site coverage health, and stage duplicate copies for a
-cleanup preview. Deletion is deliberately disabled in this release.
+The desktop app opens the active workspace shared with the CLI. Use
+**Sources** to add a local folder or SMB share, choose which site to explore,
+and start or stop a scan.
 
 ```sh
 cd apps/nafm-desktop
@@ -28,13 +26,12 @@ pnpm install
 pnpm tauri dev
 ```
 
-Use the workspace chip for quick switching, the **+** shortcut in the Sites
-rail to add a site, or the header settings button to open the Management
-Center. The Management Center exposes workspaces, every root belonging to a
-site, and SMB connections. Unregistering a site or root removes only NAFM's
-index and cached scan data; it never deletes source files.
+Choose an arc to open a folder or inspect a file. Arc size represents space
+used, and each ring goes one level deeper. The directory strip below the map
+lists the current folder's entries and lets you page through them.
 
-The CLI remains available for the same setup and automation workflows.
+Use the CLI to switch workspaces, manage existing sites, or run duplicate
+analysis and cleanup workflows.
 
 ## Desktop releases
 
@@ -67,9 +64,8 @@ users.
 
 ## Folder similarity
 
-Select an indexed folder in the storage explorer and choose **Similar folders**.
-The inspector ranks other indexed folders across the active workspace and shows
-shared content, content unique to each side, and directional coverage.
+The core SDK can rank other indexed folders across the active workspace and
+report shared content, content unique to each side, and directional coverage.
 
 Comparison uses recursive sets of verified `(hash algorithm, content hash, size)`
 identities. Names and directory structure do not affect the score. Repeated copies
@@ -122,10 +118,9 @@ native filesystem path, NAFM can discover and hash the files there instead of
 transferring every byte over SMB. The desktop keeps ownership of the workspace
 database; the remote machine runs a stateless `nafm-agent` process on demand.
 
-The desktop bundles agents for Linux x64, Windows x64, and macOS ARM64.
-Register an SSH target in Connections, click **Install agent**, then add the
-path mapping. Installation detects the remote platform and verifies the uploaded
-binary before selecting it. No service, sudo, or manual PATH changes are needed.
+Desktop releases bundle agents for Linux x64, Windows x64, and macOS ARM64.
+Use the CLI to register SSH targets and configure path mappings. The desktop
+app uses saved mappings when scanning an SMB source.
 
 For local cross-build prerequisites, compatibility requirements, and manual CLI
 installation, see [Bundled SSH agents](docs/remote-agents.md).
