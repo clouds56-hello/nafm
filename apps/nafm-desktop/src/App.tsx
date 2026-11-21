@@ -1,10 +1,11 @@
+import type { ReactNode } from "react";
 import { WorkspaceAtlas } from "./atlas/WorkspaceAtlas";
 import { useWorkspace } from "./hooks/useWorkspace";
 import { ManagementCenter } from "./management/ManagementCenter";
 import { SshAuthentication } from "./management/SshAuthentication";
 import "./styles/atlas.css";
 
-export default function App() {
+export default function App({ toolbarExtension }: { toolbarExtension?: ReactNode }) {
   const workspace = useWorkspace();
   return (
     <>
@@ -12,7 +13,7 @@ export default function App() {
         inert={workspace.managementOpen || workspace.workspaceSwitching || undefined}
         aria-busy={workspace.workspaceSwitching || undefined}
       >
-        <WorkspaceAtlas key={workspace.dashboardRevision} workspace={workspace} />
+        <WorkspaceAtlas key={workspace.dashboardRevision} workspace={workspace} toolbarExtension={toolbarExtension} />
       </div>
       <ManagementCenter
         open={workspace.managementOpen}

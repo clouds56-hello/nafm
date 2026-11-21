@@ -3,28 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101119" />
     <meta name="color-scheme" content="dark" />
     <title>NAFM Mock Dashboard</title>
-    <link rel="stylesheet" href="./dashboard.css" />
   </head>
   <body>
-    <header class="mock-toolbar">
-      <div class="mock-title">
-        <strong>NAFM Preview</strong>
-        <span>Sample data</span>
-      </div>
-      <div class="mock-actions">
-        <label for="scenario">
-          <span>Scenario</span>
-          <select id="scenario"></select>
-        </label>
-        <button id="reset" type="button">Reset</button>
-        <a id="open-atlas" href="./atlas.html" target="_blank" rel="noopener">
-          App only <span aria-hidden="true">↗</span>
-        </a>
-      </div>
-    </header>
-    <iframe id="preview" title="Interactive NAFM storage atlas"></iframe>
-    <script type="module" src="./dashboard.ts"></script>
+    <div id="root" data-preview-controls></div>
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>

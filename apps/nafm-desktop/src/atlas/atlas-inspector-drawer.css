@@ -5,7 +5,7 @@
   display: grid;
   width: min(350px, calc(100% - 20px));
   max-height: calc(100% - 20px);
-  grid-row: 2 / 3;
+  grid-row: 1 / 2;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border-color: #41445d;

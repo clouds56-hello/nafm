@@ -16,10 +16,10 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The desktop app shares workspaces with the CLI. Use the **Sites** rail to
-switch sites, add a local folder or SMB share, and start or stop a scan.
-Use **Scan all** to scan the workspace, and **Settings** to manage
-workspaces, site folders, SMB connections, and remote SSH agents.
+The desktop app shares workspaces with the CLI. Use the **Sites** rail or
+**Workspace actions** → **Sources** to choose sites, add a local folder or SMB
+share, and start or stop a scan. **Workspace actions** also contains
+**Scan all**, **Review**, and **Settings**.
 
 ```sh
 cd apps/nafm-desktop
@@ -27,13 +27,12 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose an arc to open a folder or select a file. Open **Contents** above the
-map to browse the current folder and **Details** to inspect a selection or
-open analysis actions. The arc length shows storage used, and each ring goes
-one level deeper. Select **Space health** to see duplication or **Coverage**
-to compare against another source. The details area opens similar folders or
-exact copies and lets you stage verified duplicates. **Review** runs a cleanup
-preview for staged copies.
+Choose an arc to open a folder or select a file. In the toolbar, use
+**Contents** to browse the current folder and **Details** to inspect a
+selection. Arc length shows storage used, and each ring goes one level deeper.
+In **Map options**, choose **Space health** to see duplication or **Coverage**
+to compare against another source. Details lets you find similar folders or
+exact copies and stage verified duplicates. **Review** previews cleanup.
 
 ### Interactive mock dashboard
 
@@ -41,9 +40,9 @@ From `apps/nafm-desktop`, run `pnpm mock` and open the
 [local mock dashboard](http://localhost:14243/mock/).
 
 The mock runs the same React frontend as the desktop app with synthetic sources
-and file data. Switch between indexed, partially verified, empty, and scanning
-workspaces to check the relevant UI. **Reset** reloads the current scenario, and
-**App only** opens a preview without the scenario controls. Changes made in the
+and file data. Open **Preview** in the toolbar to switch between indexed,
+partially verified, empty, and scanning workspaces. **Reset** reloads the
+current scenario, and **App only** opens the app view. Changes made in the
 mock last until it reloads. Scans and SMB setup are simulated in the browser.
 
 Use the mock for frontend review. Vite reloads it when the shared frontend

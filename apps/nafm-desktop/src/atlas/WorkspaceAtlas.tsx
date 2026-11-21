@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
+import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
 import { DirectoryContents } from "./DirectoryContents";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
@@ -11,28 +11,21 @@ import { StorageDetails } from "./StorageDetails";
 import { useDashboard } from "../hooks/useDashboard";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
-import { formatCount, healthColor } from "../lib/format";
+import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
 import type { HealthMetric } from "../lib/types";
-
-const mapModes = [
-  { value: "size", title: "Size" },
-  { value: "space_health", title: "Space health" },
-  { value: "coverage_health", title: "Coverage" },
-] as const;
-
-type MapMode = (typeof mapModes)[number]["value"];
 
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
 }
 
-export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof useWorkspace> }) {
+export function WorkspaceAtlas({
+  workspace, toolbarExtension,
+}: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
   const [inspectorView, setInspectorView] = useState<InspectorView | null>(null);
   const inspectorId = useId();
   const inspectorTrigger = useRef<HTMLButtonElement | null>(null);
-  const breadcrumbList = useRef<HTMLOListElement>(null);
   const sourcesOpen = sourcesView !== null;
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null);
@@ -40,22 +33,16 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
   const folder = location?.root;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   const breadcrumbs = location?.breadcrumbs ?? [];
-  const parent = breadcrumbs.at(-2);
-  const hasTrafficLights = isTauri() && /Mac/.test(navigator.platform);
   const metric: HealthMetric | null = mapMode === "size" ? null : mapMode;
   const targetCompleteness = siteCompleteness(target);
   const targetOptions = dashboard?.sites.filter((candidate) => candidate.id !== site?.id) ?? [];
   const coverage = mapMode === "coverage_health";
   const analysis = site && metric ? metricAnalysisAvailability(metric, site, target) : null;
+  const analysisNotice = analysis?.message ?? (coverage && !target ? "Add another source to compare coverage." : null);
 
   useEffect(() => {
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
-
-  useEffect(() => {
-    const list = breadcrumbList.current;
-    if (list) list.scrollLeft = list.scrollWidth;
-  }, [folder?.id]);
 
   const closeInspector = useCallback(() => {
     setInspectorView(null);
@@ -100,46 +87,51 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
 
   return (
     <div className="atlas-shell" data-inspector-open={inspectorView ? "" : undefined}>
-      <header className={`atlas-topbar${hasTrafficLights ? " atlas-native-inset" : ""}`} data-tauri-drag-region>
-        <div className="atlas-brand" data-tauri-drag-region>
-          <span className="atlas-brand-symbol" aria-hidden="true" />
-          <span data-tauri-drag-region>NAFM</span>
-        </div>
-        <span className="atlas-topbar-rule" aria-hidden="true" />
-        {workspace.management && (
-          <select
-            className="atlas-workspace-switch"
-            aria-label="Workspace"
-            value={workspace.management.active_workspace.name}
-            disabled={state.activeTaskCount > 0 || workspace.workspaceSwitching}
-            onChange={(event) => void workspace.quickSwitchWorkspace(event.target.value)}
-          >
-            {workspace.management.workspaces.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-        )}
-        <div className="atlas-drag-space" data-tauri-drag-region />
-        <div className="atlas-top-actions">
-          <button className="atlas-top-action" type="button" onClick={() => void state.scan()} disabled={!dashboard?.sites.length || state.activeTaskCount > 0}>
-            Scan all<span className="atlas-top-action-status">{state.activeTaskCount > 0 ? ` · ${state.activeTaskCount} active` : ""}</span>
-          </button>
-          <button className="atlas-top-action" type="button" onClick={() => state.setReviewOpen(true)} disabled={!dashboard} aria-haspopup="dialog">
-            Review{Boolean(dashboard?.staged.length) && <span> · {dashboard?.staged.length}</span>}
-          </button>
-          <button className="atlas-top-action" type="button" onClick={() => workspace.openManagement("workspaces")} aria-haspopup="dialog">Settings</button>
-          <button
-            className="atlas-sources-button"
-            type="button"
-            onClick={() => setSourcesView("browse")}
-            disabled={!dashboard}
-            aria-haspopup="dialog"
-            aria-expanded={sourcesOpen}
-          >
-            <span className="atlas-source-glyph" aria-hidden="true"><i /><i /><i /></span>
-            Sources
-            {dashboard && <span className="atlas-source-count">{formatCount(dashboard.sites.length)}</span>}
-          </button>
-        </div>
-      </header>
+      <AtlasToolbar
+        workspace={{
+          name: workspace.management?.active_workspace.name ?? null,
+          options: workspace.management?.workspaces ?? [],
+          disabled: state.activeTaskCount > 0 || workspace.workspaceSwitching,
+          onSwitch: (name) => void workspace.quickSwitchWorkspace(name),
+        }}
+        navigation={{
+          siteName: site?.name ?? null,
+          breadcrumbs,
+          canBack: canGoBack,
+          canForward: canGoForward,
+          canUp: canGoUp,
+          onBack: goBack,
+          onForward: goForward,
+          onUp: goUp,
+          onBreadcrumb: state.navigateBreadcrumb,
+        }}
+        map={{
+          mode: mapMode,
+          onModeChange: changeMode,
+          targets: targetOptions,
+          target,
+          onTargetChange: (id) => void state.selectCoverageTarget(id),
+          onSwap: () => void state.swapCoverageSites(),
+          canScanTarget: Boolean(target && !state.scanBlockedSiteIds.has(target.id)),
+          onScanTarget: () => { if (target) void state.scan(target.id); },
+        }}
+        inspector={{
+          id: inspectorId,
+          view: inspectorView,
+          onToggle: toggleInspector,
+        }}
+        actions={{
+          ready: dashboard !== null,
+          siteCount: dashboard?.sites.length ?? 0,
+          activeScans: state.activeTaskCount,
+          stagedCount: dashboard?.staged.length ?? 0,
+          onScanAll: () => void state.scan(),
+          onReview: () => state.setReviewOpen(true),
+          onSettings: () => workspace.openManagement("workspaces"),
+          onSources: () => setSourcesView("browse"),
+        }}
+        extension={toolbarExtension}
+      />
 
       <main className="atlas-main">
         <SiteRail
@@ -157,207 +149,112 @@ export function WorkspaceAtlas({ workspace }: { workspace: ReturnType<typeof use
           onManage={(id) => workspace.openManagement("sites", id)}
         />
 
-        <div className="atlas-workspace">
-          <header className="atlas-heading">
-            <div className="atlas-heading-identity">
-              <h1 id="atlas-site-heading" title={site?.name}>{site?.name ?? "Explore your storage"}</h1>
-            </div>
-            {site && (
-              <div className="atlas-map-controls">
-                <div className="atlas-map-modes" role="group" aria-label="Map metric">
-                  {mapModes.map(({ value, title }) => (
-                    <button key={value} type="button" aria-pressed={mapMode === value} onClick={() => changeMode(value)}>
-                      {title}
-                    </button>
-                  ))}
-                </div>
-                {coverage && (
-                  <div className="atlas-coverage-controls">
-                    <label>
-                      <span>Compare with</span>
-                      <select
-                        value={target?.id ?? ""}
-                        disabled={targetOptions.length === 0}
-                        onChange={(event) => void state.selectCoverageTarget(event.target.value)}
-                      >
-                        {(!target || targetOptions.length === 0) && <option value="">No other source</option>}
-                        {targetOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
-                      </select>
-                    </label>
-                    <button className="atlas-text-button" type="button" disabled={!target} onClick={() => void state.swapCoverageSites()}>
-                      Swap source and target
-                    </button>
-                    {target?.hash_status === "unscanned" && (
-                      <button className="atlas-text-button" type="button" disabled={state.scanBlockedSiteIds.has(target.id)} onClick={() => void state.scan(target.id)}>
-                        Scan target
-                      </button>
-                    )}
+        <section className="atlas-visualization" aria-label="Circular storage map">
+          <div className="atlas-chart-well">
+            {folder ? (
+              <RadialAtlas
+                root={folder}
+                selectedId={selected?.id ?? null}
+                metric={metric}
+                targetCompleteness={targetCompleteness}
+                onSelect={state.selectNode}
+              />
+            ) : (
+              <EmptyOrbit label={state.treeError || state.error ? "Map unavailable" : state.loading || state.treeLoading ? "Reading inventory" : "No source selected"} />
+            )}
+          </div>
+
+          <footer className="atlas-map-footer">
+            {state.treeError || state.error ? (
+              <div className="atlas-view-error" role="alert">
+                <span>{state.treeError ?? state.error}</span>
+                <button className="atlas-text-button" type="button" onClick={() => void (state.treeError ? state.retryTree() : state.refresh())}>Try again</button>
+              </div>
+            ) : dashboard && !site ? (
+              <div className="atlas-map-empty-help">
+                <span>Add a folder or network share to map its files.</span>
+                <button className="atlas-text-button" type="button" onClick={() => setSourcesView("add")}>Add a source</button>
+              </div>
+            ) : folder && (
+              <>
+                {analysisNotice && <p className="atlas-map-notice" role="status">{analysisNotice}</p>}
+                <p className="atlas-map-guide">
+                  {folder.total_bytes > 0 ? "Arc length shows size." : "Arc length shows file count."} Each ring goes one level deeper.
+                </p>
+                {metric && (
+                  <div className="atlas-health-key" role="group" aria-label="Health scale runs from 0 to 100. Gray indicates pending or unavailable data.">
+                    <span>0</span>
+                    <i aria-hidden="true" style={{ background: `linear-gradient(90deg, ${healthColor(0)}, ${healthColor(50)}, ${healthColor(100)})` }} />
+                    <span>100</span>
+                    <span>Gray: pending or unavailable</span>
                   </div>
                 )}
-              </div>
+              </>
             )}
-          </header>
-
-          <section className="atlas-visualization" aria-label="Circular storage map">
-            <div className="atlas-map-top">
-              {site && (
-                <div className="atlas-map-tools">
-                  <nav className="atlas-crumbs" aria-label="Folder path">
-                    <div className="atlas-history">
-                      <button type="button" aria-label="Previous location" disabled={!canGoBack} onClick={goBack}>←</button>
-                      <button type="button" aria-label="Next location" disabled={!canGoForward} onClick={goForward}>→</button>
-                      {parent && <button type="button" aria-label={`Up to ${parent.name}`} disabled={!canGoUp} onClick={goUp}>↑</button>}
-                    </div>
-                    <ol ref={breadcrumbList}>
-                      {breadcrumbs.map((crumb, index) => (
-                        <li key={crumb.id}>
-                          {index > 0 && <span className="atlas-crumb-divider" aria-hidden="true">/</span>}
-                          {index === breadcrumbs.length - 1 ? (
-                            <span className="atlas-crumb-current" aria-current="location" title={crumb.name}>{crumb.name}</span>
-                          ) : (
-                            <button type="button" onClick={() => state.navigateBreadcrumb(crumb)} title={crumb.name}>{crumb.name}</button>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  </nav>
-                  <div className="atlas-inspector-controls" role="group" aria-label="Explore selection">
-                    <button
-                      type="button"
-                      aria-expanded={inspectorView === "contents"}
-                      aria-controls={inspectorId}
-                      onClick={(event) => toggleInspector("contents", event.currentTarget)}
-                    >
-                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
-                        <path d="M5.5 4h7m-7 4h7m-7 4h7M3 4h.01M3 8h.01M3 12h.01" strokeLinecap="round" strokeWidth="1.4" />
-                      </svg>
-                      Contents
-                    </button>
-                    <button
-                      type="button"
-                      aria-expanded={inspectorView === "details"}
-                      aria-controls={inspectorId}
-                      onClick={(event) => toggleInspector("details", event.currentTarget)}
-                    >
-                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
-                        <circle cx="8" cy="8" r="5.5" strokeWidth="1.2" />
-                        <path d="M8 7.5v3M8 5.4h.01" strokeLinecap="round" strokeWidth="1.4" />
-                      </svg>
-                      Details
-                    </button>
-                  </div>
-                </div>
-              )}
-              {(analysis?.message || (coverage && !target)) && (
-                <p className="atlas-map-notice" role="status">{analysis?.message ?? "Add another source to compare coverage."}</p>
-              )}
-            </div>
-
-            <div className="atlas-chart-well">
-              {folder ? (
-                <RadialAtlas
-                  root={folder}
-                  selectedId={selected?.id ?? null}
+          </footer>
+          {site && (
+            <AtlasInspector
+              id={inspectorId}
+              view={inspectorView}
+              onViewChange={setInspectorView}
+              onClose={closeInspector}
+              details={location ? (
+                <StorageDetails
+                  location={location}
+                  entries={state.childrenPage?.children ?? []}
+                  selected={selected}
+                  focusRevision={state.duplicateJumpRevision}
                   metric={metric}
                   targetCompleteness={targetCompleteness}
-                  onSelect={state.selectNode}
-                />
+                  targetName={target?.name ?? null}
+                >
+                  {dashboard && selectedNode && (
+                    <ContentActions
+                      workspaceName={dashboard.workspace_name}
+                      siteId={site.id}
+                      contentRevision={state.contentRevision}
+                      node={selectedNode}
+                      metric={state.healthMetric}
+                      sourceAnalysisReady={siteAnalysisReady(site)}
+                      staged={state.isSelectedStaged}
+                      stagingBusy={state.stagingBusy}
+                      onStage={() => void state.stageSelected()}
+                      onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
+                      onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
+                    />
+                  )}
+                </StorageDetails>
               ) : (
-                <EmptyOrbit label={state.treeError || state.error ? "Map unavailable" : state.loading || state.treeLoading ? "Reading inventory" : "No source selected"} />
+                <p className="atlas-inspector-status" role="status">
+                  {state.treeError ? "Folder details are unavailable." : "Loading folder details…"}
+                </p>
               )}
-            </div>
-
-            <footer className="atlas-map-footer">
-              {state.treeError || state.error ? (
-                <div className="atlas-view-error" role="alert">
-                  <span>{state.treeError ?? state.error}</span>
-                  <button className="atlas-text-button" type="button" onClick={() => void (state.treeError ? state.retryTree() : state.refresh())}>Try again</button>
-                </div>
-              ) : dashboard && !site ? (
-                <div className="atlas-map-empty-help">
-                  <span>Add a folder or network share to map its files.</span>
-                  <button className="atlas-text-button" type="button" onClick={() => setSourcesView("add")}>Add a source</button>
-                </div>
-              ) : folder && (
+              contents={(
                 <>
-                  <p className="atlas-map-guide">
-                    {folder.total_bytes > 0 ? "Arc length shows size." : "Arc length shows file count."} Each ring goes one level deeper.
-                  </p>
-                  {metric && (
-                    <div className="atlas-health-key" role="group" aria-label="Health scale runs from 0 to 100. Gray indicates pending or unavailable data.">
-                      <span>0</span>
-                      <i aria-hidden="true" style={{ background: `linear-gradient(90deg, ${healthColor(0)}, ${healthColor(50)}, ${healthColor(100)})` }} />
-                      <span>100</span>
-                      <span>Gray: pending or unavailable</span>
-                    </div>
+                  <DirectoryContents
+                    location={location}
+                    page={state.childrenPage}
+                    selection={selected}
+                    loading={state.childrenLoading}
+                    error={state.childrenError}
+                    onSelect={(node) => {
+                      state.selectNode(node);
+                      if (node.kind === "file") setInspectorView("details");
+                    }}
+                    onPrevious={state.loadPreviousChildren}
+                    onNext={state.loadNextChildren}
+                    onRetry={state.retryChildren}
+                  />
+                  {!location && (
+                    <p className="atlas-inspector-status" role="status">
+                      {state.treeError ? "Folder contents are unavailable." : "Loading folder contents…"}
+                    </p>
                   )}
                 </>
               )}
-            </footer>
-            {site && (
-              <AtlasInspector
-                id={inspectorId}
-                view={inspectorView}
-                onViewChange={setInspectorView}
-                onClose={closeInspector}
-                details={location ? (
-                  <StorageDetails
-                    location={location}
-                    entries={state.childrenPage?.children ?? []}
-                    selected={selected}
-                    focusRevision={state.duplicateJumpRevision}
-                    metric={metric}
-                    targetCompleteness={targetCompleteness}
-                    targetName={target?.name ?? null}
-                  >
-                    {dashboard && selectedNode && (
-                      <ContentActions
-                        workspaceName={dashboard.workspace_name}
-                        siteId={site.id}
-                        contentRevision={state.contentRevision}
-                        node={selectedNode}
-                        metric={state.healthMetric}
-                        sourceAnalysisReady={siteAnalysisReady(site)}
-                        staged={state.isSelectedStaged}
-                        stagingBusy={state.stagingBusy}
-                        onStage={() => void state.stageSelected()}
-                        onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                        onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
-                      />
-                    )}
-                  </StorageDetails>
-                ) : (
-                  <p className="atlas-inspector-status" role="status">
-                    {state.treeError ? "Folder details are unavailable." : "Loading folder details…"}
-                  </p>
-                )}
-                contents={(
-                  <>
-                    <DirectoryContents
-                      location={location}
-                      page={state.childrenPage}
-                      selection={selected}
-                      loading={state.childrenLoading}
-                      error={state.childrenError}
-                      onSelect={(node) => {
-                        state.selectNode(node);
-                        if (node.kind === "file") setInspectorView("details");
-                      }}
-                      onPrevious={state.loadPreviousChildren}
-                      onNext={state.loadNextChildren}
-                      onRetry={state.retryChildren}
-                    />
-                    {!location && (
-                      <p className="atlas-inspector-status" role="status">
-                        {state.treeError ? "Folder contents are unavailable." : "Loading folder contents…"}
-                      </p>
-                    )}
-                  </>
-                )}
-              />
-            )}
-          </section>
-        </div>
+            />
+          )}
+        </section>
       </main>
 
       {state.notice && !sourcesOpen && !state.reviewOpen && (
