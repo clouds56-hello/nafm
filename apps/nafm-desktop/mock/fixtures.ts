@@ -1,0 +1,186 @@
+import type { SiteOverview, StorageNode } from "../src/lib/types";
+
+export type PreviewScenario = "populated" | "partial" | "empty" | "scanning";
+
+export const PREVIEW_WORKSPACE = "Studio workspace";
+
+type SampleSite = Pick<SiteOverview, "id" | "name" | "location" | "kind">;
+type SampleEntry = readonly [name: string, contents: number | readonly SampleEntry[]];
+type SampleRoot = { name: string; path: string; entries: readonly SampleEntry[] };
+
+const GiB = 1024 ** 3;
+const MiB = 1024 ** 2;
+const INVENTORY_DATE = "2025-11-04T10:15:00.000Z";
+
+const months = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+const projects: readonly SampleEntry[] = [
+  ["Brand campaign", [
+    ["Trailer master.mov", 92 * GiB],
+    ["Camera originals.mxf", 67 * GiB],
+    ["Campaign assembly.mov", 19 * GiB],
+  ]],
+  ["Product launch", [
+    ["Launch film.mov", 41 * GiB],
+    ["B-roll", [["Interviews.mxf", 17 * GiB], ["Studio details.mxf", 8 * GiB]]],
+    ["Grade references.zip", 850 * MiB],
+  ]],
+  ["Exhibition catalog", [
+    ["Print masters.tif", 14 * GiB],
+    ["Proofs.pdf", 120 * MiB],
+  ]],
+  ["Typography study", [["Type specimens.pdf", 270 * MiB], ["Notes.txt", 18 * 1024]]],
+  ["Encoding tests", [["Test patterns.mov", 4 * GiB], ["Unrendered.txt", 0]]],
+  ["Design references", [["Reference scans.zip", 3 * GiB]]],
+  ...months.map<SampleEntry>((month, index) => [
+    `2024 ${month}`,
+    [["Contact sheet.pdf", (16 + index * 7) * MiB], ["Production notes.txt", (8 + index) * 1024]],
+  ]),
+];
+
+const photographs: readonly SampleEntry[] = [
+  ["Editorial", [["Summer contact sheets.tif", 24 * GiB], ["Street portraits.raw", 19 * GiB]]],
+  ["Location scouting", [["Coastal walk.raw", 22 * GiB], ["Old town.raw", 15 * GiB]]],
+  ["Studio portraits", [["Medium format scans.tif", 37 * GiB], ["Portrait selects.zip", 21 * GiB]]],
+  ["Reference images", [["Surfaces.tif", 7 * GiB], ["Lighting notes.pdf", 24 * MiB]]],
+];
+
+const deliverables: readonly SampleEntry[] = [
+  ["Exhibition playback", [["Gallery loop.mov", 44 * GiB], ["Captions.vtt", 38 * 1024]]],
+  ["Client review", [["Review cut.mp4", 12 * GiB], ["Clean audio.wav", 4 * GiB]]],
+];
+
+const sound: readonly SampleEntry[] = [
+  ["Field recordings", [["Harbor ambience.wav", 10 * GiB], ["Distant rain.wav", 8 * GiB]]],
+  ["Music cues", [["Cue sessions.zip", 16 * GiB], ["Stems.zip", 5 * GiB]]],
+];
+
+const documents: readonly SampleEntry[] = [
+  ["Brand guidelines.pdf", 65 * MiB],
+  ["Planning", [["Shot list.pdf", 12 * MiB], ["Schedule.csv", 19 * 1024]]],
+  ["Readme.txt", 0],
+];
+
+const fieldNotes: readonly SampleEntry[] = [
+  ["Survey log.pdf", 28 * MiB],
+  ["Drone imagery", [["Headland survey.dng", 16 * GiB], ["Route overview.dng", 6 * GiB]]],
+  ["On-location audio", [["Morning session.wav", 4 * GiB], ["Radio checks.wav", 123 * MiB]]],
+  ["Unsorted", [["Placeholder.txt", 0]]],
+];
+
+const teamFiles: readonly SampleEntry[] = [
+  ["Incoming", [["Dailies.mov", 21 * GiB], ["Camera reports.pdf", 17 * MiB]]],
+  ["Handoff", [["Screening copy.mov", 15 * GiB], ["Artwork.zip", 2 * GiB]]],
+  ["Shared references", [["Design library.zip", 870 * MiB], ["Brief.pdf", 34 * MiB]]],
+];
+
+function joinPath(directory: string, name: string) {
+  const separator = directory.includes("\\") && !directory.includes("/") ? "\\" : "/";
+  return `${directory.replace(/[/\\]+$/, "")}${separator}${name}`;
+}
+
+function leafName(path: string, fallback: string) {
+  return path.replace(/[/\\]+$/, "").split(/[/\\]/).at(-1) || fallback;
+}
+
+function folder(
+  id: string,
+  name: string,
+  path: string | null,
+  kind: StorageNode["kind"],
+  children: StorageNode[],
+): StorageNode {
+  const totals = children.reduce((sum, child) => ({
+    total_bytes: sum.total_bytes + child.total_bytes,
+    file_count: sum.file_count + child.file_count,
+    verified_file_count: sum.verified_file_count + child.verified_file_count,
+    pending_hash_count: sum.pending_hash_count + child.pending_hash_count,
+  }), { total_bytes: 0, file_count: 0, verified_file_count: 0, pending_hash_count: 0 });
+
+  children.sort((a, b) => b.total_bytes - a.total_bytes || a.name.localeCompare(b.name));
+  return { id, name, path, kind, ...totals, children };
+}
+
+function buildTree(site: SampleSite, roots: readonly SampleRoot[], partial = false): StorageNode {
+  let nextFile = 0;
+
+  function buildEntry(directoryId: string, directoryPath: string, [name, contents]: SampleEntry): StorageNode {
+    const id = `${directoryId}/${name}`;
+    const path = joinPath(directoryPath, name);
+    if (typeof contents !== "number") {
+      return folder(id, name, path, "directory", contents.map((entry) => buildEntry(id, path, entry)));
+    }
+
+    const pending = partial && nextFile++ % 4 === 0;
+    return {
+      id, name, path, kind: "file", total_bytes: contents, file_count: 1,
+      verified_file_count: pending ? 0 : 1, pending_hash_count: pending ? 1 : 0, children: [],
+    };
+  }
+
+  const kind = site.kind === "local" ? "local_root" : "smb_root";
+  const children = roots.map(({ name, path, entries }, index) => {
+    const id = `site_folder:${site.id}:${index}`;
+    return folder(id, name, path, kind, entries.map((entry) => buildEntry(id, path, entry)));
+  });
+  return folder(`site:${site.id}`, site.name, null, "site", children);
+}
+
+export function createSampleTree(site: SampleSite): StorageNode {
+  return buildTree(site, [{
+    name: leafName(site.location, site.name),
+    path: site.location,
+    entries: site.kind === "local" ? fieldNotes : teamFiles,
+  }]);
+}
+
+export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview[]; trees: Map<string, StorageNode> } {
+  if (scenario === "empty") return { sites: [], trees: new Map() };
+
+  const studioDirectory = "/demo/Studio Archive";
+  const studio: SampleSite = {
+    id: "studio-archive", name: "Studio archive", location: joinPath(studioDirectory, "Projects"), kind: "local",
+  };
+  const field: SampleSite = {
+    id: "field-drive", name: "Field drive", location: "/demo/Field Drive", kind: "local",
+  };
+  const team: SampleSite = {
+    id: "team-share", name: "Team share", location: "smb://media.example.test/Studio", kind: "smb",
+  };
+  const studioRoots = [
+    ["Projects", projects],
+    ["Photo Library", photographs],
+    ["Deliverables", deliverables],
+    ["Sound Library", sound],
+    ["Documents", documents],
+    ["Sandbox", []],
+  ] as const;
+
+  const trees = new Map([
+    [studio.id, buildTree(studio, studioRoots.map(([name, entries]) => ({
+      name, path: joinPath(studioDirectory, name), entries,
+    })), scenario === "partial")],
+    [field.id, createSampleTree(field)],
+    [team.id, createSampleTree(team)],
+  ]);
+
+  const sites = [studio, field, team].map<SiteOverview>((site) => {
+    const tree = trees.get(site.id)!;
+    const partial = tree.pending_hash_count > 0;
+    return {
+      ...site,
+      connection_state: "connected",
+      scan_state: partial ? "idle" : "done",
+      hash_status: partial ? "pending" : "ready",
+      latest_inventory_at: INVENTORY_DATE,
+      last_scanned_at: partial ? null : INVENTORY_DATE,
+      total_files: tree.file_count,
+      total_bytes: tree.total_bytes,
+    };
+  });
+
+  return { sites, trees };
+}

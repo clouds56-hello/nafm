@@ -33,6 +33,22 @@ lists the current folder's entries and lets you page through them.
 Use the CLI to switch workspaces, manage existing sites, or run duplicate
 analysis and cleanup workflows.
 
+### Interactive mock dashboard
+
+From `apps/nafm-desktop`, run `pnpm mock` and open the
+[local mock dashboard](http://localhost:14243/mock/).
+
+The mock runs the same React frontend as the desktop app with synthetic sources
+and file data. Switch between indexed, partially verified, empty, and scanning
+workspaces to check the relevant UI. **Reset** reloads the current scenario, and
+**App only** opens a preview without the scenario controls. Changes made in the
+mock last until it reloads. Scans and SMB setup are simulated in the browser.
+
+Use the mock for frontend review. Vite reloads it when the shared frontend
+changes. Update the mock fixtures and command responses when a UI change needs
+new data or a new Tauri command. The desktop production build uses its separate
+entry point.
+
 ## Desktop releases
 
 Pull requests and pushes to `main` run Rust formatting, tests, Clippy, and the

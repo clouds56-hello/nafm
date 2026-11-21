@@ -7,6 +7,7 @@
     "agents:build": "cargo run --locked -p nafm-xtask -- build-agents",
     "agents:check": "cargo run --locked -p nafm-xtask -- check-agents",
     "dev": "vite",
+    "mock": "vite --host localhost --port 14243",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
