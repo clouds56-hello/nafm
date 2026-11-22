@@ -201,3 +201,18 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.atlas-chart-well { position: relative; }
+.atlas-location-progress {
+  position: absolute;
+  inset: auto auto 12px 12px;
+  padding: 6px 9px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 5px;
+  background: var(--atlas-surface);
+  color: var(--atlas-muted);
+  font: 11px/1.4 var(--atlas-mono);
+  pointer-events: none;
+  animation: atlas-pending 160ms step-end;
+}
+@keyframes atlas-pending { from { opacity: 0; } to { opacity: 1; } }

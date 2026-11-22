@@ -27,10 +27,19 @@ pnpm install
 pnpm tauri dev
 ```
 
-Choose a folder arc to explore it, then use **Up one level** in the center to
-return to its parent. A file arc opens **Details**, and a grouped arc opens
-**Contents** at the grouped entries. The floating **Contents & details** button
-also opens the inspector for the current selection.
+The center of the atlas shows the current folder. Point at an arc to preview
+its name, size, and share of that folder. Click to open it. On a touchscreen,
+tap once to preview, then use the action in the preview or tap the same arc
+again to open it. Files open **Details** and grouped arcs open **Contents**.
+
+Use **Up one level** to return to the parent folder. **Previous location**
+and **Next location** retrace folder, site, and comparison changes. On the
+map, Left and Right move between siblings, Down moves to a child, Up moves
+to its parent, and Enter opens the focused item.
+
+The floating **Contents & details** button opens the inspector. In **Contents**,
+use Up and Down to move between entries, Right to open a folder, Left to
+return to its parent, and Page Up or Page Down to change pages.
 In **Map options**, choose **Space health** to see duplication or **Coverage**
 to compare against another source. Details lets you find similar folders or
 exact copies and stage verified duplicates. **Review** previews cleanup.
@@ -42,7 +51,8 @@ From `apps/nafm-desktop`, run `pnpm mock` and open the
 
 The mock runs the same React frontend as the desktop app with synthetic sources
 and file data. Open **Preview** in the toolbar to switch between indexed,
-partially verified, empty, and scanning workspaces. **Reset** reloads the
+partially verified, empty, and scanning workspaces. Choose **Slow folder reads**
+to try changing destinations while a folder is loading. **Reset** reloads the
 current scenario, and **App only** opens the app view. Changes made in the
 mock last until it reloads. Scans and SMB setup are simulated in the browser.
 
@@ -50,6 +60,10 @@ Use the mock for frontend review. Vite reloads it when the shared frontend
 changes. Update the mock fixtures and command responses when a UI change needs
 new data or a new Tauri command. The desktop production build uses its separate
 entry point.
+
+To rerun the atlas interaction tests, install Firefox once with
+`pnpm exec playwright install firefox`, then run `pnpm test:atlas` from
+`apps/nafm-desktop`. The suite uses the local mock.
 
 ## Desktop releases
 

@@ -248,9 +248,13 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     cancel_scan: (args) => cancelScan(numberArg(args.requestId, "scan ID")),
   };
 
-  registerPreviewIpc((command, payload) => {
+  registerPreviewIpc(async (command, payload) => {
     if (!Object.hasOwn(handlers, command)) throw new Error(`Unsupported preview command: ${command}`);
-    return handlers[command](payload === undefined ? {} : record(payload));
+    const response = handlers[command](payload === undefined ? {} : record(payload));
+    if (scenario === "slow" && (command === "get_storage_view_snapshot" || command === "get_storage_children")) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    }
+    return response;
   });
 
   const first = management.current().sites.values().next().value;

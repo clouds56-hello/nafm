@@ -24,6 +24,7 @@ export function WorkspaceAtlas({
 }: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
   const [activePane, setActivePane] = useState<"sites" | InspectorView | null>(null);
+  const returnFocus = useRef(true);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
   const inspectorView = activePane === "sites" ? null : activePane;
   const sourcesOpen = sourcesView !== null;
@@ -44,7 +45,14 @@ export function WorkspaceAtlas({
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
-  const closePane = useCallback(() => setActivePane(null), []);
+  const closePane = useCallback(() => {
+    returnFocus.current = true;
+    setActivePane(null);
+  }, []);
+  function dismissPane() {
+    returnFocus.current = false;
+    setActivePane(null);
+  }
 
   const { goBack, goForward, goUp, canGoBack, canGoForward, canGoUp } = state;
   useEffect(() => {
@@ -78,9 +86,11 @@ export function WorkspaceAtlas({
 
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
-    if (node.kind === "file" || (node.kind === "smaller_items" && !state.childrenLoading)) {
+    if (node.kind === "file" || node.kind === "smaller_items") {
       if (origin) inspectorOrigin.current = origin;
       setActivePane(node.kind === "file" ? "details" : "contents");
+    } else if (origin && activePane === "sites") {
+      dismissPane();
     }
   }
 
@@ -138,7 +148,7 @@ export function WorkspaceAtlas({
             cancellingRequests={state.cancellingRequestIds}
             progressBySite={state.progressBySite}
             open={activePane === "sites"}
-            restoreFocus={activePane === null}
+            restoreFocus={activePane === null && returnFocus.current}
             onOpen={() => setActivePane("sites")}
             onClose={closePane}
             onSelect={(id) => { void state.selectSite(id); closePane(); }}
@@ -147,12 +157,19 @@ export function WorkspaceAtlas({
             onAdd={() => setSourcesView("add")}
             onManage={(id) => workspace.openManagement("sites", id)}
           />
-          <div className="atlas-chart-well">
+          <div
+            className="atlas-chart-well"
+            aria-busy={state.childrenLoading || state.treeLoading || undefined}
+            onClick={(event) => {
+              if (activePane && event.target instanceof Element && !event.target.closest("button, [role=button], .atlas-sector-preview")) dismissPane();
+            }}
+          >
             {folder ? (
               <RadialAtlas
                 root={folder}
                 parentName={breadcrumbs.at(-2)?.name}
                 canGoUp={canGoUp}
+                onTouchPreview={dismissPane}
                 onGoUp={goUp}
                 selectedId={selected?.id ?? null}
                 metric={metric}
@@ -161,6 +178,9 @@ export function WorkspaceAtlas({
               />
             ) : (
               <EmptyOrbit label={state.treeError || state.error ? "Map unavailable" : state.loading || state.treeLoading ? "Reading inventory" : "No source selected"} />
+            )}
+            {folder && (state.childrenLoading || state.treeLoading) && (
+              <span className="atlas-location-progress" role="status">Reading inventory…</span>
             )}
           </div>
 
@@ -191,9 +211,12 @@ export function WorkspaceAtlas({
           </footer>
           {site && (
             <AtlasInspector
+              key={site.id}
+              detailsKey={selected?.id ?? folder?.id ?? null}
+              contentsKey={JSON.stringify([folder?.id, state.childrenPage?.offset])}
               view={inspectorView}
               initialView={selected?.kind === "file" ? "details" : "contents"}
-              restoreFocus={activePane === null}
+              restoreFocus={activePane === null && returnFocus.current}
               origin={inspectorOrigin}
               onViewChange={setActivePane}
               onClose={closePane}
@@ -231,6 +254,7 @@ export function WorkspaceAtlas({
               contents={(
                 <>
                   <DirectoryContents
+                    onGoUp={goUp}
                     location={location}
                     page={state.childrenPage}
                     selection={selected}

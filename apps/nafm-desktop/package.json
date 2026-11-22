@@ -8,6 +8,7 @@
     "agents:check": "cargo run --locked -p nafm-xtask -- check-agents",
     "dev": "vite",
     "mock": "vite --host localhost --port 14243",
+    "test:atlas": "playwright test",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -19,6 +20,7 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tauri-apps/cli": "^2.8.4",
     "@types/node": "^22.18.0",
     "@types/react": "^19.1.10",

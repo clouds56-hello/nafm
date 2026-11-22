@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
@@ -62,16 +62,35 @@ export function SiteRail({
   const titleId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLUListElement>(null);
   const wasOpen = useRef(false);
 
   useLayoutEffect(() => {
     if (open && !wasOpen.current) {
-      closeButton.current?.focus({ preventScroll: true });
-    } else if (!open && wasOpen.current && restoreFocus) {
+      const current = list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select[aria-current]")
+        ?? list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select");
+      (current ?? closeButton.current)?.focus();
+    } else if (!open && wasOpen.current && restoreFocus && document.activeElement === document.body) {
       trigger.current?.focus({ preventScroll: true });
     }
     wasOpen.current = open;
   }, [open, restoreFocus]);
+
+  function moveSite(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const buttons = list.current?.querySelectorAll<HTMLButtonElement>(".atlas-site-rail-select");
+    if (!buttons?.length) return;
+    let next: number;
+    switch (event.key) {
+      case "ArrowUp": next = Math.max(0, index - 1); break;
+      case "ArrowDown": next = Math.min(index + 1, buttons.length - 1); break;
+      case "Home": next = 0; break;
+      case "End": next = buttons.length - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    buttons[next].focus();
+  }
 
   if (!open) {
     return (
@@ -115,8 +134,8 @@ export function SiteRail({
         </button>
       </header>
       {sites.length === 0 ? <p className="atlas-site-rail-empty">No sites configured</p> : (
-        <ul className="atlas-site-rail-list">
-          {sites.map((site) => {
+        <ul className="atlas-site-rail-list" ref={list}>
+          {sites.map((site, index) => {
             const requestId = scanRequests.get(site.id);
             const scanning = requestId !== undefined;
             const stopping = scanning && cancellingRequests.has(requestId);
@@ -143,6 +162,7 @@ export function SiteRail({
                   type="button"
                   aria-current={selected || undefined}
                   aria-label={`Open ${site.name} in Atlas`}
+                  onKeyDown={(event) => moveSite(event, index)}
                   onClick={() => onSelect(site.id)}
                 >
                   <span className="atlas-site-rail-device"><DeviceIcon /></span>

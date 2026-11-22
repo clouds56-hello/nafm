@@ -294,7 +294,9 @@
     padding-inline: 7px;
   }
   .atlas-toolbar[data-native-inset] { padding-inline-start: 80px; }
-  .atlas-toolbar-wordmark, .atlas-toolbar-label, .atlas-toolbar-history { display: none; }
+  .atlas-toolbar-wordmark, .atlas-toolbar-label { display: none; }
+  .atlas-toolbar-history .atlas-toolbar-button:not(:first-child) { display: none; }
+  .atlas-toolbar-history .atlas-toolbar-button:first-child { width: 32px; min-height: 40px; }
   .atlas-toolbar-workspace { position: relative; width: 26px; height: 31px; justify-content: center; }
   .atlas-toolbar-workspace > svg { display: block; width: 16px; height: 16px; }
   .atlas-toolbar-workspace:focus-within { border-radius: 4px; outline: 2px solid var(--atlas-accent); }

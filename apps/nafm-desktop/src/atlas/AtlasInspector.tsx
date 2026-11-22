@@ -8,6 +8,8 @@ export type InspectorView = "contents" | "details";
 interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
+  contentsKey: string;
+  detailsKey: string | null;
   restoreFocus: boolean;
   origin: RefObject<SVGGElement | null>;
   onViewChange: (view: InspectorView) => void;
@@ -21,19 +23,33 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-export function AtlasInspector({ view, initialView, restoreFocus, origin, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
+export function AtlasInspector({
+  view, initialView, contentsKey, detailsKey, restoreFocus, origin, onViewChange, onClose, contents, details,
+}: AtlasInspectorProps) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const contentsTab = useRef<HTMLButtonElement>(null);
   const detailsTab = useRef<HTMLButtonElement>(null);
+  const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const wasOpen = useRef(false);
+  const contentsPane = useRef<HTMLDivElement>(null);
+  const detailsPane = useRef<HTMLDivElement>(null);
+  const contentsScroll = useRef(new Map<string, number>());
+  const detailsScroll = useRef({ target: detailsKey, top: 0 });
   const activeTab = view === "contents" ? contentsTab : detailsTab;
+
+  useLayoutEffect(() => {
+    if (view) lastView.current = { view, target: detailsKey };
+    if (detailsScroll.current.target !== detailsKey) detailsScroll.current = { target: detailsKey, top: 0 };
+    if (view === "contents" && contentsPane.current) contentsPane.current.scrollTop = contentsScroll.current.get(contentsKey) ?? 0;
+    if (view === "details" && detailsPane.current) detailsPane.current.scrollTop = detailsScroll.current.top;
+  }, [view, contentsKey, detailsKey]);
 
   useLayoutEffect(() => {
     if (view) {
       activeTab.current?.focus({ preventScroll: true });
     } else if (wasOpen.current) {
-      if (restoreFocus) {
+      if (restoreFocus && document.activeElement === document.body) {
         const target = origin.current?.isConnected ? origin.current : trigger.current;
         target?.focus({ preventScroll: true });
       }
@@ -49,7 +65,7 @@ export function AtlasInspector({ view, initialView, restoreFocus, origin, onView
         type="button"
         ref={trigger}
         aria-expanded={false}
-        onClick={() => onViewChange(initialView)}
+        onClick={() => onViewChange(lastView.current?.target === detailsKey ? lastView.current.view : initialView)}
       >
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
           <rect x="2" y="3" width="12" height="10" rx="1.5" />
@@ -112,6 +128,14 @@ export function AtlasInspector({ view, initialView, restoreFocus, origin, onView
           key={tab.view}
           id={`${id}-${tab.view}-panel`}
           className="atlas-inspector-pane"
+          ref={tab.view === "contents" ? contentsPane : detailsPane}
+          onScroll={(event) => {
+            if (view !== tab.view) return;
+            const top = event.currentTarget.scrollTop;
+            if (view === "details") detailsScroll.current = { target: detailsKey, top };
+            else if (top) contentsScroll.current.set(contentsKey, top);
+            else contentsScroll.current.delete(contentsKey);
+          }}
           role="tabpanel"
           aria-labelledby={`${id}-${tab.view}-tab`}
           tabIndex={0}

@@ -3,7 +3,7 @@
   min-width: 0;
   align-content: start;
   gap: 5px;
-  padding: 9px var(--atlas-inspector-padding, 14px) 12px;
+  padding: 0 var(--atlas-inspector-padding, 14px) 12px;
   border-top: 1px solid var(--atlas-border);
 }
 
@@ -16,14 +16,21 @@
 }
 
 .atlas-directory-header {
-  min-height: 29px;
-  justify-content: space-between;
-  gap: 6px 10px;
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  min-height: 40px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin-inline: calc(-1 * var(--atlas-inspector-padding, 14px));
+  padding: 4px var(--atlas-inspector-padding, 14px);
+  border-bottom: 1px solid var(--atlas-border);
+  background: var(--atlas-surface);
 }
 
 .atlas-directory-header h2 {
   min-width: 0;
-  flex: 1 1 112px;
+  flex: 1 1 0;
   overflow: hidden;
   margin: 0;
   font-size: 14px;
@@ -42,10 +49,11 @@
   white-space: nowrap;
 }
 
-.atlas-directory-page {
+.atlas-directory-page,
+.atlas-directory-up {
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 30px;
+  height: 30px;
   flex: none;
   place-items: center;
   padding: 0;
@@ -55,8 +63,9 @@
   color: var(--atlas-ink);
 }
 
-.atlas-directory-page:disabled { opacity: .4; }
-.atlas-directory-page:hover:enabled { background: #23263a; color: var(--atlas-accent); }
+.atlas-directory-up { border-color: transparent; }
+:is(.atlas-directory-page, .atlas-directory-up):disabled { opacity: .4; }
+:is(.atlas-directory-page, .atlas-directory-up):hover:enabled { background: #23263a; color: var(--atlas-accent); }
 
 .atlas-directory-page::before,
 .atlas-directory-chevron {
@@ -78,6 +87,7 @@
 }
 
 .atlas-directory-list li { min-width: 0; border-top: 1px solid var(--atlas-border); }
+.atlas-directory-list li:first-child { border-top: 0; }
 
 .atlas-directory-entry {
   display: grid;
@@ -177,4 +187,11 @@
 
 @media (max-width: 360px) {
   .atlas-directory-count { display: none; }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-directory-entry { min-height: 44px; }
+  .atlas-directory-page,
+  .atlas-directory-up { width: 42px; height: 42px; }
+  .atlas-directory-pages { gap: 2px; }
 }

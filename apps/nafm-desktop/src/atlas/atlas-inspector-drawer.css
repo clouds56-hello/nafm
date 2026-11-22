@@ -96,6 +96,7 @@
 }
 
 .atlas-inspector-pane[hidden] { display: none; }
+.atlas-inspector-pane:has(> .atlas-directory) { scroll-padding-block-start: 44px; }
 .atlas-inspector-pane > .atlas-directory { border-top: 0; }
 
 @media (max-width: 760px) {
@@ -106,4 +107,11 @@
     max-height: min(72vh, 520px);
     max-height: min(72dvh, 520px);
   }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-inspector-trigger, .atlas-inspector-tabs button { min-height: 44px; }
+  .atlas-inspector-tabs button { padding-inline: 8px; }
+  .atlas-inspector-close { width: 44px; height: 44px; }
+  .atlas-inspector-pane:has(> .atlas-directory) { scroll-padding-block-start: 52px; }
 }

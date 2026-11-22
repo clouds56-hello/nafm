@@ -5,6 +5,7 @@ export const scenarioLabels = {
   partial: "Partial verification",
   empty: "Empty workspace",
   scanning: "Scan in progress",
+  slow: "Slow folder reads",
 } satisfies Record<PreviewScenario, string>;
 
 export function getScenario(url: URL): PreviewScenario {

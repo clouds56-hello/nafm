@@ -249,7 +249,13 @@
     max-height: min(72vh, 520px);
     max-height: min(72dvh, 520px);
   }
-  .atlas-site-rail .atlas-site-rail-scan,
-  .atlas-site-rail .atlas-site-rail-manage { height: 30px; }
-  .atlas-site-rail .atlas-site-rail-manage { width: 27px; }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-sites-trigger, .atlas-site-rail-select { min-height: 44px; }
+  .atlas-site-rail :is(.atlas-site-rail-add, .atlas-site-rail-close, .atlas-site-rail-manage) {
+    width: 44px;
+    height: 44px;
+  }
+  .atlas-site-rail .atlas-site-rail-scan { min-height: 44px; padding-inline: 8px; }
 }

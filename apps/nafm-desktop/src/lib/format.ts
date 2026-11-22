@@ -57,3 +57,11 @@ export function healthColor(value: number | null, intensity = 1): string {
   ));
   return `rgb(${channels.join(" ")})`;
 }
+
+const percentage = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
+
+export function formatShare(bytes: number, parentBytes: number) {
+  if (parentBytes === 0) return "—";
+  const ratio = Math.min(1, bytes / parentBytes);
+  return ratio > 0 && ratio < 0.001 ? `<${percentage.format(0.001)}` : percentage.format(ratio);
+}

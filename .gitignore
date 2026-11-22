@@ -3,6 +3,7 @@
 !/apps/nafm-desktop/src-tauri/resources/agents/.gitkeep
 /.pnpm-store/
 /apps/nafm-desktop/dist/
+/apps/nafm-desktop/test-results/
 /apps/nafm-desktop/node_modules/
 /apps/nafm-desktop/*.tsbuildinfo
 /apps/nafm-desktop/vite.config.js

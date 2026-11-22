@@ -1,10 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { formatBytes, formatCount, formatFileEquivalent, formatHealth } from "../lib/format";
+import { formatBytes, formatCount, formatFileEquivalent, formatHealth, formatShare } from "../lib/format";
 import { formatCompleteness, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageLocation, StorageNode } from "../lib/types";
 import "./inspector.css";
-
-const percentage = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
 
 interface StorageDetailsProps {
   location: StorageLocation;
@@ -23,12 +21,6 @@ function findContainingFolder(folder: StorageNode, id: string): StorageNode | un
     const container = findContainingFolder(item, id);
     if (container) return container;
   }
-}
-
-function formatShare(bytes: number, parentBytes: number) {
-  if (parentBytes === 0) return "—";
-  const ratio = Math.min(1, bytes / parentBytes);
-  return ratio > 0 && ratio < 0.001 ? `<${percentage.format(0.001)}` : percentage.format(ratio);
 }
 
 function getVerification(node: StorageNode) {
