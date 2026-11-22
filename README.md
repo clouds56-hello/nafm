@@ -23,6 +23,11 @@ opens from **Workspace actions** → **Sources** and **Settings** → **Sites**.
 Use the Sites panel or Sources list to start or stop a scan. **Workspace actions**
 also contains **Scan all**, **Review**, and **Settings**.
 
+For a newly added site, choose **Scan this site** in the center of the atlas.
+The dial shows progress until the inventory is available, then the rings open
+for browsing while file verification continues. Switching sites remembers
+each site's folder, Contents page, and inspector view for the session.
+
 ```sh
 cd apps/nafm-desktop
 pnpm install

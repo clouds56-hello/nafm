@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Keyb
 import { formatBytes, formatCount, formatHealth, formatShare } from "../lib/format";
 import { formatCompleteness, healthAriaDescription, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
+import { FirstScanCenter, type FirstScanState } from "./FirstScanCenter";
 import { CENTER, ORIGIN, RINGS, SEAM, TURN, branchSectors, orbitPath, polar, type Sector } from "./radialGeometry";
 import { SectorPreview, kindLabel, labelFor, type ArcPreview } from "./SectorPreview";
 import "./radial.css";
@@ -13,6 +14,7 @@ interface RadialAtlasProps {
   onGoUp: () => void;
   onTouchPreview: () => void;
   selectedId: string | null;
+  firstScan?: FirstScanState;
   metric: HealthMetric | null;
   targetCompleteness: number;
   onSelect: (node: StorageNode, origin: SVGGElement) => void;
@@ -81,6 +83,7 @@ export function RadialAtlas(props: RadialAtlasProps) {
   const lastControl = useRef<Element | null>(null);
 
   const previousRoot = useRef(props.root.id);
+  const awaitingInventory = Boolean(props.firstScan);
 
   useLayoutEffect(() => {
     // The old arc was unmounted. On return, resume at the folder we just left.
@@ -92,7 +95,7 @@ export function RadialAtlas(props: RadialAtlasProps) {
     }
     previousRoot.current = props.root.id;
     lastControl.current = null;
-  }, [props.root.id]);
+  }, [props.root.id, awaitingInventory]);
 
   return (
     <RadialPlot
@@ -110,7 +113,7 @@ interface RadialPlotProps extends RadialAtlasProps {
 }
 
 function RadialPlot({
-  root, parentName, canGoUp, onGoUp, onTouchPreview, selectedId, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
+  root, parentName, canGoUp, onGoUp, onTouchPreview, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
 }: RadialPlotProps) {
   const descriptionId = useId();
   const gradientId = useId();
@@ -118,10 +121,10 @@ function RadialPlot({
   const pointing = useRef<string | null>(null);
   const up = useRef<HTMLButtonElement>(null);
   const [tabStop, setTabStop] = useState<string | null>(null);
-  const sectors = useMemo(
-    () => branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2),
-    [root],
-  );
+  const awaitingInventory = Boolean(firstScan);
+  const sectors = useMemo(() => awaitingInventory
+    ? []
+    : branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2), [root, awaitingInventory]);
   const previewSector = sectors.find((sector) => sector.node.id === preview?.id);
   const highlight = previewSector
     ?? sectors.find((sector) => sector.node.id === selectedId);
@@ -130,7 +133,9 @@ function RadialPlot({
   const rootScore = metric ? nodeHealthPresentation(root, metric, targetCompleteness) : null;
   const metricLabel = metric === "coverage_health" ? "Coverage" : "Space health";
   let caption = sectors.length === 0 ? "No mapped entries" : null;
-  if (rootScore?.state === "partial") caption = `Estimated · ${formatCompleteness(rootScore.completeness)} verified`;
+  if (root.file_count === 0 && root.kind === "site") caption = root.children.length ? "No files found" : "No folders configured";
+  else if (root.file_count === 0 && root.children.length === 0) caption = "Folder is empty";
+  else if (rootScore?.state === "partial") caption = `Estimated · ${formatCompleteness(rootScore.completeness)} verified`;
   else if (rootScore?.state === "unavailable" && !caption) caption = "Score unavailable";
   else if (!rootScore && !caption) caption = `${formatCount(root.file_count)} ${root.file_count === 1 ? "file" : "files"}`;
   const formattedSize = formatBytes(root.total_bytes);
@@ -217,17 +222,21 @@ function RadialPlot({
       <figure
         ref={plotRef}
         className="radial-atlas"
+        data-first-scan={awaitingInventory || undefined}
         tabIndex={-1}
         aria-describedby={descriptionId}
         onKeyDownCapture={(event) => onKeyboardNavigate(event.target as Element)}
         onPointerDownCapture={() => onKeyboardNavigate(null)}
       >
         <figcaption id={descriptionId} className="radial-atlas__sr-only">
-          {labelFor(root)}, {formatBytes(root.total_bytes)}, {formatCount(root.file_count)} {root.file_count === 1 ? "file" : "files"}.
-          {rootScore && ` ${healthAriaDescription(rootScore, metric === "coverage_health" ? "coverage" : "space", root.file_count > 0)}.`}
+          {labelFor(root)}. {awaitingInventory ? "Awaiting first inventory." : (
+            <>{formatBytes(root.total_bytes)}, {formatCount(root.file_count)} {root.file_count === 1 ? "file" : "files"}.
+              {rootScore && ` ${healthAriaDescription(rootScore, metric === "coverage_health" ? "coverage" : "space", root.file_count > 0)}.`}
+            </>
+          )}
           {sectors.length > 0
             ? " Circular storage map. Segment lengths show data size and outer rings show deeper folders. Left and Right move between siblings. Down moves to a child and Up to its parent. Press Enter or Space to open an item."
-            : " No mapped entries."}
+            : !awaitingInventory && caption}
         </figcaption>
         <svg viewBox="0 0 600 600" role="group" aria-label={`${labelFor(root)} storage map`} className="radial-atlas__chart">
           <defs>
@@ -250,7 +259,10 @@ function RadialPlot({
             {ORIENTATIONS.map(({ start, end }, index) => (
               <line key={index} x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="radial-atlas__tick--major" />
             ))}
-            <circle className="radial-atlas__dial" cx={CENTER} cy={CENTER} r="102" fill={`url(#${gradientId})`} />
+            <circle className="radial-atlas__dial" cx={CENTER} cy={CENTER} r={awaitingInventory ? 150 : 102} fill={`url(#${gradientId})`} />
+            {firstScan?.requestId !== undefined && !firstScan.stopping && (
+              <circle className="radial-atlas__scan-sweep" cx={CENTER} cy={CENTER} r={RINGS[1].radius} pathLength="100" />
+            )}
             {sectors.filter((sector) => sector.tier === 0).map((sector) => {
               const point = polar(112, (sector.from + sector.to) / 2);
               const color = metric ? nodeHealthPresentation(sector.node, metric, targetCompleteness).color : sector.color;
@@ -314,15 +326,19 @@ function RadialPlot({
           })}
         </svg>
         <div className="radial-atlas__reading">
-          <span aria-hidden="true" className="radial-atlas__kind" style={{ color: rootScore?.color }}>
-            {rootScore ? metricLabel : kindLabel(root)}
-          </span>
-          <strong className="radial-atlas__size" aria-hidden="true">
-            {rootScore ? formatHealth(rootScore.value) : size}
-            <span>{rootScore ? rootScore.value === null ? "" : "/100" : unit}</span>
-          </strong>
-          <span className="radial-atlas__name" aria-hidden="true" title={labelFor(root)}>{labelFor(root)}</span>
-          {caption && <span className="radial-atlas__detail" aria-hidden="true">{caption}</span>}
+          {firstScan ? <FirstScanCenter name={labelFor(root)} scan={firstScan} /> : (
+            <>
+              <span aria-hidden="true" className="radial-atlas__kind" style={{ color: rootScore?.color }}>
+                {rootScore ? metricLabel : kindLabel(root)}
+              </span>
+              <strong className="radial-atlas__size" aria-hidden="true">
+                {rootScore ? formatHealth(rootScore.value) : size}
+                <span>{rootScore ? rootScore.value === null ? "" : "/100" : unit}</span>
+              </strong>
+              <span className="radial-atlas__name" aria-hidden="true" title={labelFor(root)}>{labelFor(root)}</span>
+              {caption && <span className="radial-atlas__detail" aria-hidden="true">{caption}</span>}
+            </>
+          )}
           {parentName !== undefined && (
             <button
               ref={up} className="radial-atlas__up" type="button" disabled={!canGoUp}

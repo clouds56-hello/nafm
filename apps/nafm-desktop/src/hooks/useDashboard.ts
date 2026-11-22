@@ -143,6 +143,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const childrenLoadingRef = useRef(false);
   const childrenRetryRef = useRef<{ node: StorageNode; offset: number } | null>(null);
   const selectedNodeRef = useRef<StorageNode | null>(null);
+  const lastLocationBySite = useRef(new Map<string, NavigationEntry>());
   const backHistoryRef = useRef<NavigationEntry[]>([]);
   const forwardHistoryRef = useRef<NavigationEntry[]>([]);
   const childrenPageRef = useRef<StorageChildrenPage | null>(null);
@@ -232,6 +233,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       const dashboardMatchesWorkspace = dashboardRef.current?.workspace_name === expectedWorkspace;
       clearAnalysisRefreshes();
       clearLocation();
+      lastLocationBySite.current.clear();
       if (!dashboardMatchesWorkspace) {
         setProgressBySite(new Map());
         updateCompletionBySite(() => new Map());
@@ -331,7 +333,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
   const loadFolderLocation = useCallback(async (
     entry: NavigationEntry,
-    historyAction: "push" | "back" | "forward" | "reset" | "preserve",
+    historyAction: "push" | "switch" | "back" | "forward" | "reset" | "preserve",
     silent = false,
   ): Promise<LocationLoadResult> => {
     const workspace = workspaceNameRef.current;
@@ -361,17 +363,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
     try {
       let snapshot: StorageViewSnapshot;
-      let fellBackToRoot = false;
       try {
         snapshot = await read(entry);
       } catch (loadError) {
         if (!isCurrent()) return "superseded";
         const root = siteRootEntry(entry.site_id, entry.target_site_id);
-        if (historyAction !== "preserve" || root.node_id === entry.node_id
+        const canReopenRoot = historyAction === "preserve" || historyAction === "switch";
+        if (!canReopenRoot || root.node_id === entry.node_id
           || !isUnavailableLocationError(errorMessage(loadError))) throw loadError;
-        // A rescan can remove the current folder. Reopen its source in that case.
+        // A rescan can remove the folder while this site is in the background.
         snapshot = await read(root);
-        fellBackToRoot = true;
       }
       if (!isCurrent()) return "superseded";
 
@@ -383,6 +384,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
 
+      if (previousEntry && previousEntry.site_id !== entry.site_id) {
+        lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
+      }
       locationRef.current = nextLocation;
       childrenPageRef.current = page;
       selectedNodeRef.current = selection;
@@ -398,10 +402,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setChildrenError(null);
       setTreeError(null);
 
-      if (historyAction === "reset" || fellBackToRoot) {
+      if (historyAction === "reset" || (historyAction === "preserve" && nextLocation.root.id !== entry.node_id)) {
         backHistoryRef.current = [];
         forwardHistoryRef.current = [];
-      } else if (historyAction === "push" && previousEntry
+      } else if ((historyAction === "push" || historyAction === "switch") && previousEntry
         && !sameNavigationEntry(previousEntry, { ...entry, offset: page.offset, selected_node_id: selection.id })) {
         backHistoryRef.current = [...backHistoryRef.current, previousEntry];
         forwardHistoryRef.current = [];
@@ -452,6 +456,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       && dashboardRef.current.workspace_name !== next.workspace_name;
     if (workspaceChanged) {
       clearAnalysisRefreshes();
+      lastLocationBySite.current.clear();
       terminalRequestIdsRef.current.clear();
       cancelRequestsInFlightRef.current.clear();
       publishedInventoryKeysRef.current.clear();
@@ -463,6 +468,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const activeIds = new Set(activeTasks.map((task) => task.request_id));
     dashboardRef.current = next;
     currentSiteIdsRef.current = new Set(next.sites.map((site) => site.id));
+    for (const siteId of lastLocationBySite.current.keys()) {
+      if (!currentSiteIdsRef.current.has(siteId)) lastLocationBySite.current.delete(siteId);
+    }
     workspaceNameRef.current = next.workspace_name;
     setDashboard(next);
     invalidateCleanupPreview();
@@ -824,14 +832,15 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     });
   }, [completionBySite, dashboard?.active_tasks, dashboard?.sites]);
 
-  const selectSite = useCallback(async (siteId: string) => {
-    const target = validTarget(dashboard?.sites ?? [], siteId, targetSiteRef.current);
+  const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current) => {
+    const target = validTarget(dashboard?.sites ?? [], siteId, targetSiteId);
     const current = currentNavigationEntry();
     if (current?.site_id === siteId) {
-      if (childrenLoadingRef.current) await loadFolderLocation(current, "preserve");
-      return;
+      return !childrenLoadingRef.current || (await loadFolderLocation(current, "preserve")) === "loaded";
     }
-    await loadFolderLocation(siteRootEntry(siteId, target), "push");
+    const previous = lastLocationBySite.current.get(siteId);
+    const destination = previous ? { ...previous, target_site_id: target } : siteRootEntry(siteId, target);
+    return (await loadFolderLocation(destination, "switch")) === "loaded";
   }, [currentNavigationEntry, dashboard?.sites, loadFolderLocation]);
 
   const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
@@ -840,12 +849,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
     await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push");
   }, [currentNavigationEntry, loadFolderLocation]);
-
-  const swapCoverageSites = useCallback(async () => {
-    const source = selectedSiteRef.current;
-    const target = targetSiteRef.current;
-    if (source && target) await loadFolderLocation(siteRootEntry(target, source), "push");
-  }, [loadFolderLocation]);
 
   const retryTree = useCallback(async () => {
     const siteId = selectedSiteRef.current;
@@ -1126,6 +1129,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         selected_node_id: reveal.selected_file.id,
       };
 
+      if (previousEntry && previousEntry.site_id !== destinationEntry.site_id) {
+        lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
+      }
       setActiveTree(reveal.tree);
       selectedSiteRef.current = destinationEntry.site_id;
       targetSiteRef.current = destinationEntry.target_site_id;
@@ -1347,7 +1353,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     loadNextChildren,
     selectSite,
     selectCoverageTarget,
-    swapCoverageSites,
     treeLoading,
     treeError,
     retryTree,
@@ -1419,7 +1424,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     forwardHistory.length,
     stageSelected,
     stagingBusy,
-    swapCoverageSites,
     treeError,
     treeLoading,
     goBack,

@@ -118,8 +118,34 @@ test("an empty atlas opens Add site within a short viewport", async ({ page }) =
   await dialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Archive");
   await dialog.getByRole("button", { name: "Add site", exact: true }).click();
   const sites = page.getByRole("button", { name: "Sites", exact: true });
-  await expect(sites).toBeFocused();
+  await expect(page.getByRole("button", { name: "Scan this site", exact: true })).toBeFocused();
   await sites.press("Enter");
   const selected = page.getByRole("button", { name: "Open First archive in Atlas" });
   await expect(selected).toHaveAttribute("aria-current", "true");
+});
+
+test("the first scan can be started, stopped and resumed from the atlas", async ({ page }) => {
+  await page.goto("/mock/?scenario=empty");
+  await page.getByRole("button", { name: "Add site", exact: true }).click();
+  const dialog = addDialog(page);
+  await dialog.getByRole("textbox", { name: "Site name" }).fill("Field survey");
+  await dialog.getByRole("button", { name: "Browse…" }).click();
+  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const scan = map.getByRole("button", { name: "Scan this site", exact: true });
+  await expect(map.getByText("Ready to scan", { exact: true })).toBeVisible();
+  await scan.press("Enter");
+  await expect(map.getByText("Finding files", { exact: true })).toBeVisible();
+  await map.getByRole("button", { name: "Stop scan", exact: true }).click();
+  await expect(scan).toBeEnabled();
+
+  await scan.press("Enter");
+  await expect(map.getByRole("button", { name: /^Sample Folder,/ })).toBeFocused({ timeout: 15_000 });
+  const folder = map.getByRole("button", { name: /^Drone imagery,/ });
+  await expect(folder).toBeVisible();
+  await expect(scan).toBeHidden();
+  await folder.press("Enter");
+  await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]'))
+    .toHaveText("Drone imagery");
 });

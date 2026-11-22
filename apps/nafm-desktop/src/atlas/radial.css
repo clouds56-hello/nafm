@@ -225,10 +225,39 @@
 .radial-atlas__up:hover:enabled { background: #30344a; border-color: #8187ac; }
 .radial-atlas__up:disabled { opacity: .55; }
 
+.radial-atlas[data-first-scan] .radial-atlas__reading { width: 43%; gap: clamp(4px, 1cqw, 8px); }
+.radial-atlas[data-first-scan] .radial-atlas__name { color: var(--atlas-muted); font-weight: 500; }
+.radial-atlas__scan-status { font-size: clamp(15px, 3.8cqw, 29px); font-weight: 580; line-height: 1.1; letter-spacing: -.035em; }
+.radial-atlas__scan-action {
+  min-height: 32px;
+  margin-top: 2px;
+  padding: 5px 12px;
+  border: 1px solid var(--atlas-accent);
+  border-radius: 20px;
+  background: var(--atlas-accent);
+  color: var(--atlas-bg);
+  font-size: clamp(11px, 2cqw, 13px);
+  font-weight: 620;
+  line-height: 1.25;
+  pointer-events: auto;
+}
+.radial-atlas__scan-action[data-running] { border-color: #595d79; background: #222638; color: var(--atlas-ink); }
+.radial-atlas__scan-action:hover:not([aria-disabled]) { border-color: #d2d6ff; background: #d2d6ff; color: var(--atlas-bg); }
+.radial-atlas__scan-action[aria-disabled] { opacity: .6; cursor: default; }
+.radial-atlas__scan-sweep {
+  stroke: var(--atlas-accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 15 85;
+  animation: atlas-first-scan 3s linear infinite;
+}
+@keyframes atlas-first-scan { to { stroke-dashoffset: -100; } }
+
 @media (prefers-reduced-motion: reduce) {
   .radial-atlas__sector {
     transition: none;
   }
+  .radial-atlas__scan-sweep { animation: none; }
 }
 
 .atlas-sector-preview {

@@ -8,6 +8,7 @@ interface DirectoryContentsProps {
   page: StorageChildrenPage | null;
   selection: StorageNode | null;
   loading: boolean;
+  awaitingInventory: boolean;
   error: string | null;
   onSelect: (node: StorageNode) => void;
   onGoUp: () => void;
@@ -21,6 +22,7 @@ export function DirectoryContents({
   page,
   selection,
   loading,
+  awaitingInventory,
   error,
   onSelect,
   onGoUp,
@@ -176,12 +178,13 @@ export function DirectoryContents({
                           <span>{node.name}</span>
                           {!isFile && (
                             <span className="atlas-directory-count">
-                              {formatCount(node.file_count)} {node.file_count === 1 ? "file" : "files"}
+                              {awaitingInventory ? "Awaiting inventory"
+                                : `${formatCount(node.file_count)} ${node.file_count === 1 ? "file" : "files"}`}
                             </span>
                           )}
                         </span>
                       </span>
-                      <span className="atlas-directory-size">{formatBytes(node.total_bytes)}</span>
+                      <span className="atlas-directory-size">{awaitingInventory ? "—" : formatBytes(node.total_bytes)}</span>
                       <span className="atlas-directory-chevron" aria-hidden="true" />
                     </button>
                   </div>
@@ -191,7 +194,7 @@ export function DirectoryContents({
           </ul>
         ) : (
           <p className="atlas-directory-status" role="status">
-            {loading ? "Reading directory…" : "This directory is empty."}
+            {loading ? "Reading directory…" : awaitingInventory ? "Waiting for the first inventory." : "This directory is empty."}
           </p>
         )}
       </div>

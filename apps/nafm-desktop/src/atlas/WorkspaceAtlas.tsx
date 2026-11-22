@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
@@ -22,18 +22,10 @@ interface ContentsVisit {
   revealRevision: number;
 }
 
+type InspectorPane = InspectorView | ContentsVisit | null;
+
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
-}
-
-// The empty-state launcher disappears when the first site arrives.
-function focusSitesOnRemoval(button: HTMLButtonElement | null) {
-  if (!button) return;
-  return () => {
-    if (document.activeElement !== button) return;
-    button.closest("main")?.querySelector<HTMLButtonElement>(".atlas-sites-trigger, .atlas-site-rail-add")
-      ?.focus({ preventScroll: true });
-  };
 }
 
 interface WorkspaceAtlasProps {
@@ -45,7 +37,10 @@ interface WorkspaceAtlasProps {
 
 export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [pane, setPane] = useState<"sites" | InspectorView | ContentsVisit | null>(null);
+  const [pane, setPane] = useState<"sites" | InspectorPane>(null);
+  const inspectorBySite = useRef(new Map<string, InspectorPane>());
+  const mapRegion = useRef<HTMLElement>(null);
+  const focusFirstSite = useRef(false);
   const visit = typeof pane === "object" ? pane : null;
   const activePane = typeof pane === "string" ? pane : visit?.view ?? null;
   const returnFocus = useRef(true);
@@ -54,11 +49,29 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
+  const siteId = site?.id;
   const openAddSite = dashboard && state.activeTaskCount === 0
     ? (event: MouseEvent<HTMLButtonElement>) => onAddSite(event, dashboard.workspace_name)
     : undefined;
 
   const folder = location?.root;
+  const requestId = site ? state.scanRequestBySite.get(site.id) : undefined;
+  const siteRoot = state.activeTree?.root;
+  const awaitingInventory = site && site.hash_status === "unscanned" && !site.latest_inventory_at
+    && !site.last_scanned_at && site.total_files === 0;
+  // The dashboard can publish counts before the first navigable tree reaches the view.
+  const awaitingTree = site && requestId !== undefined && site.total_files > 0 && siteRoot?.file_count === 0;
+  const firstScan = site && siteRoot?.children.length && (awaitingInventory || awaitingTree)
+    ? {
+      requestId,
+      progress: state.progressBySite.get(site.id),
+      stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
+      scanAll: requestId !== undefined && state.scanAllRequestIds.has(requestId),
+      blocked: state.scanBlockedSiteIds.has(site.id),
+      failed: site.scan_state === "failed",
+      onScan: () => state.scan(site.id),
+      onCancel: (id: number) => void state.cancel(id),
+    } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   const pageKey = JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, state.childrenPage?.offset]);
   const currentVisit = visit?.pageKey === pageKey && visit.fileId === selected?.id
@@ -66,9 +79,29 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   // A new location or an exact-copy jump ends this list's local Back/Forward step.
   useEffect(() => {
     if (visit && !currentVisit) {
-      setPane(visit.view === "details" && selected?.kind === "file" ? "details" : "contents");
+      const view = visit.view === "details" && selected?.kind === "file" ? "details" : "contents";
+      setPane((current) => current === visit ? view : current);
     }
   }, [visit, currentVisit, selected?.kind]);
+
+  useLayoutEffect(() => {
+    // The Sites picker temporarily covers the inspector.
+    if (siteId && pane !== "sites") inspectorBySite.current.set(siteId, pane);
+  }, [pane, siteId]);
+
+  const emptyLauncherRef = useCallback((button: HTMLButtonElement | null) => {
+    if (button) return () => { focusFirstSite.current = document.activeElement === button; };
+  }, []);
+
+  useLayoutEffect(() => {
+    // The empty-state launcher can disappear a render before the first site's map arrives.
+    if (!focusFirstSite.current || (!folder && !state.error && !state.treeError)) return;
+    focusFirstSite.current = false;
+    if (document.activeElement !== document.body) return;
+    const next = mapRegion.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-add, .radial-atlas__scan-action, .atlas-view-error button")
+      ?? mapRegion.current?.querySelector<HTMLButtonElement>(".atlas-sites-trigger");
+    next?.focus({ preventScroll: true });
+  }, [folder, state.error, state.treeError]);
   const breadcrumbs = location?.breadcrumbs ?? [];
   const metric: HealthMetric | null = mapMode === "size" ? null : mapMode;
   const targetCompleteness = siteCompleteness(target);
@@ -83,11 +116,19 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
 
   const closePane = useCallback(() => {
     returnFocus.current = true;
-    setPane(null);
-  }, []);
+    setPane((current) => current === "sites" && siteId ? inspectorBySite.current.get(siteId) ?? null : null);
+  }, [siteId]);
   function dismissPane() {
     returnFocus.current = false;
     setPane(null);
+  }
+
+  async function selectSite(id: string, comparisonSiteId?: string) {
+    const destination = id === siteId && pane !== "sites" ? pane : inspectorBySite.current.get(id) ?? null;
+    if (!await state.selectSite(id, comparisonSiteId)) return;
+    returnFocus.current = true;
+    setSourcesOpen(false);
+    setPane(destination);
   }
 
   const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
@@ -170,7 +211,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           targets: targetOptions,
           target,
           onTargetChange: (id) => void state.selectCoverageTarget(id),
-          onSwap: () => void state.swapCoverageSites(),
+          onSwap: () => { if (site && target) void selectSite(target.id, site.id); },
           canScanTarget: Boolean(target && !state.scanBlockedSiteIds.has(target.id)),
           onScanTarget: () => { if (target) void state.scan(target.id); },
         }}
@@ -188,7 +229,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       />
 
       <main className="atlas-main">
-        <section className="atlas-visualization" aria-label="Circular storage map">
+        <section ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map">
           <SiteRail
             sites={dashboard?.sites ?? []}
             activeId={site?.id ?? null}
@@ -201,7 +242,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
             restoreFocus={activePane === null && returnFocus.current}
             onOpen={() => setPane("sites")}
             onClose={closePane}
-            onSelect={(id) => { void state.selectSite(id); closePane(); }}
+            onSelect={(id) => void selectSite(id)}
             onScan={(id) => void state.scan(id)}
             onCancel={(id) => void state.cancel(id)}
             onAdd={openAddSite}
@@ -217,6 +258,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
             {folder ? (
               <RadialAtlas
                 root={folder}
+                firstScan={firstScan}
                 parentName={breadcrumbs.at(-2)?.name}
                 canGoUp={canGoUp}
                 onTouchPreview={dismissPane}
@@ -244,7 +286,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
               <div className="atlas-map-empty-help">
                 <span>Add a folder or network share to map its files.</span>
                 <button
-                  ref={focusSitesOnRemoval}
+                  ref={emptyLauncherRef}
                   className="atlas-text-button"
                   type="button"
                   aria-haspopup="dialog"
@@ -252,7 +294,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                   onClick={openAddSite}
                 >Add site</button>
               </div>
-            ) : folder && (analysisNotice || metric) && (
+            ) : folder && !firstScan && (analysisNotice || metric) && (
               <>
                 {analysisNotice && <p className="atlas-map-notice" role="status">{analysisNotice}</p>}
                 {metric && (
@@ -268,7 +310,6 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           </footer>
           {site && (
             <AtlasInspector
-              key={site.id}
               detailsKey={selected?.id ?? folder?.id ?? null}
               contentsKey={pageKey}
               contentsFileId={currentVisit?.fileId ?? null}
@@ -320,6 +361,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     selection={selected}
                     loading={state.childrenLoading}
                     error={state.childrenError}
+                    awaitingInventory={Boolean(firstScan)}
                     onSelect={activateNode}
                     onPrevious={state.loadPreviousChildren}
                     onNext={state.loadNextChildren}
@@ -349,7 +391,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           sites={dashboard?.sites ?? []}
           workspaceName={dashboard?.workspace_name ?? null}
           activeId={site?.id ?? null}
-          onSelect={(id) => { void state.selectSite(id); setSourcesOpen(false); }}
+          onSelect={(id) => void selectSite(id)}
           onClose={() => setSourcesOpen(false)}
           onAdd={openAddSite}
           scanRequests={state.scanRequestBySite}

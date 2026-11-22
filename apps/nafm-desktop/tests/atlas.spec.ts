@@ -170,6 +170,51 @@ test("source history restores the directory page used before switching sites", a
   await expect(range).toBeVisible();
 });
 
+test("selecting a site resumes its last folder and Contents page", async ({ page }) => {
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const more = inspector.getByRole("button", { name: "Next directory page" });
+  const range = inspector.getByText("7–12 of 19", { exact: true });
+  const sites = page.getByRole("button", { name: "Sites", exact: true });
+  const fieldDrive = page.getByRole("button", { name: "Open Field drive in Atlas" });
+
+  await clickArc(page, /^Projects,/);
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  await more.click();
+  await expect(range).toBeVisible();
+  await sites.click();
+  await page.getByRole("button", { name: "Close sites" }).click();
+  await expect(range).toBeVisible();
+  await sites.click();
+  await fieldDrive.click();
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await expect(inspector).toBeHidden();
+  await arc(page, /^Drone imagery,/).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
+
+  await page.getByRole("button", { name: "Workspace actions" }).click();
+  await page.getByRole("button", { name: /^Sources\b/ }).click();
+  await page.getByRole("button", { name: "Open Studio archive in Atlas" }).click();
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(range).toBeVisible();
+  await expect(inspector.getByRole("button", { name: /^2024 December/ })).toBeVisible();
+
+  await sites.click();
+  await fieldDrive.click();
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
+  await expect(inspector).toBeHidden();
+});
+
+test("an indexed empty folder is distinguishable from a site awaiting its first scan", async ({ page }) => {
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: /^Sandbox/ }).click();
+  await inspector.getByRole("button", { name: "Close inspector" }).click();
+  await expect(currentFolder(page)).toHaveText("Sandbox");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await expect(map.getByText("Folder is empty", { exact: true })).toBeVisible();
+  await expect(map.getByRole("button", { name: "Scan this site", exact: true })).toBeHidden();
+});
+
 test("the slow-read scenario keeps the current map interactive until navigation finishes", async ({ page }) => {
   await page.getByRole("button", { name: "Preview", exact: true }).click();
   await page.getByLabel("Scenario").selectOption("slow");
