@@ -91,10 +91,7 @@ export function DirectoryContents({
       case "Home": rows[0].focus(); break;
       case "End": rows[rows.length - 1].focus(); break;
       case "ArrowLeft": goUp(true); break;
-      case "ArrowRight":
-        if (node.kind === "file") return;
-        activate(node, true);
-        break;
+      case "ArrowRight": activate(node, true); break;
       case "PageDown": changePage(true, true); break;
       case "PageUp": changePage(false, true); break;
       default: return;
@@ -162,7 +159,7 @@ export function DirectoryContents({
             {children.map((node, index) => {
               const isFile = node.kind === "file";
               return (
-                <li key={node.id} role="row" aria-rowindex={offset + index + 1}>
+                <li key={node.id} role="row" aria-rowindex={offset + index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
                   <div role="gridcell">
                     <button
                       type="button"
@@ -171,7 +168,6 @@ export function DirectoryContents({
                       tabIndex={tabStop === node.id ? 0 : -1}
                       onFocus={() => setCursor(node.id)}
                       onKeyDown={(event) => moveRow(event, node, index)}
-                      aria-pressed={isFile ? selection?.id === node.id : undefined}
                       onClick={(event) => activate(node, event.detail === 0)}
                     >
                       <span className="atlas-directory-name" title={node.name}>
@@ -186,7 +182,7 @@ export function DirectoryContents({
                         </span>
                       </span>
                       <span className="atlas-directory-size">{formatBytes(node.total_bytes)}</span>
-                      {!isFile && <span className="atlas-directory-chevron" aria-hidden="true" />}
+                      <span className="atlas-directory-chevron" aria-hidden="true" />
                     </button>
                   </div>
                 </li>

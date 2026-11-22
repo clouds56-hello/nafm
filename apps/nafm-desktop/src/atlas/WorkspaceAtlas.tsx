@@ -15,6 +15,13 @@ import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 
+interface ContentsVisit {
+  view: InspectorView;
+  pageKey: string;
+  fileId: string;
+  revealRevision: number;
+}
+
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
 }
@@ -23,7 +30,9 @@ export function WorkspaceAtlas({
   workspace, toolbarExtension,
 }: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
-  const [activePane, setActivePane] = useState<"sites" | InspectorView | null>(null);
+  const [pane, setPane] = useState<"sites" | InspectorView | ContentsVisit | null>(null);
+  const visit = typeof pane === "object" ? pane : null;
+  const activePane = typeof pane === "string" ? pane : visit?.view ?? null;
   const returnFocus = useRef(true);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
   const inspectorView = activePane === "sites" ? null : activePane;
@@ -33,6 +42,15 @@ export function WorkspaceAtlas({
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const folder = location?.root;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
+  const pageKey = JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, state.childrenPage?.offset]);
+  const currentVisit = visit?.pageKey === pageKey && visit.fileId === selected?.id
+    && visit.revealRevision === state.duplicateJumpRevision ? visit : null;
+  // A new location or an exact-copy jump ends this list's local Back/Forward step.
+  useEffect(() => {
+    if (visit && !currentVisit) {
+      setPane(visit.view === "details" && selected?.kind === "file" ? "details" : "contents");
+    }
+  }, [visit, currentVisit, selected?.kind]);
   const breadcrumbs = location?.breadcrumbs ?? [];
   const metric: HealthMetric | null = mapMode === "size" ? null : mapMode;
   const targetCompleteness = siteCompleteness(target);
@@ -47,20 +65,32 @@ export function WorkspaceAtlas({
 
   const closePane = useCallback(() => {
     returnFocus.current = true;
-    setActivePane(null);
+    setPane(null);
   }, []);
   function dismissPane() {
     returnFocus.current = false;
-    setActivePane(null);
+    setPane(null);
   }
 
-  const { goBack, goForward, goUp, canGoBack, canGoForward, canGoUp } = state;
+  const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
+  const fileOpen = currentVisit?.view === "details";
+  const canGoBack = fileOpen || state.canGoBack;
+  const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
+  const goBack = useCallback(() => {
+    if (currentVisit?.view === "details") setPane({ ...currentVisit, view: "contents" });
+    else backLocation();
+  }, [currentVisit, backLocation]);
+  const goForward = useCallback(() => {
+    if (currentVisit?.view === "contents") setPane({ ...currentVisit, view: "details" });
+    else forwardLocation();
+  }, [currentVisit, forwardLocation]);
   useEffect(() => {
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || sourcesOpen || state.reviewOpen || workspace.managementOpen) return;
       if (event.key === "Escape" && activePane && !document.querySelector("dialog[open]")) {
         event.preventDefault();
-        closePane();
+        if (fileOpen) goBack();
+        else closePane();
         return;
       }
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
@@ -77,7 +107,7 @@ export function WorkspaceAtlas({
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [activePane, canGoBack, canGoForward, canGoUp, closePane, goBack, goForward, goUp, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
+  }, [activePane, canGoBack, canGoForward, canGoUp, closePane, fileOpen, goBack, goForward, goUp, sourcesOpen, state.reviewOpen, workspace.managementOpen]);
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
@@ -86,9 +116,11 @@ export function WorkspaceAtlas({
 
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
-    if (node.kind === "file" || node.kind === "smaller_items") {
+    if (node.kind === "file" && !origin) {
+      setPane({ view: "details", fileId: node.id, pageKey, revealRevision: state.duplicateJumpRevision });
+    } else if (node.kind === "file" || node.kind === "smaller_items") {
       if (origin) inspectorOrigin.current = origin;
-      setActivePane(node.kind === "file" ? "details" : "contents");
+      setPane(node.kind === "file" ? "details" : "contents");
     } else if (origin && activePane === "sites") {
       dismissPane();
     }
@@ -149,7 +181,7 @@ export function WorkspaceAtlas({
             progressBySite={state.progressBySite}
             open={activePane === "sites"}
             restoreFocus={activePane === null && returnFocus.current}
-            onOpen={() => setActivePane("sites")}
+            onOpen={() => setPane("sites")}
             onClose={closePane}
             onSelect={(id) => { void state.selectSite(id); closePane(); }}
             onScan={(id) => void state.scan(id)}
@@ -213,12 +245,15 @@ export function WorkspaceAtlas({
             <AtlasInspector
               key={site.id}
               detailsKey={selected?.id ?? folder?.id ?? null}
-              contentsKey={JSON.stringify([folder?.id, state.childrenPage?.offset])}
+              contentsKey={pageKey}
+              contentsFileId={currentVisit?.fileId ?? null}
+              folderName={folder?.name}
               view={inspectorView}
               initialView={selected?.kind === "file" ? "details" : "contents"}
               restoreFocus={activePane === null && returnFocus.current}
               origin={inspectorOrigin}
-              onViewChange={setActivePane}
+              onViewChange={setPane}
+              onBackToContents={goBack}
               onClose={closePane}
               details={location ? (
                 <StorageDetails

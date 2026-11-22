@@ -86,6 +86,26 @@ test.describe("touch exploration", () => {
     await preview.getByRole("button", { name: "View details" }).tap();
     await expect(inspector.getByRole("heading", { name: "Trailer master.mov" })).toBeVisible();
   });
+
+  test("returning from a file restores a scrolled Contents sheet", async ({ page }) => {
+    await page.setViewportSize({ width: 680, height: 320 });
+    await page.getByRole("button", { name: "Contents & details" }).tap();
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const grid = inspector.getByRole("grid");
+    await grid.getByRole("button", { name: /^Projects/ }).tap();
+    await grid.getByRole("button", { name: /^Brand campaign/ }).tap();
+    const file = grid.getByRole("button", { name: /^Campaign assembly\.mov/ });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+    await file.scrollIntoViewIfNeeded();
+    const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scrollTop).toBeGreaterThan(0);
+    await file.tap();
+    await expect(inspector.getByRole("heading", { name: "Campaign assembly.mov" })).toBeVisible();
+    await inspector.getByRole("button", { name: "Back to Contents" }).tap();
+    await expect(file).toBeFocused();
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+  });
 });
 
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {
@@ -160,4 +180,88 @@ test("the slow-read scenario keeps the current map interactive until navigation 
   await clickArc(page, /^Photo Library,/);
   await expect(currentFolder(page)).toHaveText("Photo Library");
   await expect(page.locator(".atlas-location-progress")).toBeHidden();
+});
+
+test("browsing from page two through file details resumes at the same entry", async ({ page }) => {
+  await clickArc(page, /^Projects,/);
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const entries = inspector.getByRole("grid");
+  const row = (name: RegExp) => entries.getByRole("button", { name });
+  const december = row(/^2024 December/);
+  const notes = row(/^Production notes\.txt/);
+  const sheet = row(/^Contact sheet\.pdf/);
+
+  await page.getByRole("button", { name: "Contents & details" }).press("Enter");
+  await expect(row(/^Brand campaign/)).toBeFocused();
+  await page.keyboard.press("PageDown");
+  await expect(inspector.getByText("7–12 of 19")).toBeVisible();
+  await expect(row(/^Typography study/)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(december).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(sheet).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(notes).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Production notes.txt" })).toBeVisible();
+
+  await inspector.getByRole("button", { name: "Back to Contents" }).click();
+  await expect(currentFolder(page)).toHaveText("2024 December");
+  await expect(notes).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(sheet).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Contact sheet.pdf" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeFocused();
+
+  await page.keyboard.press("ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(inspector.getByText("7–12 of 19")).toBeVisible();
+  await expect(december).toBeFocused();
+});
+
+test("Back and Forward retrace a file inspection before changing folders", async ({ page }) => {
+  await clickArc(page, /^Projects,/);
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const launcher = page.getByRole("button", { name: "Contents & details" });
+  const back = page.getByRole("button", { name: "Previous location", exact: true });
+  const forward = page.getByRole("button", { name: "Next location", exact: true });
+  const file = inspector.getByRole("grid").getByRole("button", { name: /^Camera originals\.mxf/ });
+  const details = inspector.getByRole("heading", { name: "Camera originals.mxf" });
+
+  await launcher.click();
+  await inspector.getByRole("button", { name: /^Brand campaign/ }).click();
+  await file.click();
+  await expect(details).toBeVisible();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(file).toBeFocused();
+  await forward.click();
+  await expect(details).toBeVisible();
+  await back.click();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(file).toBeFocused();
+
+  await page.keyboard.press("ArrowRight");
+  await expect(details).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(file).toBeFocused();
+
+  await file.press("Enter");
+  await inspector.getByRole("button", { name: "Close inspector" }).click();
+  await expect(inspector).toBeHidden();
+  await expect(launcher).toBeFocused();
+});
+
+test("Escape from a file opened directly on the atlas returns to its arc", async ({ page }) => {
+  await clickArc(page, /^Projects,/);
+  await clickArc(page, /^Brand campaign,/);
+  const file = arc(page, /^Trailer master\.mov,/);
+  await file.press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector.getByRole("heading", { name: "Trailer master.mov" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(inspector).toBeHidden();
+  await expect(file).toBeFocused();
 });

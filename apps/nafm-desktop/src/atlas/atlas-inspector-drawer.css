@@ -49,6 +49,37 @@
   gap: 15px;
 }
 
+.atlas-inspector-file-nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.atlas-inspector-file-nav button {
+  display: inline-flex;
+  min-height: 44px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--atlas-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.atlas-inspector-file-nav button:hover { color: var(--atlas-ink); }
+.atlas-inspector-file-nav button:focus-visible { outline-offset: -2px; }
+.atlas-inspector-file-nav > span {
+  overflow: hidden;
+  color: var(--atlas-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .atlas-inspector-tabs button {
   min-height: 42px;
   padding: 0 3px;

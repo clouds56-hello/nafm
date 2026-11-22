@@ -38,8 +38,11 @@ map, Left and Right move between siblings, Down moves to a child, Up moves
 to its parent, and Enter opens the focused item.
 
 The floating **Contents & details** button opens the inspector. In **Contents**,
-use Up and Down to move between entries, Right to open a folder, Left to
-return to its parent, and Page Up or Page Down to change pages.
+use Up and Down to move between entries, Enter or Right to open an entry,
+Left to return to the parent folder, and Page Up or Page Down to change pages.
+When you open a file from this list, choose **← Contents** or press Left or Escape
+to resume browsing at that file. **Previous location** also returns to the
+list, and **Next location** reopens the file.
 In **Map options**, choose **Space health** to see duplication or **Coverage**
 to compare against another source. Details lets you find similar folders or
 exact copies and stage verified duplicates. **Review** previews cleanup.

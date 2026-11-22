@@ -106,7 +106,7 @@
 }
 
 .atlas-directory-entry:hover { background: #202234; }
-.atlas-directory-entry[aria-pressed="true"] {
+.atlas-directory-list [aria-selected="true"] .atlas-directory-entry {
   background: #242741;
   box-shadow: inset 2px 0 var(--atlas-accent);
 }
