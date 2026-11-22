@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { ManagementMutationResult, ManagementSnapshot } from "../lib/types";
 import { ConnectionsSection } from "./ConnectionsSection";
 import { CloseIcon, DriveIcon, NetworkIcon, RefreshIcon, WarningIcon, WorkspaceIcon } from "./Icons";
@@ -25,6 +25,7 @@ interface ManagementCenterProps {
   onClose: () => void;
   onSectionChange: (section: ManagementSection) => void;
   onSelectedSiteChange: (siteId: string | null) => void;
+  onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string) => void;
   onBusyChange: (busy: boolean) => void;
   onMutation: (result: ManagementMutationResult, dashboardChanged: boolean) => void;
   onRetry: () => void;
@@ -119,6 +120,7 @@ export function ManagementCenter(props: ManagementCenterProps) {
                   busy={busy || scansActive}
                   setBusy={setBusy}
                   onSelectedSiteChange={props.onSelectedSiteChange}
+                  onAddSite={props.onAddSite}
                   onMutation={props.onMutation}
                 />
               )}

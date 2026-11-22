@@ -1,19 +1,16 @@
-import { open } from "@tauri-apps/plugin-dialog";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, type MouseEvent } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
-import { connectSmb, createSite } from "../lib/tauri";
-import type { ScanProgressView, SiteKind, SiteOverview } from "../lib/types";
+import type { ScanProgressView, SiteOverview } from "../lib/types";
 import "./sources.css";
 
 interface SourceLibraryProps {
-  initiallyAdding?: boolean;
   sites: SiteOverview[];
   workspaceName: string | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
-  onChanges: () => void;
+  onAdd?: (event: MouseEvent<HTMLButtonElement>) => void;
   onScan: (site_id: string) => void;
   scanRequests: ReadonlyMap<string, number>;
   blockedIds: ReadonlySet<string>;
@@ -37,72 +34,48 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 }
 
 export function SourceLibrary({
-  initiallyAdding = false, sites, workspaceName, activeId, onSelect, onClose, onChanges, onScan, scanRequests, blockedIds,
+  sites, workspaceName, activeId, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
   scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction,
 }: SourceLibraryProps) {
-  const [adding, setAdding] = useState(initiallyAdding);
-  const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const addRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     dialog.showModal();
-    const initialFocus = initiallyAdding ? dialog.querySelector<HTMLInputElement>("form input:enabled") : null;
-    (initialFocus ?? headingRef.current)?.focus();
+    headingRef.current?.focus();
     return () => dialog.close();
-  }, [initiallyAdding]);
-
-  function finishAdding() {
-    setAdding(false);
-    requestAnimationFrame(() => addRef.current?.focus());
-  }
+  }, []);
 
   return (
     <dialog className="source-library" ref={dialogRef} aria-labelledby="source-library-title" onCancel={(event) => {
       event.preventDefault();
-      if (busy) return;
-      if (adding) finishAdding();
-      else onClose();
+      onClose();
     }}>
       <div className="source-window-drag" data-tauri-drag-region aria-hidden="true" />
       <div className="source-layout">
         <div className="source-route">
-          <button type="button" className="source-back" disabled={busy} onClick={onClose}><span aria-hidden="true">←</span> Atlas</button>
+          <button type="button" className="source-back" onClick={onClose}><span aria-hidden="true">←</span> Atlas</button>
           {workspaceName && <span className="source-workspace" title={workspaceName}>{workspaceName}</span>}
         </div>
         <header className="source-header">
           <h1 id="source-library-title" ref={headingRef} tabIndex={-1}>Sources</h1>
           <button
-            ref={addRef}
             type="button"
             className="source-primary"
-            disabled={adding || !workspaceName || blockedIds.size > 0}
-            onClick={() => setAdding(true)}
+            aria-haspopup="dialog"
+            disabled={!onAdd}
+            onClick={onAdd}
           >
-            <span aria-hidden="true">+</span> Add source
+            <span aria-hidden="true">+</span> Add site
           </button>
         </header>
         {error && (
           <div className="source-alert" role="alert">
             <p className="source-error">{error}</p>
-            {errorAction && <button type="button" className="source-action" disabled={busy} onClick={errorAction.run}>{errorAction.label}</button>}
+            {errorAction && <button type="button" className="source-action" onClick={errorAction.run}>{errorAction.label}</button>}
           </div>
-        )}
-        {adding && workspaceName && (
-          <AddSource
-            workspaceName={workspaceName}
-            busy={busy}
-            blocked={blockedIds.size > 0}
-            setBusy={setBusy}
-            onCancel={finishAdding}
-            onAdd={() => {
-              finishAdding();
-              onChanges();
-            }}
-          />
         )}
         {blockedIds.size > 0 && <p className="source-scan-note" role="status">You can add sources when all scans finish.</p>}
         {sites.length > 0 ? (
@@ -128,7 +101,6 @@ export function SourceLibrary({
                       aria-current={activeId === site.id ? "true" : undefined}
                       aria-label={`Open ${site.name} in Atlas`}
                       aria-describedby={`source-location-${site.id} source-inventory-${site.id}`}
-                      disabled={busy}
                       onClick={() => onSelect(site.id)}
                     >
                       <span className="source-identity">
@@ -150,176 +122,28 @@ export function SourceLibrary({
                     </button>
                     <div className="source-row-actions">
                       {scanning ? (
-                        <button className="source-action" type="button" aria-label={stopping ? "Scan is stopping" : scanAll ? "Stop remaining scans" : `Stop scan of ${site.name}`} disabled={busy || stopping} onClick={() => onCancelScan(requestId)}>
+                        <button className="source-action" type="button" aria-label={stopping ? "Scan is stopping" : scanAll ? "Stop remaining scans" : `Stop scan of ${site.name}`} disabled={stopping} onClick={() => onCancelScan(requestId)}>
                           {stopping ? "Stopping…" : scanAll ? "Stop all" : "Stop scan"}
                         </button>
                       ) : (
-                        <button className="source-action" type="button" aria-label={`Scan ${site.name}`} disabled={busy || blockedIds.has(site.id)} onClick={() => onScan(site.id)}>
+                        <button className="source-action" type="button" aria-label={`Scan ${site.name}`} disabled={blockedIds.has(site.id)} onClick={() => onScan(site.id)}>
                           {site.latest_inventory_at ? "Rescan" : "Scan"}
                         </button>
                       )}
-                      <button className="source-action" type="button" aria-label={`Manage ${site.name}`} disabled={busy} onClick={() => onManage(site.id)}>Manage</button>
+                      <button className="source-action" type="button" aria-label={`Manage ${site.name}`} onClick={() => onManage(site.id)}>Manage</button>
                     </div>
                   </li>
                 );
               })}
             </ul>
           </section>
-        ) : !adding ? (
+        ) : (
           <div className="source-empty">
             <h2>{workspaceName ? "No sources yet" : "Workspace unavailable"}</h2>
             <p>{workspaceName ? "Add a local folder or an SMB share to start mapping its storage." : "Atlas needs an active workspace to load sources."}</p>
           </div>
-        ) : null}
+        )}
       </div>
     </dialog>
-  );
-}
-
-interface AddSourceProps {
-  workspaceName: string;
-  busy: boolean;
-  blocked: boolean;
-  setBusy: (value: boolean) => void;
-  onCancel: () => void;
-  onAdd: () => void;
-}
-
-const missingSmbAccess = "no saved credentials for SMB location:";
-
-function AddSource({ workspaceName, busy, blocked, setBusy, onCancel, onAdd }: AddSourceProps) {
-  const [kind, setKind] = useState<SiteKind>("local");
-  const [name, setName] = useState("");
-  const [location, setLocation] = useState("");
-  const [credentialsNeeded, setCredentialsNeeded] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
-  const userRef = useRef<HTMLInputElement>(null);
-  const path = location.trim();
-  const allowsSubmit = Boolean(name.trim() && path && (!credentialsNeeded || (username.trim() && password)));
-
-  useEffect(() => nameRef.current?.focus(), []);
-
-  useEffect(() => {
-    if (credentialsNeeded && !busy) userRef.current?.focus();
-  }, [busy, credentialsNeeded]);
-
-  function changeLocation(next: string) {
-    setLocation(next);
-    setCredentialsNeeded(false);
-    setUsername("");
-    setPassword("");
-    setMessage(null);
-  }
-
-  function errorMessage(error: unknown) {
-    if (error instanceof Error) return error.message;
-    return typeof error === "string" ? error : "Could not add the source.";
-  }
-
-  async function browse() {
-    if (busy || blocked) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === "string") changeLocation(selected);
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function add(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (busy || blocked || !allowsSubmit) return;
-    if (kind === "smb" && !path.toLowerCase().startsWith("smb://")) {
-      setMessage("Enter an SMB URL beginning with smb://.");
-      return;
-    }
-    if (kind === "local" && path.includes("://")) {
-      setMessage("Choose SMB share for a network URL.");
-      return;
-    }
-
-    setBusy(true);
-    setSaving(true);
-    setMessage(null);
-    try {
-      if (credentialsNeeded) {
-        await connectSmb(path, username.trim(), password);
-        setPassword("");
-        setCredentialsNeeded(false);
-      }
-      await createSite(workspaceName, name.trim(), path);
-      onAdd();
-    } catch (error) {
-      const message = errorMessage(error);
-      if (kind === "smb" && message.startsWith(missingSmbAccess)) {
-        setCredentialsNeeded(true);
-      } else {
-        setMessage(message);
-      }
-    } finally {
-      setBusy(false);
-      setSaving(false);
-    }
-  }
-
-  return (
-    <form className="source-form" onSubmit={(event) => void add(event)} aria-labelledby="source-form-title">
-      <div className="source-form-heading">
-        <h2 id="source-form-title">Add a source</h2>
-        <div className="source-type" role="group" aria-label="Source type">
-          <button type="button" aria-pressed={kind === "local"} disabled={busy || blocked} onClick={() => { setKind("local"); changeLocation(""); }}>Local folder</button>
-          <button type="button" aria-pressed={kind === "smb"} disabled={busy || blocked} onClick={() => { setKind("smb"); changeLocation(""); }}>SMB share</button>
-        </div>
-      </div>
-      <div className="source-form-fields">
-        <label className="source-field">
-          <span>Name</span>
-          <input ref={nameRef} value={name} disabled={busy || blocked} onChange={(event) => setName(event.target.value)} autoComplete="off" />
-        </label>
-        <div className="source-path-field">
-          <label className="source-field">
-            <span>{kind === "local" ? "Folder path" : "SMB URL"}</span>
-            <input
-              type={kind === "smb" ? "url" : "text"}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={kind === "local" ? "/path/to/folder" : "smb://server/share"}
-              value={location}
-              disabled={busy || blocked}
-              onChange={(event) => changeLocation(event.target.value)}
-            />
-          </label>
-          {kind === "local" && <button className="source-action" type="button" disabled={busy || blocked} onClick={() => void browse()}>Browse…</button>}
-        </div>
-      </div>
-      {credentialsNeeded && (
-        <div className="source-credentials">
-          <p role="status">This SMB share needs credentials. Atlas verifies them before adding the source.</p>
-          <div className="source-form-fields">
-            <label className="source-field">
-              <span>SMB username</span>
-              <input ref={userRef} value={username} disabled={busy || blocked} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
-            </label>
-            <label className="source-field">
-              <span>SMB password</span>
-              <input type="password" value={password} disabled={busy || blocked} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
-            </label>
-          </div>
-        </div>
-      )}
-      {message && <p className="source-error" role="alert">{message}</p>}
-      <div className="source-form-actions">
-        <button type="button" className="source-action" disabled={busy} onClick={onCancel}>Cancel</button>
-        <button type="submit" className="source-primary" disabled={busy || blocked || !allowsSubmit}>{saving ? "Adding…" : credentialsNeeded ? "Verify and add" : "Add source"}</button>
-      </div>
-    </form>
   );
 }

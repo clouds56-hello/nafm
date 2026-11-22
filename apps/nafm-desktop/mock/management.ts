@@ -1,4 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
+import { parseSmbLocation, smbRootContains } from "../src/lib/smb";
 import type {
   HiddenPolicy, InstallAgentProgress, ManagedSiteFolder, ManagementMutationResult, ManagementSnapshot,
   MappingPreview, PathCompletion, PreflightReport, RemoteMachine, SavedConnection, SetupCheck, SiteOverview, SshPrompt,
@@ -9,23 +10,6 @@ import { checkWorkspace, getSite, getTree, makeWorkspace, setTree, stringArg, ty
 
 const AGENT_TARGET = "x86_64-unknown-linux-musl";
 const DEMO_SHARE = "smb://media.example.test/Studio";
-
-function smbPath(value: string) {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Invalid SMB URL. Use smb://server/share.");
-  }
-  if (url.protocol !== "smb:" || !url.hostname || !url.pathname.split("/").some(Boolean)) {
-    throw new Error("Invalid SMB URL. Use smb://server/share.");
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("SMB URLs cannot include credentials, a query, or a fragment.");
-  }
-  url.hostname = url.hostname.toLowerCase();
-  return url.href.replace(/\/+$/, "");
-}
 
 function pause() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 180));
@@ -98,17 +82,19 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
   }
 
   function matchingConnection(url: string) {
-    const normalized = smbPath(url);
+    const location = parseSmbLocation(url);
     return [...connections.values()]
-      .filter((connection) => normalized === connection.url || normalized.startsWith(`${connection.url}/`))
-      .sort((a, b) => b.url.length - a.url.length)[0] ?? null;
+      .filter((connection) => smbRootContains(connection.url, location))
+      .sort((a, b) => b.url.split("/").length - a.url.split("/").length)[0] ?? null;
   }
 
   function folderInput(input: string) {
     const remote = /^smb:\/\//i.test(input);
-    const path = remote ? smbPath(input) : input;
-    if (remote && !matchingConnection(path)) throw new Error(`no saved credentials for SMB location: ${path}`);
-    return { path, kind: remote ? "smb" as const : "local" as const };
+    if (!remote) return { path: input, kind: "local" as const };
+    const location = parseSmbLocation(input);
+    const mapped = [...active.mappings.values()].some((mapping) => smbRootContains(mapping.smb_root, location));
+    if (!mapped && !matchingConnection(input)) throw new Error(`no saved credentials for SMB location: ${location.normalized_url}`);
+    return { path: location.normalized_url, kind: "smb" as const };
   }
 
   function addFolder(site: SiteOverview, folder: ReturnType<typeof folderInput>, hidden: unknown) {
@@ -244,7 +230,7 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
 
   async function previewMapping(args: CommandArgs): Promise<MappingPreview> {
     const machine = getMachine(args);
-    const smbRoot = smbPath(stringArg(args.smb_root, "SMB root"));
+    const smbRoot = parseSmbLocation(stringArg(args.smb_root, "SMB root")).normalized_url;
     const remoteRoot = stringArg(args.remote_root, "remote path");
     if (!/^\/|^[A-Za-z]:[/\\]/.test(remoteRoot)) throw new Error("Enter an absolute remote path.");
     await verifyHost(machine);
@@ -302,7 +288,7 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
       return removeFolder(stringArg(args.folderId, "folder ID"));
     },
     connectSmb(args: CommandArgs) {
-      const url = smbPath(stringArg(args.url, "SMB URL"));
+      const url = parseSmbLocation(stringArg(args.url, "SMB URL")).normalized_url;
       const username = stringArg(args.username, "SMB username");
       stringArg(args.password, "SMB password");
       connections.set(url, { url, username });

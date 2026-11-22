@@ -103,7 +103,7 @@ function validTarget(
   return sites.find((site) => site.id !== sourceSiteId)?.id ?? null;
 }
 
-export function useDashboard(expectedWorkspace: string | null) {
+export function useDashboard(expectedWorkspace: string | null, siteListRevision: number) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -641,7 +641,7 @@ export function useDashboard(expectedWorkspace: string | null) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, siteListRevision]);
 
   const handleScanEvent = useCallback((event: ScanTaskEvent) => {
     if (event.scope === "task" && event.kind === "cancelling"

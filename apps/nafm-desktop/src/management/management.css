@@ -1,5 +1,6 @@
 .management-dialog,
-.ssh-auth-dialog {
+.ssh-auth-dialog,
+.add-site-dialog {
   --settings-ink: var(--atlas-ink, #eee9de);
   --settings-muted: var(--atlas-muted, #b0adc0);
   --settings-accent: var(--atlas-accent, #a9afff);
@@ -82,7 +83,7 @@
 .management-nav > button[aria-current] { color: var(--settings-accent); }
 .management-nav > button[aria-current] { border-bottom-color: var(--settings-accent); }
 
-.management-dialog svg, .ssh-auth-dialog svg { width: 16px; height: 16px; flex: none; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) svg { width: 16px; height: 16px; flex: none; }
 
 .management-content {
   min-width: 0;
@@ -205,7 +206,7 @@
 
 .management-field input::placeholder { color: #8f90aa; }
 
-:is(.management-dialog, .ssh-auth-dialog) :is(.primary-button, .secondary-button, .ghost-button, .danger-button, .icon-button, .remove-button) {
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) :is(.primary-button, .secondary-button, .ghost-button, .danger-button, .icon-button, .remove-button) {
   display: inline-flex;
   min-height: 32px;
   align-items: center;
@@ -220,11 +221,11 @@
   text-align: center;
 }
 
-:is(.management-dialog, .ssh-auth-dialog) .primary-button { border-color: #a9afff; background: #a9afff; color: #141527; font-weight: 650; }
-:is(.management-dialog, .ssh-auth-dialog) .ghost-button { background: transparent; }
-:is(.management-dialog, .ssh-auth-dialog) :is(.ghost-button, .secondary-button, .icon-button, .remove-button):hover:enabled { background: #292d47; }
-:is(.management-dialog, .ssh-auth-dialog) .primary-button:hover:enabled { background: #c5c8ff; }
-:is(.management-dialog, .ssh-auth-dialog) button:disabled:not(.is-active) { opacity: .48; cursor: default; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) .primary-button { border-color: #a9afff; background: #a9afff; color: #141527; font-weight: 650; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) .ghost-button { background: transparent; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) :is(.ghost-button, .secondary-button, .icon-button, .remove-button):hover:enabled { background: #292d47; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) .primary-button:hover:enabled { background: #c5c8ff; }
+:is(.management-dialog, .ssh-auth-dialog, .add-site-dialog) button:disabled:not(.is-active) { opacity: .48; cursor: default; }
 .management-dialog :is(.icon-button, .remove-button) { width: 32px; min-width: 32px; padding: 4px; }
 .management-dialog .danger-button { border-color: #65424f; background: #35222d; color: #f7aea7; }
 .management-dialog .danger-button:hover:enabled, .management-dialog .danger-button.is-confirming { background: #502a36; }
@@ -334,6 +335,80 @@
 .ssh-host-key dd { margin: 0 0 6px; overflow-wrap: anywhere; font-family: var(--settings-mono); user-select: text; }
 .ssh-trust-confirm { display: flex; align-items: flex-start; gap: 7px; color: var(--settings-ink); font-size: 13px; line-height: 1.4; }
 .ssh-auth-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+.add-site-dialog {
+  --window-gutter: clamp(16px, 4vw, 24px);
+  --window-height: calc(100dvh - 32px);
+  position: fixed;
+  inset: 0;
+  width: min(440px, calc(100% - 32px));
+  max-width: none;
+  max-height: var(--window-height);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  background: var(--atlas-surface);
+}
+
+.add-site-dialog::backdrop {
+  background: rgb(8 9 17 / 54%);
+}
+
+html:has(.add-site-dialog[open]) { overflow: hidden; }
+
+/* Keep the window controls in reach when the SMB fields exceed the available height. */
+.add-site-form {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(var(--window-height) - 2px);
+}
+
+.add-site-header, .add-site-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding-inline: var(--window-gutter);
+}
+
+.add-site-header { justify-content: space-between; padding-block: 17px 8px; }
+.add-site-header h2 { margin: 0; font-size: 23px; line-height: 1.2; letter-spacing: -.035em; }
+.add-site-header .icon-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--settings-muted);
+}
+
+.add-site-fields {
+  display: grid;
+  min-height: 0;
+  gap: 16px;
+  padding: 10px var(--window-gutter) 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.add-site-fields > *, .add-site-fields .management-field { margin: 0; }
+.add-site-fields .management-field input, .add-site-fields .root-kind-picker label {
+  min-height: 38px;
+  border-radius: 6px;
+}
+.add-site-fields .root-kind-picker label { justify-content: center; font-size: 12px; }
+.add-site-fields .root-kind-picker label.is-active { color: var(--settings-accent); }
+.add-site-fields .compact-actions { margin-top: 10px; }
+.root-hidden-policy { display: flex; align-items: center; gap: 8px; color: var(--settings-muted); font-size: 12px; }
+.root-hidden-policy input { margin: 0; accent-color: var(--settings-accent); }
+.nested-form .root-hidden-policy { margin-bottom: 12px; }
+
+.add-site-actions {
+  justify-content: flex-end;
+  padding-block: 12px;
+  border-top: 1px solid var(--settings-border);
+}
+.add-site-dialog .add-site-actions > button { min-width: 72px; min-height: 36px; }
 
 @media (max-width: 675px) {
   .management-dialog { width: calc(100vw - 16px); height: calc(100vh - 16px); height: calc(100dvh - 16px); }

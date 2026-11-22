@@ -16,10 +16,12 @@ NAFM stores its configuration, credentials, and workspace databases under
 
 ## Desktop app
 
-The desktop app shares workspaces with the CLI. Use the floating **Sites** button or
-**Workspace actions** → **Sources** to choose sites, add a local folder or SMB
-share, and start or stop a scan. **Workspace actions** also contains
-**Scan all**, **Review**, and **Settings**.
+The desktop app shares workspaces with the CLI. Open **Sites** on the atlas and
+choose **+** to add a local folder or SMB share in a floating window. Saving
+adds the site to the list and keeps your current folder open. The same window
+opens from **Workspace actions** → **Sources** and **Settings** → **Sites**.
+Use the Sites panel or Sources list to start or stop a scan. **Workspace actions**
+also contains **Scan all**, **Review**, and **Settings**.
 
 ```sh
 cd apps/nafm-desktop

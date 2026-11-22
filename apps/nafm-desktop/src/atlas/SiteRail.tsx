@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
@@ -20,7 +20,7 @@ interface SiteRailProps {
   onSelect: (id: string) => void;
   onScan: (id: string) => void;
   onCancel: (requestId: number) => void;
-  onAdd: () => void;
+  onAdd?: (event: MouseEvent<HTMLButtonElement>) => void;
   onManage: (id: string) => void;
 }
 
@@ -117,8 +117,9 @@ export function SiteRail({
           className="atlas-site-rail-add"
           type="button"
           aria-label="Add site"
+          aria-haspopup="dialog"
           title={blockedIds.size ? "Finish active scans to add a site" : "Add site"}
-          disabled={blockedIds.size > 0}
+          disabled={!onAdd}
           onClick={onAdd}
         >
           <PlusIcon />
