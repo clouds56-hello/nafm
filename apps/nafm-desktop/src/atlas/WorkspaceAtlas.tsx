@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
@@ -13,7 +13,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
-import type { HealthMetric } from "../lib/types";
+import type { HealthMetric, StorageNode } from "../lib/types";
 
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
@@ -24,6 +24,7 @@ export function WorkspaceAtlas({
 }: { workspace: ReturnType<typeof useWorkspace>; toolbarExtension?: ReactNode }) {
   const [sourcesView, setSourcesView] = useState<"browse" | "add" | null>(null);
   const [activePane, setActivePane] = useState<"sites" | InspectorView | null>(null);
+  const inspectorOrigin = useRef<SVGGElement | null>(null);
   const inspectorView = activePane === "sites" ? null : activePane;
   const sourcesOpen = sourcesView !== null;
   const [mapMode, setMapMode] = useState<MapMode>("size");
@@ -73,6 +74,14 @@ export function WorkspaceAtlas({
   function changeMode(mode: MapMode) {
     setMapMode(mode);
     state.setHealthMetric(mode === "coverage_health" ? "coverage_health" : "space_health");
+  }
+
+  function activateNode(node: StorageNode, origin?: SVGGElement) {
+    state.selectNode(node);
+    if (node.kind === "file" || (node.kind === "smaller_items" && !state.childrenLoading)) {
+      if (origin) inspectorOrigin.current = origin;
+      setActivePane(node.kind === "file" ? "details" : "contents");
+    }
   }
 
   return (
@@ -142,10 +151,13 @@ export function WorkspaceAtlas({
             {folder ? (
               <RadialAtlas
                 root={folder}
+                parentName={breadcrumbs.at(-2)?.name}
+                canGoUp={canGoUp}
+                onGoUp={goUp}
                 selectedId={selected?.id ?? null}
                 metric={metric}
                 targetCompleteness={targetCompleteness}
-                onSelect={state.selectNode}
+                onSelect={activateNode}
               />
             ) : (
               <EmptyOrbit label={state.treeError || state.error ? "Map unavailable" : state.loading || state.treeLoading ? "Reading inventory" : "No source selected"} />
@@ -182,6 +194,7 @@ export function WorkspaceAtlas({
               view={inspectorView}
               initialView={selected?.kind === "file" ? "details" : "contents"}
               restoreFocus={activePane === null}
+              origin={inspectorOrigin}
               onViewChange={setActivePane}
               onClose={closePane}
               details={location ? (
@@ -223,10 +236,7 @@ export function WorkspaceAtlas({
                     selection={selected}
                     loading={state.childrenLoading}
                     error={state.childrenError}
-                    onSelect={(node) => {
-                      state.selectNode(node);
-                        if (node.kind === "file") setActivePane("details");
-                    }}
+                    onSelect={activateNode}
                     onPrevious={state.loadPreviousChildren}
                     onNext={state.loadNextChildren}
                     onRetry={state.retryChildren}

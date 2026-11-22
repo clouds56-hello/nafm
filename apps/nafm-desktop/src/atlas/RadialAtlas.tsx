@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { fileName, formatBytes, formatCount, formatHealth } from "../lib/format";
 import { formatCompleteness, healthAriaDescription, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
@@ -6,10 +6,13 @@ import "./radial.css";
 
 interface RadialAtlasProps {
   root: StorageNode;
+  parentName?: string;
+  canGoUp: boolean;
+  onGoUp: () => void;
   selectedId: string | null;
   metric: HealthMetric | null;
   targetCompleteness: number;
-  onSelect: (node: StorageNode) => void;
+  onSelect: (node: StorageNode, origin: SVGGElement) => void;
 }
 
 interface Sector {
@@ -45,7 +48,7 @@ function polar(radius: number, angle: number) {
 function orbitPath(radius: number, from: number, to: number): string {
   const start = polar(radius, from);
   const end = polar(radius, to);
-  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${to - from > Math.PI ? 1 : 0} 1 ${end.x} ${end.y}`;
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${Math.abs(to - from) > Math.PI ? 1 : 0} ${to > from ? 1 : 0} ${end.x} ${end.y}`;
 }
 
 function branchSectors(
@@ -128,11 +131,79 @@ const ORIENTATIONS = [0, 90, 180, 270].map((angle) => ({
   end: positionAt(284, angle),
 }));
 
-export function RadialAtlas(props: RadialAtlasProps) {
-  return <RadialPlot key={props.root.id} {...props} />;
+// Put names in the gap between rings so health colors and stroke widths stay readable.
+function BranchLabel({ sector }: { sector: Sector }) {
+  const id = useId();
+  const text = useRef<SVGTextElement>(null);
+  const textPath = useRef<SVGTextPathElement>(null);
+  const radius = 163;
+  const { from, to } = sector;
+  const arcLength = (to - from) * radius;
+  const middle = (from + to) / 2;
+  const reverse = Math.sin(middle) > 0;
+  const name = labelFor(sector.node);
+
+  useLayoutEffect(() => {
+    const label = text.current;
+    const chart = label?.ownerSVGElement;
+    const path = textPath.current;
+    if (!label || !chart || !path) return;
+    const fit = () => {
+      const freeSpace = arcLength - label.getComputedTextLength() - 10;
+      label.style.visibility = freeSpace >= 0 ? "visible" : "hidden";
+      if (freeSpace < 0) return;
+      // Slide long-arc labels toward a horizontal tangent, keeping both ends inside the arc.
+      const horizontal = Math.round((middle - Math.PI / 2) / Math.PI) * Math.PI + Math.PI / 2;
+      const limit = Math.min(arcLength / 4, freeSpace / 2);
+      const shift = Math.max(-limit, Math.min(limit, (horizontal - middle) * radius));
+      path.setAttribute("startOffset", String(arcLength / 2 + (reverse ? -shift : shift)));
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(chart);
+    return () => observer.disconnect();
+  }, [arcLength, middle, name, reverse]);
+
+  return (
+    <g className="radial-atlas__label" aria-hidden="true">
+      <defs><path id={id} d={reverse ? orbitPath(radius, to, from) : orbitPath(radius, from, to)} /></defs>
+      <text ref={text} dy=".34em" textAnchor="middle">
+        <textPath ref={textPath} href={`#${id}`} startOffset="50%">{name}</textPath>
+      </text>
+    </g>
+  );
 }
 
-function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: RadialAtlasProps) {
+export function RadialAtlas(props: RadialAtlasProps) {
+  const plot = useRef<HTMLElement>(null);
+  const lastControl = useRef<Element | null>(null);
+
+  useLayoutEffect(() => {
+    // A keyboard drill-down replaces the focused arc. Keep the next Tab inside the new map.
+    if (lastControl.current && !lastControl.current.isConnected && document.activeElement === document.body) {
+      plot.current?.focus({ preventScroll: true });
+    }
+    lastControl.current = null;
+  }, [props.root.id]);
+
+  return (
+    <RadialPlot
+      key={props.root.id}
+      {...props}
+      plotRef={plot}
+      onKeyboardNavigate={(control) => { lastControl.current = control; }}
+    />
+  );
+}
+
+interface RadialPlotProps extends RadialAtlasProps {
+  plotRef: RefObject<HTMLElement | null>;
+  onKeyboardNavigate: (control: Element) => void;
+}
+
+function RadialPlot({
+  root, parentName, canGoUp, onGoUp, selectedId, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
+}: RadialPlotProps) {
   const descriptionId = useId();
   const gradientId = useId();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -154,7 +225,7 @@ function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: 
   let caption = sectors.length === 0 && rootCanHaveChildren ? "No mapped entries" : null;
   if (score?.state === "partial") caption = `Estimated · ${formatCompleteness(score.completeness)} verified`;
   else if (score?.state === "unavailable" && !caption) caption = "Score unavailable";
-  else if (!score && highlight) {
+  else if (!score && !caption) {
     caption = `${formatCount(shownNode.file_count)} ${shownNode.file_count === 1 ? "file" : "files"}`;
   }
   const formattedSize = formatBytes(shownNode.total_bytes);
@@ -168,7 +239,10 @@ function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: 
       case "Enter":
       case " ":
         event.preventDefault();
-        if (!event.repeat) onSelect(node);
+        if (!event.repeat) {
+          if (node.kind !== "file") onKeyboardNavigate(event.currentTarget);
+          onSelect(node, event.currentTarget);
+        }
         return;
       case "Escape":
         setHoveredId(null);
@@ -188,7 +262,7 @@ function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: 
   }
 
   return (
-    <figure className="radial-atlas" aria-describedby={descriptionId}>
+    <figure ref={plotRef} className="radial-atlas" tabIndex={-1} aria-describedby={descriptionId}>
       <figcaption id={descriptionId} className="radial-atlas__sr-only">
         {labelFor(root)}, {formatBytes(root.total_bytes)}, {formatCount(root.file_count)} {root.file_count === 1 ? "file" : "files"}.
         {rootScore && ` ${healthAriaDescription(rootScore, metric === "coverage_health" ? "coverage" : "space", root.file_count > 0)}.`}
@@ -250,26 +324,39 @@ function RadialPlot({ root, selectedId, metric, targetCompleteness, onSelect }: 
               onFocus={() => { setFocusedId(node.id); setTabStop(node.id); }}
               onBlur={() => setFocusedId((current) => current === node.id ? null : current)}
               onKeyDown={(event) => handleSectorKey(event, node, index)}
-              onClick={() => onSelect(node)}
+              onClick={(event) => onSelect(node, event.currentTarget)}
             >
               <path className="radial-atlas__target" d={path} strokeWidth={Math.max(weight, 14)} />
               <path className="radial-atlas__ring-focus" d={path} strokeWidth={weight + 5} />
               {partial && <path className="radial-atlas__ring-track" d={path} strokeWidth={weight} />}
               <path className="radial-atlas__ring" d={path} strokeWidth={partial ? Math.max(1, weight * entryScore.completeness) : weight} />
+              {tier === 0 && <BranchLabel sector={sector} />}
             </g>
           );
         })}
       </svg>
-      <div className="radial-atlas__reading" aria-hidden="true">
-        <span className="radial-atlas__kind" style={{ color: score?.color ?? highlight?.color }}>
+      <div className="radial-atlas__reading">
+        <span aria-hidden="true" className="radial-atlas__kind" style={{ color: score?.color ?? highlight?.color }}>
           {score ? metricLabel : kindLabel(shownNode)}
         </span>
-        <strong className="radial-atlas__size">
+        <strong className="radial-atlas__size" aria-hidden="true">
           {score ? formatHealth(score.value) : size}
           <span>{score ? score.value === null ? "" : "/100" : unit}</span>
         </strong>
-        <span className="radial-atlas__name" title={labelFor(shownNode)}>{labelFor(shownNode)}</span>
-        {caption && <span className="radial-atlas__detail">{caption}</span>}
+        <span className="radial-atlas__name" aria-hidden="true" title={labelFor(shownNode)}>{labelFor(shownNode)}</span>
+        {caption && <span className="radial-atlas__detail" aria-hidden="true">{caption}</span>}
+        {parentName !== undefined && (
+          <button
+            className="radial-atlas__up" type="button" disabled={!canGoUp}
+            aria-label={`Up to ${parentName}`} title={`Up to ${parentName}`}
+            onClick={(event) => {
+              if (event.detail === 0) onKeyboardNavigate(event.currentTarget);
+              onGoUp();
+            }}
+          >
+            <span aria-hidden="true">↑</span> Up one level
+          </button>
+        )}
       </div>
     </figure>
   );

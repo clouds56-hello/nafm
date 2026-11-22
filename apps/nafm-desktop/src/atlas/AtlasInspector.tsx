@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { CloseIcon } from "../management/Icons";
 import "./inspector.css";
 import "./atlas-inspector-drawer.css";
@@ -9,6 +9,7 @@ interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
   restoreFocus: boolean;
+  origin: RefObject<SVGGElement | null>;
   onViewChange: (view: InspectorView) => void;
   onClose: () => void;
   contents: ReactNode;
@@ -20,7 +21,7 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-export function AtlasInspector({ view, initialView, restoreFocus, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
+export function AtlasInspector({ view, initialView, restoreFocus, origin, onViewChange, onClose, contents, details }: AtlasInspectorProps) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const contentsTab = useRef<HTMLButtonElement>(null);
@@ -31,11 +32,15 @@ export function AtlasInspector({ view, initialView, restoreFocus, onViewChange, 
   useLayoutEffect(() => {
     if (view) {
       activeTab.current?.focus({ preventScroll: true });
-    } else if (wasOpen.current && restoreFocus) {
-      trigger.current?.focus({ preventScroll: true });
+    } else if (wasOpen.current) {
+      if (restoreFocus) {
+        const target = origin.current?.isConnected ? origin.current : trigger.current;
+        target?.focus({ preventScroll: true });
+      }
+      origin.current = null;
     }
     wasOpen.current = view !== null;
-  }, [view, activeTab, restoreFocus]);
+  }, [view, activeTab, restoreFocus, origin]);
 
   if (!view) {
     return (
