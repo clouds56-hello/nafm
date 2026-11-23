@@ -3,7 +3,8 @@ import { formatBytes, formatCount, formatHealth, formatShare } from "../lib/form
 import { formatCompleteness, healthAriaDescription, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 import { FirstScanCenter, type FirstScanState } from "./FirstScanCenter";
-import { CENTER, ORIGIN, RINGS, SEAM, TURN, branchSectors, orbitPath, polar, type Sector } from "./radialGeometry";
+import { CENTER, ORIGIN, RINGS, SEAM, TURN, branchSectors, polar, type Sector } from "./radialGeometry";
+import { RingLabel, useRingLabels } from "./RingLabel";
 import { SectorPreview, kindLabel, labelFor, type ArcPreview } from "./SectorPreview";
 import "./radial.css";
 
@@ -34,49 +35,6 @@ const ORIENTATIONS = [0, 90, 180, 270].map((angle) => ({
   start: positionAt(276, angle),
   end: positionAt(284, angle),
 }));
-
-// Put names in the gap between rings so health colors and stroke widths stay readable.
-function BranchLabel({ sector }: { sector: Sector }) {
-  const id = useId();
-  const text = useRef<SVGTextElement>(null);
-  const textPath = useRef<SVGTextPathElement>(null);
-  const radius = 163;
-  const { from, to } = sector;
-  const arcLength = (to - from) * radius;
-  const middle = (from + to) / 2;
-  const reverse = Math.sin(middle) > 0;
-  const name = labelFor(sector.node);
-
-  useLayoutEffect(() => {
-    const label = text.current;
-    const chart = label?.ownerSVGElement;
-    const path = textPath.current;
-    if (!label || !chart || !path) return;
-    const fit = () => {
-      const freeSpace = arcLength - label.getComputedTextLength() - 10;
-      label.style.visibility = freeSpace >= 0 ? "visible" : "hidden";
-      if (freeSpace < 0) return;
-      // Slide long-arc labels toward a horizontal tangent, keeping both ends inside the arc.
-      const horizontal = Math.round((middle - Math.PI / 2) / Math.PI) * Math.PI + Math.PI / 2;
-      const limit = Math.min(arcLength / 4, freeSpace / 2);
-      const shift = Math.max(-limit, Math.min(limit, (horizontal - middle) * radius));
-      path.setAttribute("startOffset", String(arcLength / 2 + (reverse ? -shift : shift)));
-    };
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(chart);
-    return () => observer.disconnect();
-  }, [arcLength, middle, name, reverse]);
-
-  return (
-    <g className="radial-atlas__label" aria-hidden="true">
-      <defs><path id={id} d={reverse ? orbitPath(radius, to, from) : orbitPath(radius, from, to)} /></defs>
-      <text ref={text} dy=".34em" textAnchor="middle">
-        <textPath ref={textPath} href={`#${id}`} startOffset="50%">{name}</textPath>
-      </text>
-    </g>
-  );
-}
 
 export function RadialAtlas(props: RadialAtlasProps) {
   const plot = useRef<HTMLElement>(null);
@@ -125,6 +83,7 @@ function RadialPlot({
   const sectors = useMemo(() => awaitingInventory
     ? []
     : branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2), [root, awaitingInventory]);
+  const labels = useRingLabels(plotRef, sectors, metric, targetCompleteness);
   const previewSector = sectors.find((sector) => sector.node.id === preview?.id);
   const highlight = previewSector
     ?? sectors.find((sector) => sector.node.id === selectedId);
@@ -135,7 +94,7 @@ function RadialPlot({
   let caption = sectors.length === 0 ? "No mapped entries" : null;
   if (root.file_count === 0 && root.kind === "site") caption = root.children.length ? "No files found" : "No folders configured";
   else if (root.file_count === 0 && root.children.length === 0) caption = "Folder is empty";
-  else if (rootScore?.state === "partial") caption = `Estimated · ${formatCompleteness(rootScore.completeness)} verified`;
+  else if (rootScore?.state === "partial") caption = `${formatCompleteness(rootScore.completeness)} verified`;
   else if (rootScore?.state === "unavailable" && !caption) caption = "Score unavailable";
   else if (!rootScore && !caption) caption = `${formatCount(root.file_count)} ${root.file_count === 1 ? "file" : "files"}`;
   const formattedSize = formatBytes(root.total_bytes);
@@ -248,7 +207,6 @@ function RadialPlot({
 
           <g aria-hidden="true" className="radial-atlas__guides">
             <circle cx={CENTER} cy={CENTER} r="290" className="radial-atlas__limit" />
-            <circle cx={CENTER} cy={CENTER} r="251" className="radial-atlas__limit" />
             <circle cx={CENTER} cy={CENTER} r="112" className="radial-atlas__limit" />
             {RINGS.map((ring) => (
               <circle key={ring.radius} cx={CENTER} cy={CENTER} r={ring.radius} className="radial-atlas__track" />
@@ -276,6 +234,7 @@ function RadialPlot({
             const dimmed = Boolean(highlight && highlight.branch !== branch);
             const entryScore = metric ? nodeHealthPresentation(node, metric, targetCompleteness) : null;
             const partial = entryScore?.state === "partial";
+            const label = labels.get(node.id);
             return (
               <g
                 key={node.id}
@@ -320,7 +279,7 @@ function RadialPlot({
                 <path className="radial-atlas__ring-focus" d={path} strokeWidth={weight + 5} />
                 {partial && <path className="radial-atlas__ring-track" d={path} strokeWidth={weight} />}
                 <path className="radial-atlas__ring" d={path} strokeWidth={partial ? Math.max(1, weight * entryScore.completeness) : weight} />
-                {tier === 0 && <BranchLabel sector={sector} />}
+                {label && <RingLabel label={label} />}
               </g>
             );
           })}
@@ -328,15 +287,16 @@ function RadialPlot({
         <div className="radial-atlas__reading">
           {firstScan ? <FirstScanCenter name={labelFor(root)} scan={firstScan} /> : (
             <>
-              <span aria-hidden="true" className="radial-atlas__kind" style={{ color: rootScore?.color }}>
+              <span aria-hidden="true" className="radial-atlas__kind" data-metric={metric ?? undefined} style={{ color: rootScore?.color }}>
                 {rootScore ? metricLabel : kindLabel(root)}
               </span>
               <strong className="radial-atlas__size" aria-hidden="true">
+                {rootScore?.state === "partial" && "≈"}
                 {rootScore ? formatHealth(rootScore.value) : size}
                 <span>{rootScore ? rootScore.value === null ? "" : "/100" : unit}</span>
               </strong>
               <span className="radial-atlas__name" aria-hidden="true" title={labelFor(root)}>{labelFor(root)}</span>
-              {caption && <span className="radial-atlas__detail" aria-hidden="true">{caption}</span>}
+              {caption && <span className="radial-atlas__detail" aria-hidden="true" title={caption}>{caption}</span>}
             </>
           )}
           {parentName !== undefined && (
@@ -354,7 +314,7 @@ function RadialPlot({
                 onGoUp();
               }}
             >
-              <span aria-hidden="true">↑</span> Up one level
+              <span aria-hidden="true">↑</span><span>Up<span className="radial-atlas__up-qualifier"> one level</span></span>
             </button>
           )}
         </div>

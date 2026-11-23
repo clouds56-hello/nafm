@@ -18,9 +18,9 @@ export const TURN = Math.PI * 2;
 export const ORIGIN = -Math.PI / 2;
 export const SEAM = .12;
 export const RINGS = [
-  { inner: 114, outer: 174, radius: 139, width: 24, gap: .058, minimum: .054 },
-  { inner: 174, outer: 213, radius: 185, width: 15, gap: .034, minimum: .033 },
-  { inner: 213, outer: 254, radius: 224, width: 8, gap: .023, minimum: .025 },
+  { inner: 114, outer: 176, radius: 135, width: 24, labelRadius: 161, gap: .058, minimum: .054 },
+  { inner: 176, outer: 220, radius: 185, width: 15, labelRadius: 206, gap: .034, minimum: .033 },
+  { inner: 220, outer: 256, radius: 227, width: 8, labelRadius: 244, gap: .023, minimum: .025 },
 ] as const;
 const PALETTE = ["#b1b8ff", "#f1bfae", "#c6d99b", "#bcabed", "#83cec9", "#e6aebb", "#d7d4a4"];
 const MAX_SIBLINGS = 16;

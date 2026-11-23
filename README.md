@@ -34,8 +34,10 @@ pnpm install
 pnpm tauri dev
 ```
 
-The center of the atlas shows the current folder. Point at an arc to preview
-its name, size, and share of that folder. Click to open it. On a touchscreen,
+The center of the atlas shows the current folder. Labels follow the rings
+where they fit. Wider inner arcs also show the size or selected health score.
+Point at any arc to preview its full name, size, and share of the current
+folder. Click to open it. On a touchscreen,
 tap once to preview, then use the action in the preview or tap the same arc
 again to open it. Files open **Details** and grouped arcs open **Contents**.
 

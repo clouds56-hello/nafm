@@ -167,7 +167,9 @@ button:disabled { cursor: default; }
 }
 
 @media (max-width: 879px) {
-  .atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit { width: min(100%, 550px); }
+  .atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
+    width: min(100%, clamp(550px, 100dvh - 145px, 820px));
+  }
 }
 
 @media (max-width: 760px) {
