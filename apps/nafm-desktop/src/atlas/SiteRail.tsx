@@ -164,7 +164,10 @@ export function SiteRail({
                   aria-current={selected || undefined}
                   aria-label={`Open ${site.name} in Atlas`}
                   onKeyDown={(event) => moveSite(event, index)}
-                  onClick={() => onSelect(site.id)}
+                  onClick={(event) => {
+                    event.currentTarget.focus({ preventScroll: true });
+                    onSelect(site.id);
+                  }}
                 >
                   <span className="atlas-site-rail-device"><DeviceIcon /></span>
                   <span className="atlas-site-rail-identity">

@@ -164,29 +164,49 @@ test("source history restores the directory page used before switching sites", a
   await page.getByRole("button", { name: "Sites", exact: true }).click();
   await page.getByRole("button", { name: "Open Field drive in Atlas" }).click();
   await expect(currentFolder(page)).toHaveText("Field drive");
+  await page.getByRole("button", { name: "Close sites" }).click();
   await page.getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Projects");
   await page.getByRole("button", { name: "Contents & details" }).click();
   await expect(range).toBeVisible();
 });
 
-test("selecting a site resumes its last folder and Contents page", async ({ page }) => {
+test("Sites stays open across switches and closing it resumes the selected site's view", async ({ page }) => {
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   const more = inspector.getByRole("button", { name: "Next directory page" });
   const range = inspector.getByText("7–12 of 19", { exact: true });
   const sites = page.getByRole("button", { name: "Sites", exact: true });
-  const fieldDrive = page.getByRole("button", { name: "Open Field drive in Atlas" });
+  const rail = page.getByRole("complementary", { name: "Sites" });
+  const studioArchive = rail.getByRole("button", { name: "Open Studio archive in Atlas" });
+  const fieldDrive = rail.getByRole("button", { name: "Open Field drive in Atlas" });
+  const close = rail.getByRole("button", { name: "Close sites" });
 
   await clickArc(page, /^Projects,/);
   await page.getByRole("button", { name: "Contents & details" }).click();
   await more.click();
   await expect(range).toBeVisible();
-  await sites.click();
-  await page.getByRole("button", { name: "Close sites" }).click();
+  await sites.press("Enter");
+  await expect(studioArchive).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(fieldDrive).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await expect(fieldDrive).toHaveAttribute("aria-current", "true");
+  await expect(fieldDrive).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(studioArchive).toHaveAttribute("aria-current", "true");
+  await expect(inspector).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(rail).toBeHidden();
   await expect(range).toBeVisible();
+
   await sites.click();
   await fieldDrive.click();
   await expect(currentFolder(page)).toHaveText("Field drive");
+  await expect(fieldDrive).toBeFocused();
+  await close.click();
   await expect(inspector).toBeHidden();
   await arc(page, /^Drone imagery,/).press("Enter");
   await expect(currentFolder(page)).toHaveText("Drone imagery");
@@ -201,6 +221,7 @@ test("selecting a site resumes its last folder and Contents page", async ({ page
   await sites.click();
   await fieldDrive.click();
   await expect(currentFolder(page)).toHaveText("Drone imagery");
+  await close.click();
   await expect(inspector).toBeHidden();
 });
 

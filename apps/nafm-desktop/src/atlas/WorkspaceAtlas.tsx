@@ -128,7 +128,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     if (!await state.selectSite(id, comparisonSiteId)) return;
     returnFocus.current = true;
     setSourcesOpen(false);
-    setPane(destination);
+    setPane((current) => current === "sites" ? current : destination);
   }
 
   const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
