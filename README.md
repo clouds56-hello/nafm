@@ -52,10 +52,11 @@ Contents rows use the atlas colors. Hover over a row or focus it with the
 keyboard to see its path, size, share of the folder, verification, and date.
 Open the sort button beside the folder name. Choose **Size**, **Name**, or
 **Date modified** under **Sort by**, then **Ascending** or **Descending** under
-**Direction**. Either choice immediately reorders the whole list and keeps the
-other selection. A folder's date is the most recent modification
-among its indexed files. Entries with unknown dates appear last when sorting
-by date.
+**Direction**. Either choice immediately reorders the whole list. Each site
+remembers both choices on this device when you switch sites or reopen the app.
+New sites show the largest entries first. A folder's date is the most recent
+modification among its indexed files. Entries with unknown dates appear last
+when sorting by date.
 The **Contents** scrollbar spans the entire folder. Drag its thumb to jump to
 any part of the list, or use Home and End on a row to reach the first or last
 entry. Use Up and Down to move between entries,
@@ -77,8 +78,9 @@ The mock runs the same React frontend as the desktop app with synthetic sources
 and file data. Open **Preview** in the toolbar to switch between indexed,
 partially verified, empty, and scanning workspaces. Choose **Slow folder reads**
 to try changing destinations while a folder is loading. **Reset** reloads the
-current scenario, and **App only** opens the app view. Changes made in the
-mock last until it reloads. Scans and SMB setup are simulated in the browser.
+current scenario, and **App only** opens the app view. Reloading restores the
+sample data. The browser remembers each site's Contents sort order.
+Scans and SMB setup are simulated in the browser.
 Open **Photo Library** and its **Contents** to scroll through 96 photo proofs.
 
 Use the mock for frontend review. Vite reloads it when the shared frontend

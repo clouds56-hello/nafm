@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { DirectorySort, StorageChildrenPage, StorageNode } from "../src/lib/types";
 
 const orders: DirectorySort[] = [
@@ -8,6 +8,28 @@ const orders: DirectorySort[] = [
 ];
 const fields = { size: "Size", name: "Name", date: "Date modified" };
 const directions = { asc: "Ascending", desc: "Descending" };
+
+async function delaySortRead(page: Page, sort: DirectorySort) {
+  return page.evaluateHandle((sort) => {
+    const bridge = (window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { sort?: DirectorySort }) => Promise<unknown> };
+    }).__TAURI_INTERNALS__;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "get_storage_view_snapshot" && args.sort?.field === sort.field && args.sort.direction === sort.direction) {
+        read.pending = true;
+        await gate;
+        read.replied = true;
+      }
+      return response;
+    };
+    return read;
+  }, sort);
+}
 
 function orderedEntries(nodes: StorageNode[], { field, direction }: DirectorySort) {
   const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
@@ -92,25 +114,7 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   const firstRow = contents.locator('[aria-rowindex="1"] button');
   await expect(firstRow).toHaveAccessibleName(/^Projects/);
 
-  const firstRead = await page.evaluateHandle(() => {
-    const bridge = (window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, args: { sort?: DirectorySort }) => Promise<unknown> };
-    }).__TAURI_INTERNALS__;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const read = { pending: false, replied: false, release };
-    const invoke = bridge.invoke.bind(bridge);
-    bridge.invoke = async (command, args) => {
-      const response = await invoke(command, args);
-      if (command === "get_storage_view_snapshot" && args.sort?.field === "name" && args.sort.direction === "desc") {
-        read.pending = true;
-        await gate;
-        read.replied = true;
-      }
-      return response;
-    };
-    return read;
-  });
+  const firstRead = await delaySortRead(page, { field: "name", direction: "desc" });
 
   try {
     await sort.press("Enter");
@@ -134,6 +138,79 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   await sort.click();
   await expect(page.getByRole("radio", { name: "Name", exact: true })).toBeChecked();
   await expect(page.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
+});
+
+test("each site restores its own Contents order after switching and reopening", async ({ page, context }) => {
+  test.setTimeout(90_000);
+  const contents = (view: Page) => view.getByRole("tabpanel", { name: "Contents" });
+  const sortButton = (view: Page) => contents(view).getByRole("button", { name: "Sort contents", exact: true });
+  const openSite = (view: Page, name: string) => view.getByRole("button", { name: `Open ${name} in Atlas` }).click();
+  const fieldFolder = (view: Page) => contents(view).getByRole("button", { name: /^Field Drive\b/ }).click();
+
+  async function expectOrder(view: Page, sort: DirectorySort, first: RegExp) {
+    await expect(contents(view).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(first);
+    await sortButton(view).click();
+    await expect(view.getByRole("radio", { name: fields[sort.field], exact: true })).toBeChecked();
+    await expect(view.getByRole("radio", { name: directions[sort.direction], exact: true })).toBeChecked();
+    await view.keyboard.press("Escape");
+  }
+
+  const studioOrder: DirectorySort = { field: "name", direction: "asc" };
+  const fieldOrder: DirectorySort = { field: "date", direction: "desc" };
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  await contents(page).getByRole("button", { name: /^Projects/ }).click();
+  await sortButton(page).click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^2024 April/);
+  await page.getByRole("button", { name: "Previous location", exact: true }).click();
+  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Deliverables/);
+
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await openSite(page, "Field drive");
+  await fieldFolder(page);
+  await expectOrder(page, { field: "size", direction: "desc" }, /^Drone imagery/);
+  await sortButton(page).click();
+  await page.getByRole("radio", { name: "Date modified", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Survey log\.pdf/);
+
+  await openSite(page, "Studio archive");
+  await expectOrder(page, studioOrder, /^Deliverables/);
+  await openSite(page, "Field drive");
+  await expectOrder(page, fieldOrder, /^Survey log\.pdf/);
+
+  await page.close();
+  const reopened = await context.newPage();
+  await reopened.goto("/mock/");
+  await reopened.getByRole("button", { name: "Contents & details" }).click();
+  await expectOrder(reopened, studioOrder, /^Deliverables/);
+  await reopened.getByRole("button", { name: "Sites", exact: true }).click();
+  await openSite(reopened, "Field drive");
+  await fieldFolder(reopened);
+  await expectOrder(reopened, fieldOrder, /^Survey log\.pdf/);
+});
+
+test("closing while Contents is still sorting saves the latest choice", async ({ page, context }) => {
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const pending = await delaySortRead(page, { field: "date", direction: "asc" });
+  await page.getByRole("button", { name: "Sort contents" }).click();
+  await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+  await page.getByRole("radio", { name: "Date modified", exact: true }).click();
+  await expect.poll(() => pending.evaluate((read) => read.pending)).toBe(true);
+  await page.close();
+
+  const reopened = await context.newPage();
+  await reopened.goto("/mock/");
+  await reopened.getByRole("button", { name: "Contents & details" }).click();
+  const contents = reopened.getByRole("tabpanel", { name: "Contents" });
+  await expect(contents.locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Documents/);
+  await contents.getByRole("button", { name: "Sort contents" }).click();
+  await expect(reopened.getByRole("radio", { name: "Date modified", exact: true })).toBeChecked();
+  await expect(reopened.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
 });
 
 test("Contents previews match the atlas colors across ordering and health modes", async ({ page }) => {

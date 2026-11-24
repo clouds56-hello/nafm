@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { siteAnalysisReady } from "../lib/analysis";
+import { readSiteDirectorySort, writeSiteDirectorySort } from "../lib/siteDirectorySort";
 import {
   cancelScan,
   getStorageChildren,
@@ -86,7 +87,7 @@ function isUnavailableLocationError(message: string): boolean {
     || message.toLowerCase().startsWith("site not found:");
 }
 
-function siteRootEntry(siteId: string, targetSiteId: string | null, sort = DEFAULT_DIRECTORY_SORT): NavigationEntry {
+function siteRootEntry(siteId: string, targetSiteId: string | null, sort: DirectorySort): NavigationEntry {
   const rootId = `site:${siteId}`;
   return {
     site_id: siteId, target_site_id: targetSiteId, node_id: rootId,
@@ -416,8 +417,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   }, [currentNavigationEntry]);
 
   const setDirectorySort = useCallback(async (sort: DirectorySort) => {
+    const workspace = workspaceNameRef.current;
     const current = currentNavigationEntry();
-    if (!current) return;
+    if (!workspace || !current) return;
+    writeSiteDirectorySort(workspace, current.site_id, sort);
     const destination = withDirectorySort(current, sort);
     if (destination !== current || childrenLoadingRef.current) await loadFolderLocation(destination, "preserve");
   }, [currentNavigationEntry, loadFolderLocation]);
@@ -432,7 +435,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const preserve = current?.site_id === siteId;
     const entry = preserve
       ? { ...current, target_site_id: targetSiteId }
-      : siteRootEntry(siteId, targetSiteId, current?.sort);
+      : siteRootEntry(siteId, targetSiteId, readSiteDirectorySort(workspaceNameRef.current, siteId));
     const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", !foreground);
     return result === "loaded";
   }, [currentNavigationEntry, loadFolderLocation]);
@@ -821,11 +824,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current) => {
     const target = validTarget(dashboard?.sites ?? [], siteId, targetSiteId);
     const current = currentNavigationEntry();
+    const sort = readSiteDirectorySort(workspaceNameRef.current, siteId);
     if (current?.site_id === siteId) {
-      return !childrenLoadingRef.current || (await loadFolderLocation(current, "preserve")) === "loaded";
+      return !childrenLoadingRef.current || (await loadFolderLocation(withDirectorySort(current, sort), "preserve")) === "loaded";
     }
     const previous = lastLocationBySite.current.get(siteId);
-    const destination = previous ? { ...previous, target_site_id: target } : siteRootEntry(siteId, target, current?.sort);
+    const destination = previous
+      ? { ...withDirectorySort(previous, sort), target_site_id: target }
+      : siteRootEntry(siteId, target, sort);
     return (await loadFolderLocation(destination, "switch")) === "loaded";
   }, [currentNavigationEntry, dashboard?.sites, loadFolderLocation]);
 
@@ -963,7 +969,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       limit: CHILDREN_PAGE_SIZE,
       anchor_offset: offset,
       selected_node_id: folderId,
-      sort: group ? DEFAULT_DIRECTORY_SORT : childrenPageRef.current?.sort ?? DEFAULT_DIRECTORY_SORT,
+      // The atlas group offset counts entries in descending size order.
+      sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
     }, "push");
   }, [loadFolderLocation]);
 
@@ -977,7 +984,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         const history = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
         const entry = history.at(-1);
         if (!entry) return;
-        const result = await loadFolderLocation(entry, direction);
+        const sort = readSiteDirectorySort(workspaceNameRef.current, entry.site_id);
+        const result = await loadFolderLocation(withDirectorySort(entry, sort), direction);
         if (result !== "unavailable") return;
 
         const currentHistory = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
@@ -1017,7 +1025,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const targetSiteId = targetSiteRef.current;
     const previousVisit = [...backHistoryRef.current].reverse().find((entry) =>
       entry.site_id === siteId && entry.target_site_id === targetSiteId && entry.node_id === node.id);
-    const sort = childrenPageRef.current?.sort ?? DEFAULT_DIRECTORY_SORT;
+    const sort = readSiteDirectorySort(workspaceNameRef.current, siteId);
     const resume = previousVisit && withDirectorySort(previousVisit, sort);
     void loadFolderLocation(
       {
@@ -1139,7 +1147,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setNotice(null);
 
     try {
-      const sort = previousEntry?.sort ?? DEFAULT_DIRECTORY_SORT;
+      const sort = readSiteDirectorySort(requestedWorkspace, match.site_id);
       const reveal = await getStorageFileReveal(requestedWorkspace, match.file_id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
       if (locationRequestRef.current !== requestId
         || navigationOperationRef.current !== operationId
