@@ -8,12 +8,11 @@ export type InspectorView = "contents" | "details";
 interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
-  contentsKey: string;
+  siteId: string;
   contentsPane: RefObject<HTMLDivElement | null>;
   contentsFileId: string | null;
   folderName?: string;
   detailsKey: string | null;
-  restoreFocus: boolean;
   origin: RefObject<SVGGElement | null>;
   onViewChange: (view: InspectorView) => void;
   onBackToContents: () => void;
@@ -31,6 +30,7 @@ function focusContentsRow(pane: HTMLDivElement, fileId: string | null) {
   const bounds = pane.getBoundingClientRect();
   const top = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? bounds.top;
   const file = fileId ? pane.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(fileId)}"]`) : null;
+  if (fileId && !file) return false;
   let row = file;
   if (!row && pane.scrollTop > 0) {
     const hit = document.elementFromPoint(bounds.left + bounds.width / 2, top + 1);
@@ -46,7 +46,7 @@ function focusContentsRow(pane: HTMLDivElement, fileId: string | null) {
 }
 
 export function AtlasInspector({
-  view, initialView, contentsKey, contentsPane, contentsFileId, folderName, detailsKey, restoreFocus, origin,
+  view, initialView, siteId, contentsPane, contentsFileId, folderName, detailsKey, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -56,22 +56,24 @@ export function AtlasInspector({
   const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const backButton = useRef<HTMLButtonElement>(null);
   const previousScreen = useRef<InspectorView | "file" | null>(null);
+  const previousSite = useRef(siteId);
   const enterList = useRef(false);
   const detailsPane = useRef<HTMLDivElement>(null);
-  const contentsScroll = useRef(new Map<string, number>());
   const detailsScroll = useRef({ target: detailsKey, top: 0 });
   const screen = contentsFileId !== null && view === "details" ? "file" : view;
 
   useLayoutEffect(() => {
     if (view) lastView.current = { view: screen === "file" ? "contents" : view, target: detailsKey };
     if (detailsScroll.current.target !== detailsKey) detailsScroll.current = { target: detailsKey, top: 0 };
-    if (view === "contents" && contentsPane.current) contentsPane.current.scrollTop = contentsScroll.current.get(contentsKey) ?? 0;
     if (view === "details" && detailsPane.current) detailsPane.current.scrollTop = detailsScroll.current.top;
-  }, [view, screen, contentsKey, contentsPane, detailsKey]);
+  }, [view, screen, detailsKey]);
 
   useLayoutEffect(() => {
     const previous = previousScreen.current;
-    if (previous === screen) return;
+    const switchingSites = previousSite.current !== siteId;
+    previousSite.current = siteId;
+    previousScreen.current = screen;
+    if (previous === screen || (switchingSites && document.activeElement?.closest('[data-atlas-panel="sites"]'))) return;
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
     } else if (screen === "contents" && (previous === "file" || enterList.current)) {
@@ -81,15 +83,14 @@ export function AtlasInspector({
     } else if (screen) {
       (screen === "contents" ? contentsTab : detailsTab).current?.focus({ preventScroll: true });
     } else if (previous) {
-      if (restoreFocus && document.activeElement === document.body) {
+      if (document.activeElement === document.body) {
         const target = origin.current?.isConnected ? origin.current : trigger.current;
         target?.focus({ preventScroll: true });
       }
       origin.current = null;
     }
     enterList.current = false;
-    previousScreen.current = screen;
-  }, [screen, contentsFileId, contentsPane, restoreFocus, origin]);
+  }, [screen, siteId, contentsFileId, contentsPane, origin]);
 
   if (!view) {
     return (
@@ -137,7 +138,7 @@ export function AtlasInspector({
 
   return (
     <aside
-      id={id} className="atlas-inspector atlas-inspector-drawer" aria-label="Inspector"
+      id={id} className="atlas-inspector atlas-inspector-drawer" data-atlas-panel="inspector" aria-label="Inspector"
       onKeyDown={(event) => {
         if (screen !== "file" || event.key !== "ArrowLeft" || event.defaultPrevented
           || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -186,13 +187,9 @@ export function AtlasInspector({
           id={`${id}-${tab.view}-panel`}
           className="atlas-inspector-pane"
           ref={tab.view === "contents" ? contentsPane : detailsPane}
-          onScroll={(event) => {
-            if (view !== tab.view) return;
-            const top = event.currentTarget.scrollTop;
-            if (view === "details") detailsScroll.current = { target: detailsKey, top };
-            else if (top) contentsScroll.current.set(contentsKey, top);
-            else contentsScroll.current.delete(contentsKey);
-          }}
+          onScroll={view === "details" && tab.view === "details" ? (event) => {
+            detailsScroll.current = { target: detailsKey, top: event.currentTarget.scrollTop };
+          } : undefined}
           role={screen === "file" ? undefined : "tabpanel"}
           aria-labelledby={screen === "file" ? undefined : `${id}-${tab.view}-tab`}
           tabIndex={0}

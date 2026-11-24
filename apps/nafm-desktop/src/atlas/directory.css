@@ -65,18 +65,62 @@
 }
 
 .atlas-directory-list {
+  --directory-row-height: 38px;
+  position: relative;
+  overflow: clip;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.atlas-directory-list li { min-width: 0; border-top: 1px solid var(--atlas-border); }
-.atlas-directory-list li:first-child { border-top: 0; }
+.atlas-directory-list > li {
+  position: absolute;
+  inset-inline: 0;
+  height: var(--directory-row-height);
+  border-top: 1px solid var(--atlas-border);
+}
+.atlas-directory-list > [aria-rowindex="1"] { border-color: transparent; }
+.atlas-directory-list [role="gridcell"] { height: 100%; }
+
+.atlas-directory-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 26px 20px;
+}
+.atlas-directory-placeholder::before, .atlas-directory-placeholder::after {
+  width: 42%;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--atlas-border);
+  content: "";
+}
+.atlas-directory-placeholder::after { width: 12%; }
+
+.atlas-inspector-pane:has(> .atlas-directory) {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: #676d94 var(--atlas-surface);
+}
+
+/* A styled track keeps the desktop WebKit thumb available before the first scroll. */
+@supports selector(::-webkit-scrollbar) {
+  .atlas-inspector-pane:has(> .atlas-directory) { scrollbar-color: auto; }
+  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar { width: 12px; }
+  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-track { background: var(--atlas-surface); }
+  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-thumb {
+    min-height: 28px;
+    border: 3px solid var(--atlas-surface);
+    border-radius: 8px;
+    background: #676d94;
+  }
+  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-thumb:hover { background: #9198c2; }
+}
 
 .atlas-directory-entry {
   display: grid;
   width: 100%;
-  min-height: 37px;
+  height: 100%;
   grid-template-columns: minmax(0, 1fr) max-content 8px;
   align-items: center;
   gap: 8px;
@@ -167,6 +211,13 @@
 .atlas-directory-feedback {
   position: sticky;
   bottom: 0;
+  display: flex;
+  height: 0;
+  flex-direction: column;
+  justify-content: end;
+}
+.atlas-directory-feedback > .atlas-directory-status {
+  flex: none;
   background: var(--atlas-surface);
 }
 
@@ -180,6 +231,6 @@
 }
 
 @media (max-width: 760px), (pointer: coarse) {
-  .atlas-directory-entry { min-height: 44px; }
+  .atlas-directory-list { --directory-row-height: 45px; }
   .atlas-directory-up { width: 42px; height: 42px; }
 }

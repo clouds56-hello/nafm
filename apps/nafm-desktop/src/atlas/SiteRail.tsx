@@ -7,7 +7,6 @@ import "./site-rail.css";
 
 interface SiteRailProps {
   open: boolean;
-  restoreFocus: boolean;
   sites: SiteOverview[];
   activeId: string | null;
   scanRequests: ReadonlyMap<string, number>;
@@ -43,7 +42,6 @@ function scanProgressValue(progress: ScanProgressView | undefined) {
 
 export function SiteRail({
   open,
-  restoreFocus,
   sites,
   activeId,
   scanRequests,
@@ -70,11 +68,11 @@ export function SiteRail({
       const current = list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select[aria-current]")
         ?? list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select");
       (current ?? closeButton.current)?.focus();
-    } else if (!open && wasOpen.current && restoreFocus && document.activeElement === document.body) {
+    } else if (!open && wasOpen.current && document.activeElement === document.body) {
       trigger.current?.focus({ preventScroll: true });
     }
     wasOpen.current = open;
-  }, [open, restoreFocus]);
+  }, [open]);
 
   function moveSite(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -109,7 +107,7 @@ export function SiteRail({
   }
 
   return (
-    <aside className="atlas-site-rail" aria-labelledby={titleId}>
+    <aside className="atlas-site-rail" data-atlas-panel="sites" aria-labelledby={titleId}>
       <header className="atlas-site-rail-header">
         <h2 id={titleId}>Sites</h2>
         <span className="atlas-site-rail-count" aria-label={`${sites.length} sites`}>{formatCount(sites.length)}</span>

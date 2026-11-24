@@ -46,8 +46,11 @@ and **Next location** retrace folder, site, and comparison changes. On the
 map, Left and Right move between siblings, Down moves to a child, Up moves
 to its parent, and Enter opens the focused item.
 
-The floating **Contents & details** button opens the inspector. **Contents**
-loads more entries as you scroll. Use Up and Down to move between entries,
+The floating **Contents & details** button opens the inspector. Sites and the
+inspector can stay open together while you browse. Each has its own close button.
+The **Contents** scrollbar spans the entire folder. Drag its thumb to jump to
+any part of the list, or use Home and End on a row to reach the first or last
+entry. Use Up and Down to move between entries,
 Page Up and Page Down to move by a screenful, Enter or Right to open an entry,
 and Left to return to the parent folder.
 When you open a file from this list, choose **← Contents** or press Left or Escape

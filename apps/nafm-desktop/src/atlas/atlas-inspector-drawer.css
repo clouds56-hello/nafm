@@ -139,7 +139,7 @@
     inset: auto 8px max(8px, env(safe-area-inset-bottom));
     width: auto;
     max-height: min(72vh, 520px);
-    max-height: min(72dvh, 520px);
+    max-height: min(72dvh, 520px, calc(100dvh - 120px));
   }
 }
 

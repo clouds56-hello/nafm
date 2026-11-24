@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { StorageChildrenPage, StorageViewSnapshot } from "../src/lib/types";
 
 function arc(page: Page, name: RegExp) {
   return page.getByRole("region", { name: "Circular storage map" }).getByRole("button", { name });
@@ -10,16 +11,13 @@ function currentFolder(page: Page) {
 
 async function scrollProjectsToEnd(page: Page) {
   const contents = page.getByRole("tabpanel", { name: "Contents" });
-  const rows = contents.getByRole("row");
   await expect(async () => {
     await contents.hover();
-    await page.mouse.wheel(0, 600);
-    await expect(rows).toHaveCount(19, { timeout: 500 });
+    await page.mouse.wheel(0, await contents.evaluate((pane) => pane.scrollHeight));
     await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport({ timeout: 500 });
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollHeight - pane.clientHeight - pane.scrollTop), { timeout: 500 })
+      .toBeLessThanOrEqual(1);
   }).toPass({ timeout: 7000 });
-  // Record the settled position after the wheel finishes scrolling.
-  await expect.poll(() => contents.evaluate((pane) => pane.scrollHeight - pane.clientHeight - pane.scrollTop))
-    .toBeLessThanOrEqual(1);
   const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
   expect(scrollTop).toBeGreaterThan(0);
   return scrollTop;
@@ -104,7 +102,7 @@ test.describe("touch exploration", () => {
     await expect(inspector.getByRole("heading", { name: "Trailer master.mov" })).toBeVisible();
   });
 
-  test("returning from a file in a later batch restores the scrolled Contents sheet", async ({ page }) => {
+  test("returning from a file near the end restores the scrolled Contents sheet", async ({ page }) => {
     await page.setViewportSize({ width: 680, height: 320 });
     await page.getByRole("button", { name: "Contents & details" }).tap();
     const inspector = page.getByRole("complementary", { name: "Inspector" });
@@ -114,10 +112,8 @@ test.describe("touch exploration", () => {
     const file = grid.getByRole("button", { name: /^Proof 093\.jpg/ });
     const contents = inspector.getByRole("tabpanel", { name: "Contents" });
     await expect(file).toHaveCount(0);
-    await expect.poll(async () => {
-      await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
-      return file.count();
-    }).toBe(1);
+    await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    await expect(file).toBeAttached();
     await file.scrollIntoViewIfNeeded();
     const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
     expect(scrollTop).toBeGreaterThan(0);
@@ -130,6 +126,92 @@ test.describe("touch exploration", () => {
     await page.keyboard.press("ArrowDown");
     await expect(grid.getByRole("button", { name: /^Proof 094\.jpg/ })).toBeFocused();
   });
+
+  test("opening and closing Contents leaves the Sites panel available", async ({ page }) => {
+    const rail = page.getByRole("complementary", { name: "Sites" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const openSites = page.getByRole("button", { name: "Sites", exact: true });
+    const openContents = page.getByRole("button", { name: "Contents & details" });
+    await openSites.tap();
+    await openContents.tap();
+    await expect(rail.getByRole("button", { name: "Close sites" })).toBeInViewport();
+    await inspector.getByRole("button", { name: /^Projects/ }).tap();
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await inspector.getByRole("button", { name: "Close inspector" }).tap();
+    await expect(inspector).toBeHidden();
+    await expect(rail).toBeVisible();
+    await openContents.tap();
+    await rail.getByRole("button", { name: "Close sites" }).tap();
+    await expect(rail).toBeHidden();
+    await expect(inspector.getByRole("heading", { name: "Projects" })).toBeInViewport();
+  });
+});
+
+test("the full scrollbar seeks directly to a distant file and restores it after inspection", async ({ page }) => {
+  const total = 4096;
+  const reads = await page.evaluateHandle((total) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { offset?: number; limit?: number }) => Promise<unknown> };
+    };
+    const offsets: number[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command !== "get_storage_view_snapshot" && command !== "get_storage_children") return response;
+      const snapshot = command === "get_storage_view_snapshot" ? response as StorageViewSnapshot : null;
+      const page = snapshot?.page ?? response as StorageChildrenPage;
+      if (page.parent.name !== "Photo Library") return response;
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? 6;
+      offsets.push(offset);
+      const template = page.children.find((entry) => entry.kind === "file")!;
+      const children = Array.from({ length: Math.min(limit, total - offset) }, (_, index) => {
+        const name = `Frame ${String(offset + index + 1).padStart(4, "0")}.jpg`;
+        return { ...template, id: name, name, path: `Photos/${name}` };
+      });
+      const result = { ...page, offset, limit, children, total_children: total };
+      return snapshot ? { ...snapshot, page: result } : result;
+    };
+    return offsets;
+  }, total);
+
+  await arc(page, /^Photo Library,/).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", String(total));
+  const height = (await grid.getByRole("row").first().boundingBox())!.height;
+  const fullHeight = await contents.evaluate((pane) => pane.scrollHeight);
+  expect(fullHeight).toBeGreaterThan(total * height * 0.95);
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  const file = grid.getByRole("button", { name: /^Frame 4095\.jpg/ });
+  await expect(file).toBeInViewport();
+  const offsets = await reads.jsonValue();
+  expect(offsets.some((offset) => offset >= total - 400)).toBe(true);
+  expect(offsets.filter((offset) => offset > 250 && offset < total - 400)).toEqual([]);
+  expect(await grid.getByRole("row").count()).toBeLessThan(250);
+  expect(await contents.evaluate((pane) => pane.scrollHeight)).toBe(fullHeight);
+
+  const top = await contents.evaluate((pane) => pane.scrollTop);
+  await file.click();
+  await expect(page.getByRole("heading", { name: "Frame 4095.jpg" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to Contents" }).click();
+  await expect(file).toBeFocused();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(top, 0);
+  await page.keyboard.press("ArrowDown");
+  const last = grid.getByRole("button", { name: /^Frame 4096\.jpg/ });
+  await expect(last).toBeFocused();
+  const finalTop = await contents.evaluate((pane) => pane.scrollTop);
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Open Field drive in Atlas" }).click();
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await page.getByRole("button", { name: "Open Studio archive in Atlas" }).click();
+  await expect(last).toBeInViewport();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(finalTop, 0);
+  await last.press("Home");
+  await expect(grid.getByRole("button", { name: /^Frame 0001\.jpg/ })).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(last).toBeFocused();
 });
 
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {
@@ -183,7 +265,6 @@ test("source history restores the scrolled directory after switching sites", asy
   await arc(page, /^Projects,/).press("Enter");
   await page.getByRole("button", { name: "Contents & details" }).click();
   const contents = page.getByRole("tabpanel", { name: "Contents" });
-  await expect(contents.getByRole("button", { name: /^2024 January/ })).toHaveCount(0);
   const scrollTop = await scrollProjectsToEnd(page);
   await page.getByRole("button", { name: "Sites", exact: true }).click();
   await page.getByRole("button", { name: "Open Field drive in Atlas" }).click();
@@ -191,8 +272,7 @@ test("source history restores the scrolled directory after switching sites", asy
   await page.getByRole("button", { name: "Close sites" }).click();
   await page.getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Projects");
-  await page.getByRole("button", { name: "Contents & details" }).click();
-  await expect(contents.getByRole("row")).toHaveCount(19);
+  await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport();
   await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
 });
 
@@ -209,45 +289,39 @@ test("Smaller items opens inside the list and earlier entries can be reached by 
     await page.mouse.wheel(0, -600);
     await expect(first).toBeInViewport({ timeout: 500 });
   }).toPass({ timeout: 7000 });
-  await expect(august).toHaveCount(1);
 });
 
-test("a failed scroll read keeps the loaded rows and Retry appends more", async ({ page }) => {
+test("Retry reads the visible virtual rows after a scroll request fails", async ({ page }) => {
   await page.setViewportSize({ width: 680, height: 320 });
-  await arc(page, /^Projects,/).press("Enter");
-  await expect(currentFolder(page)).toHaveText("Projects");
+  await arc(page, /^Photo Library,/).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  await expect(contents.getByRole("button", { name: /^Studio portraits/ })).toBeVisible();
   await page.evaluate(() => {
     const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
     };
     const invoke = bridge.invoke.bind(bridge);
     let fail = true;
-    bridge.invoke = async (command, ...args) => {
-      if (command === "get_storage_children" && fail) {
+    bridge.invoke = async (command, args) => {
+      if (command === "get_storage_children" && fail && Number(args.offset) > 0) {
         fail = false;
         throw new Error("Directory read interrupted");
       }
-      return invoke(command, ...args);
+      return invoke(command, args);
     };
   });
-  await page.getByRole("button", { name: "Contents & details" }).click();
-  const contents = page.getByRole("tabpanel", { name: "Contents" });
-  const rows = contents.getByRole("row");
-  await expect(rows.first()).toBeVisible();
-  const count = await rows.count();
-  await contents.hover();
-  await page.mouse.wheel(0, 500);
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
   const error = contents.getByRole("alert");
   await expect(error).toContainText("Directory read interrupted");
-  await expect(rows).toHaveCount(count);
-  await expect(contents.getByRole("button", { name: /^Brand campaign/ })).toHaveCount(1);
   await error.getByRole("button", { name: "Retry" }).click();
   await expect(error).toBeHidden();
-  await expect.poll(() => rows.count()).toBeGreaterThan(count);
-  await expect(contents.getByRole("button", { name: /^Brand campaign/ })).toHaveCount(1);
+  await expect(contents.getByRole("button", { name: /^Proof 096\.jpg/ })).toBeInViewport();
+  await contents.evaluate((pane) => { pane.scrollTop = 0; });
+  await expect(contents.getByRole("button", { name: /^Studio portraits/ })).toBeInViewport();
 });
 
-test("Sites stays open across switches and closing it resumes the selected site's view", async ({ page }) => {
+test("Sites and Contents stay independently open across switches", async ({ page }) => {
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   const contents = inspector.getByRole("tabpanel", { name: "Contents" });
   const sites = page.getByRole("button", { name: "Sites", exact: true });
@@ -260,6 +334,7 @@ test("Sites stays open across switches and closing it resumes the selected site'
   await page.getByRole("button", { name: "Contents & details" }).click();
   const scrollTop = await scrollProjectsToEnd(page);
   await sites.press("Enter");
+  await expect(contents).toBeVisible();
   await expect(studioArchive).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(fieldDrive).toBeFocused();
@@ -267,14 +342,18 @@ test("Sites stays open across switches and closing it resumes the selected site'
   await expect(currentFolder(page)).toHaveText("Field drive");
   await expect(fieldDrive).toHaveAttribute("aria-current", "true");
   await expect(fieldDrive).toBeFocused();
+  await expect(contents.getByRole("heading", { name: "Field drive" })).toBeVisible();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
   await expect(currentFolder(page)).toHaveText("Projects");
   await expect(studioArchive).toHaveAttribute("aria-current", "true");
-  await expect(inspector).toBeHidden();
-  await page.keyboard.press("Escape");
+  const readout = (await page.locator(".radial-atlas__size").boundingBox())!;
+  await page.mouse.click(readout.x + readout.width / 2, readout.y + readout.height / 2);
+  await expect(rail).toBeVisible();
+  await expect(contents).toBeVisible();
+  await studioArchive.press("Escape");
   await expect(rail).toBeHidden();
-  await expect(contents.getByRole("row")).toHaveCount(19);
+  await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport();
   await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
 
   await sites.click();
@@ -282,7 +361,7 @@ test("Sites stays open across switches and closing it resumes the selected site'
   await expect(currentFolder(page)).toHaveText("Field drive");
   await expect(fieldDrive).toBeFocused();
   await close.click();
-  await expect(inspector).toBeHidden();
+  await expect(inspector).toBeVisible();
   await arc(page, /^Drone imagery,/).press("Enter");
   await expect(currentFolder(page)).toHaveText("Drone imagery");
 
@@ -297,7 +376,7 @@ test("Sites stays open across switches and closing it resumes the selected site'
   await fieldDrive.click();
   await expect(currentFolder(page)).toHaveText("Drone imagery");
   await close.click();
-  await expect(inspector).toBeHidden();
+  await expect(inspector).toBeVisible();
 });
 
 test("an indexed empty folder is distinguishable from a site awaiting its first scan", async ({ page }) => {
@@ -359,7 +438,6 @@ test("browsing beyond the first batch with the keyboard returns to the same entr
   await page.keyboard.press("ArrowLeft");
   await expect(currentFolder(page)).toHaveText("Projects");
   await expect(december).toBeFocused();
-  await expect(row(/^Brand campaign/)).toHaveCount(1);
 });
 
 test("Back and Forward retrace a file inspection before changing folders", async ({ page }) => {

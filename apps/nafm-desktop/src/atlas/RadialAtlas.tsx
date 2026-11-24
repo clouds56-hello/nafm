@@ -13,7 +13,6 @@ interface RadialAtlasProps {
   parentName?: string;
   canGoUp: boolean;
   onGoUp: () => void;
-  onTouchPreview: () => void;
   selectedId: string | null;
   firstScan?: FirstScanState;
   metric: HealthMetric | null;
@@ -71,7 +70,7 @@ interface RadialPlotProps extends RadialAtlasProps {
 }
 
 function RadialPlot({
-  root, parentName, canGoUp, onGoUp, onTouchPreview, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
+  root, parentName, canGoUp, onGoUp, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
 }: RadialPlotProps) {
   const descriptionId = useId();
   const gradientId = useId();
@@ -268,7 +267,6 @@ function RadialPlot({
                   const touch = pointing.current === "touch" && event.detail !== 0;
                   pointing.current = null;
                   if (touch && !(preview?.input === "touch" && preview.id === node.id)) {
-                    onTouchPreview();
                     showPreview(sector, "touch", event);
                   } else {
                     openSector(sector, event.currentTarget);

@@ -43,7 +43,7 @@ import type {
 } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
-const SCROLL_BATCH_SIZE = 48;
+const CHILDREN_PREFETCH_ROWS = 40;
 const MAX_CHILDREN_BATCH = 200;
 const ANALYSIS_REFRESH_DELAY_MS = 650;
 const FINAL_ANALYSIS_REFRESH_DELAY_MS = 75;
@@ -61,6 +61,11 @@ interface NavigationEntry {
 
 interface DirectoryWindow extends StorageChildrenPage {
   anchor_offset: number;
+}
+
+interface RowRange {
+  start: number;
+  end: number; // Exclusive.
 }
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
@@ -83,13 +88,6 @@ function siteRootEntry(siteId: string, targetSiteId: string | null): NavigationE
     site_id: siteId, target_site_id: targetSiteId, node_id: rootId,
     offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, selected_node_id: rootId,
   };
-}
-
-function joinChildrenPages(first: StorageChildrenPage, second: StorageChildrenPage): StorageChildrenPage | null {
-  if (first.offset + first.children.length !== second.offset || first.total_children !== second.total_children) return null;
-  const ids = new Set(first.children.map((node) => node.id));
-  if (second.children.some((node) => ids.has(node.id))) return null;
-  return { ...second, offset: first.offset, children: [...first.children, ...second.children] };
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
@@ -160,8 +158,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const navigationOperationRef = useRef(0);
   const childrenRequestRef = useRef(0);
   const childrenLoadingRef = useRef(false);
-  const loadingMoreRef = useRef(false);
-  const childrenRetryRef = useRef<"previous" | "next" | null>(null);
+  const pendingRangeRef = useRef<RowRange | null>(null);
+  const childrenRetryRef = useRef<RowRange | null>(null);
   const selectedNodeRef = useRef<StorageNode | null>(null);
   const lastLocationBySite = useRef(new Map<string, NavigationEntry>());
   const backHistoryRef = useRef<NavigationEntry[]>([]);
@@ -231,7 +229,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     navigationOperationRef.current += 1;
     navigationInProgressRef.current = false;
     childrenLoadingRef.current = false;
-    loadingMoreRef.current = false;
+    pendingRangeRef.current = null;
     childrenRetryRef.current = null;
     locationRef.current = null;
     childrenPageRef.current = null;
@@ -297,7 +295,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (!workspace) return "failed";
     const requestId = ++locationRequestRef.current;
     const childrenRequestId = ++childrenRequestRef.current;
-    loadingMoreRef.current = false;
+    pendingRangeRef.current = null;
     setLoadingMoreChildren(false);
     const previousEntry = currentNavigationEntry();
     const isCurrent = () => locationRequestRef.current === requestId
@@ -309,32 +307,17 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         navigationInProgressRef.current = false;
       }
       childrenLoadingRef.current = true;
+      childrenRetryRef.current = null;
       setChildrenLoading(true);
       setChildrenError(null);
       setTreeError(null);
       setNotice(null);
     }
 
-    const read = async (destination: NavigationEntry): Promise<StorageViewSnapshot> => {
-      const snapshot = await getStorageViewSnapshot(
-        workspace, destination.site_id, destination.target_site_id, destination.node_id,
-        destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH),
-      );
-      // History stores the loaded range, so returning to a long list can restore its scroll position.
-      let page = snapshot.page;
-      while (isCurrent() && page.children.length < destination.limit) {
-        const offset = page.offset + page.children.length;
-        if (offset >= page.total_children) break;
-        const next = await getStorageChildren(
-          destination.site_id, destination.target_site_id, destination.node_id,
-          offset, Math.min(destination.limit - page.children.length, MAX_CHILDREN_BATCH),
-        );
-        const joined = joinChildrenPages(page, next);
-        if (!joined || next.children.length === 0) break;
-        page = joined;
-      }
-      return { ...snapshot, page };
-    };
+    const read = (destination: NavigationEntry) => getStorageViewSnapshot(
+      workspace, destination.site_id, destination.target_site_id, destination.node_id,
+      destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH),
+    );
 
     try {
       let snapshot: StorageViewSnapshot;
@@ -421,7 +404,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     targetSiteId: string | null,
     foreground = false,
   ) => {
-    if (!foreground && (navigationInProgressRef.current || childrenLoadingRef.current || loadingMoreRef.current)) return false;
+    if (!foreground && (navigationInProgressRef.current || childrenLoadingRef.current || pendingRangeRef.current)) return false;
     const current = currentNavigationEntry();
     const preserve = current?.site_id === siteId;
     const entry = preserve
@@ -925,6 +908,12 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     if (node.kind === "file") {
+      if (pendingRangeRef.current) {
+        // Keep this row's data available for Back while its details are open.
+        childrenRequestRef.current += 1;
+        pendingRangeRef.current = null;
+        setLoadingMoreChildren(false);
+      }
       if (childrenLoadingRef.current) {
         // A file in the displayed folder can still be selected while another location is opening.
         locationRequestRef.current += 1;
@@ -1024,20 +1013,38 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (parent) navigateBreadcrumb(parent);
   }, [navigateBreadcrumb]);
 
-  const extendChildren = useCallback(async (direction: "previous" | "next") => {
+  const loadChildrenRange = useCallback(async (start: number, end: number) => {
     const loaded = childrenPage;
-    if (!loaded || loaded !== childrenPageRef.current || childrenLoadingRef.current || loadingMoreRef.current) return;
+    if (!loaded || loaded !== childrenPageRef.current || childrenLoadingRef.current) return;
+    const total = loaded.total_children;
+    const first = Math.max(0, Math.floor(start));
+    const last = Math.min(total, Math.ceil(end), first + MAX_CHILDREN_BATCH);
+    if (!(first < last)) return;
 
-    const end = loaded.offset + loaded.children.length;
-    const previous = direction === "previous";
-    if (previous ? loaded.offset === 0 : end >= loaded.total_children) return;
+    const pending = pendingRangeRef.current;
+    const failed = childrenRetryRef.current;
+    if (first >= loaded.offset && last <= loaded.offset + loaded.children.length) {
+      // Dragging back into the current window supersedes a distant read, even when no new read is needed.
+      if (pending) {
+        childrenRequestRef.current += 1;
+        pendingRangeRef.current = null;
+        setLoadingMoreChildren(false);
+      }
+      if (failed) {
+        childrenRetryRef.current = null;
+        setChildrenError(null);
+      }
+      return;
+    }
+    if (pending && first >= pending.start && last <= pending.end) return;
+    if (failed && first < failed.end && last > failed.start) return;
 
-    // Fetch larger batches after the small initial read that also renders the atlas.
-    const batch = Math.min(MAX_CHILDREN_BATCH, Math.max(SCROLL_BATCH_SIZE, loaded.children.length));
-    const offset = previous ? Math.max(0, loaded.offset - batch) : end;
-    const limit = previous ? loaded.offset - offset : batch;
+    // Center the viewport in a bounded buffer. A thumb drag can seek directly to any row.
+    const visible = last - first;
+    const limit = Math.min(total, MAX_CHILDREN_BATCH, visible + 2 * CHILDREN_PREFETCH_ROWS);
+    const offset = Math.max(0, Math.min(total - limit, first - Math.floor((limit - visible) / 2)));
     const requestId = ++childrenRequestRef.current;
-    loadingMoreRef.current = true;
+    pendingRangeRef.current = { start: offset, end: offset + limit };
     setLoadingMoreChildren(true);
     childrenRetryRef.current = null;
     setChildrenError(null);
@@ -1047,45 +1054,31 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         loaded.site.id, loaded.coverage_target?.id ?? null, loaded.parent.id, offset, limit,
       );
       if (childrenRequestRef.current !== requestId) return;
-      const joined = previous ? joinChildrenPages(page, loaded) : joinChildrenPages(loaded, page);
-      if (!joined) {
-        // A rescan changed the directory between reads. Rebuild the requested range as one fresh view.
-        const current = currentNavigationEntry();
-        if (current) {
-          const result = await loadFolderLocation({
-            ...current, offset: previous ? offset : loaded.offset,
-            limit: loaded.children.length + limit,
-          }, "preserve");
-          if (result === "failed" || result === "unavailable") {
-            childrenRetryRef.current = direction;
-            setChildrenError("The directory changed. Retry to reload its entries.");
-          }
-        }
-        return;
+      if (!page.children.length && page.offset < page.total_children) {
+        throw new Error("The directory entries could not be read.");
       }
-      if (page.children.length === 0) throw new Error("The directory entries could not be read.");
-      const expanded = { ...joined, anchor_offset: loaded.anchor_offset };
-      childrenPageRef.current = expanded;
-      setChildrenPage(expanded);
+      // A rescan can shrink the folder mid-seek. Its new total clamps the scrollbar to a valid range.
+      const next = { ...page, offset: Math.min(page.offset, page.total_children), anchor_offset: loaded.anchor_offset };
+      childrenPageRef.current = next;
+      setChildrenPage(next);
     } catch (loadError) {
       if (childrenRequestRef.current === requestId) {
-        childrenRetryRef.current = direction;
+        childrenRetryRef.current = { start: first, end: last };
         setChildrenError(errorMessage(loadError));
       }
     } finally {
       if (childrenRequestRef.current === requestId) {
-        loadingMoreRef.current = false;
+        pendingRangeRef.current = null;
         setLoadingMoreChildren(false);
       }
     }
-  }, [childrenPage, currentNavigationEntry, loadFolderLocation]);
+  }, [childrenPage]);
 
   const retryChildren = useCallback(() => {
-    if (childrenRetryRef.current) void extendChildren(childrenRetryRef.current);
-  }, [extendChildren]);
-
-  const loadPreviousChildren = useCallback(() => { void extendChildren("previous"); }, [extendChildren]);
-  const loadNextChildren = useCallback(() => { void extendChildren("next"); }, [extendChildren]);
+    const failed = childrenRetryRef.current;
+    childrenRetryRef.current = null;
+    if (failed) void loadChildrenRange(failed.start, failed.end);
+  }, [loadChildrenRange]);
 
   const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
     const workspaceName = workspaceNameRef.current;
@@ -1108,12 +1101,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const requestedWorkspace = workspaceName;
     locationRequestRef.current = requestId;
     childrenRequestRef.current += 1;
-    loadingMoreRef.current = false;
+    pendingRangeRef.current = null;
+    childrenRetryRef.current = null;
     setLoadingMoreChildren(false);
     navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
     setChildrenLoading(true);
     childrenLoadingRef.current = true;
+    setChildrenError(null);
     setNotice(null);
 
     try {
@@ -1350,8 +1345,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     goUp,
     navigateBreadcrumb,
     retryChildren,
-    loadPreviousChildren,
-    loadNextChildren,
+    loadChildrenRange,
     selectSite,
     selectCoverageTarget,
     treeLoading,
@@ -1432,7 +1426,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     goForward,
     goUp,
     navigateBreadcrumb,
-    loadPreviousChildren,
-    loadNextChildren,
+    loadChildrenRange,
   ]);
 }

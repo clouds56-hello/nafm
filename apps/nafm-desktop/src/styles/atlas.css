@@ -98,6 +98,8 @@ button:disabled { cursor: default; }
     radial-gradient(ellipse at center, #1e2135, #161822 65%, #141520);
 }
 
+.atlas-panels { display: contents; }
+
 .atlas-map-notice {
   flex: 1 0 100%;
   margin: 0;
@@ -174,6 +176,71 @@ button:disabled { cursor: default; }
 
 @media (max-width: 760px) {
   .atlas-main { padding: 8px; }
+
+  .atlas-shell:has(.atlas-visualization[data-both-panels]) { height: 100dvh; }
+
+  .atlas-visualization[data-both-panels] {
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    gap: 6px;
+    padding: 6px;
+  }
+  .atlas-visualization[data-both-panels] .atlas-chart-well {
+    container-type: size;
+    padding: 0;
+  }
+  .atlas-visualization[data-both-panels] .atlas-chart-well > :is(.radial-atlas, .atlas-empty-orbit) {
+    width: min(100cqw, 100cqh);
+  }
+  .atlas-visualization[data-both-panels] .atlas-map-footer { grid-row: 3; }
+
+  .atlas-visualization[data-both-panels] .atlas-panels {
+    display: grid;
+    grid-row: 2;
+    gap: 6px;
+  }
+
+  .atlas-visualization[data-both-panels] [data-atlas-panel] {
+    position: static;
+    width: auto;
+    min-height: 0;
+    grid-row: auto;
+  }
+
+  .atlas-visualization[data-both-panels] .atlas-site-rail { max-height: min(25dvh, 180px); }
+  .atlas-visualization[data-both-panels] .atlas-inspector-drawer { max-height: min(42dvh, 440px); }
+
+  .atlas-shell[data-overlay-open] .atlas-sector-preview[data-input="touch"] {
+    position: fixed;
+    z-index: 4;
+    inset-block: 54px auto;
+  }
+}
+
+@media (min-width: 500px) and (max-width: 760px) {
+  .atlas-visualization[data-both-panels] .atlas-panels {
+    grid-template-columns: minmax(190px, 1fr) minmax(0, 1.6fr);
+    align-items: end;
+  }
+  .atlas-visualization[data-both-panels] [data-atlas-panel] {
+    max-height: min(48dvh, 420px);
+  }
+}
+
+@media (min-width: 500px) and (max-width: 760px) and (orientation: landscape) {
+  .atlas-visualization[data-both-panels] {
+    grid-template-columns: minmax(155px, .85fr) minmax(90px, 1fr) minmax(200px, 1.3fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .atlas-visualization[data-both-panels] .atlas-panels { display: contents; }
+  .atlas-visualization[data-both-panels] [data-atlas-panel] {
+    max-height: 100%;
+    grid-row: 1;
+    align-self: start;
+  }
+  .atlas-visualization[data-both-panels] .atlas-site-rail { grid-column: 1; }
+  .atlas-visualization[data-both-panels] .atlas-chart-well { grid-column: 2; }
+  .atlas-visualization[data-both-panels] .atlas-inspector-drawer { grid-column: 3; }
+  .atlas-visualization[data-both-panels] .atlas-map-footer { grid-area: 2 / 1 / 3 / -1; }
 }
 
 .atlas-alert {

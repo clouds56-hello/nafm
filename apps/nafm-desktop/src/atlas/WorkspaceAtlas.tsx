@@ -22,7 +22,7 @@ interface ContentsVisit {
   revealRevision: number;
 }
 
-type InspectorPane = InspectorView | ContentsVisit | null;
+type InspectorPane = InspectorView | ContentsVisit;
 
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
@@ -37,20 +37,32 @@ interface WorkspaceAtlasProps {
 
 export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [pane, setPane] = useState<"sites" | InspectorPane>(null);
-  const inspectorBySite = useRef(new Map<string, InspectorPane>());
+  const [sitesOpen, setSitesOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorBySite, setInspectorBySite] = useState(() => new Map<string, InspectorPane>());
+  const lastOpened = useRef<"sites" | "inspector">("inspector");
   const mapRegion = useRef<HTMLElement>(null);
   const contentsPane = useRef<HTMLDivElement>(null);
+  const contentsScroll = useRef(new Map<string, number | "end">());
   const focusFirstSite = useRef(false);
-  const visit = typeof pane === "object" ? pane : null;
-  const activePane = typeof pane === "string" ? pane : visit?.view ?? null;
-  const returnFocus = useRef(true);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
-  const inspectorView = activePane === "sites" ? null : activePane;
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const siteId = site?.id;
+  const pane = inspectorOpen && siteId ? inspectorBySite.get(siteId) ?? "contents" : null;
+  const visit = typeof pane === "object" ? pane : null;
+  const inspectorView = typeof pane === "string" ? pane : visit?.view ?? null;
+
+  const rememberPane = useCallback((next: InspectorPane) => {
+    if (!siteId) return;
+    setInspectorBySite((saved) => saved.get(siteId) === next ? saved : new Map(saved).set(siteId, next));
+  }, [siteId]);
+  const openInspector = useCallback((next: InspectorPane) => {
+    lastOpened.current = "inspector";
+    rememberPane(next);
+    setInspectorOpen(true);
+  }, [rememberPane]);
   const openAddSite = dashboard && state.activeTaskCount === 0
     ? (event: MouseEvent<HTMLButtonElement>) => onAddSite(event, dashboard.workspace_name)
     : undefined;
@@ -81,14 +93,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   useEffect(() => {
     if (visit && !currentVisit) {
       const view = visit.view === "details" && selected?.kind === "file" ? "details" : "contents";
-      setPane((current) => current === visit ? view : current);
+      rememberPane(view);
     }
-  }, [visit, currentVisit, selected?.kind]);
-
-  useLayoutEffect(() => {
-    // The Sites picker temporarily covers the inspector.
-    if (siteId && pane !== "sites") inspectorBySite.current.set(siteId, pane);
-  }, [pane, siteId]);
+  }, [visit, currentVisit, selected?.kind, rememberPane]);
 
   const emptyLauncherRef = useCallback((button: HTMLButtonElement | null) => {
     if (button) return () => { focusFirstSite.current = document.activeElement === button; };
@@ -115,21 +122,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
-  const closePane = useCallback(() => {
-    returnFocus.current = true;
-    setPane((current) => current === "sites" && siteId ? inspectorBySite.current.get(siteId) ?? null : null);
-  }, [siteId]);
-  function dismissPane() {
-    returnFocus.current = false;
-    setPane(null);
-  }
-
   async function selectSite(id: string, comparisonSiteId?: string) {
-    const destination = id === siteId && pane !== "sites" ? pane : inspectorBySite.current.get(id) ?? null;
     if (!await state.selectSite(id, comparisonSiteId)) return;
-    returnFocus.current = true;
     setSourcesOpen(false);
-    setPane((current) => current === "sites" ? current : destination);
   }
 
   const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
@@ -137,20 +132,23 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const canGoBack = fileOpen || state.canGoBack;
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
   const goBack = useCallback(() => {
-    if (currentVisit?.view === "details") setPane({ ...currentVisit, view: "contents" });
+    if (currentVisit?.view === "details") openInspector({ ...currentVisit, view: "contents" });
     else backLocation();
-  }, [currentVisit, backLocation]);
+  }, [currentVisit, backLocation, openInspector]);
   const goForward = useCallback(() => {
-    if (currentVisit?.view === "contents") setPane({ ...currentVisit, view: "details" });
+    if (currentVisit?.view === "contents") openInspector({ ...currentVisit, view: "details" });
     else forwardLocation();
-  }, [currentVisit, forwardLocation]);
+  }, [currentVisit, forwardLocation, openInspector]);
   useEffect(() => {
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
-      if (event.key === "Escape" && activePane) {
+      if (event.key === "Escape" && (sitesOpen || inspectorView)) {
         event.preventDefault();
-        if (fileOpen) goBack();
-        else closePane();
+        const panel = event.target instanceof Element ? event.target.closest("[data-atlas-panel]") : null;
+        const active = panel?.getAttribute("data-atlas-panel") ?? lastOpened.current;
+        if (sitesOpen && (active === "sites" || !inspectorView)) setSitesOpen(false);
+        else if (fileOpen) goBack();
+        else setInspectorOpen(false);
         return;
       }
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
@@ -167,7 +165,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [activePane, canGoBack, canGoForward, canGoUp, closePane, fileOpen, goBack, goForward, goUp]);
+  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp]);
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
@@ -177,17 +175,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
     if (node.kind === "file" && !origin) {
-      setPane({ view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision });
+      openInspector({ view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision });
     } else if (node.kind === "file" || node.kind === "smaller_items") {
       if (origin) inspectorOrigin.current = origin;
-      setPane(node.kind === "file" ? "details" : "contents");
-    } else if (origin && activePane === "sites") {
-      dismissPane();
+      openInspector(node.kind === "file" ? "details" : "contents");
     }
   }
 
   return (
-    <div className="atlas-shell" data-overlay-open={activePane ? "" : undefined}>
+    <div className="atlas-shell" data-overlay-open={sitesOpen || inspectorView ? "" : undefined}>
       <AtlasToolbar
         workspace={{
           name: workspace.management?.active_workspace.name ?? null,
@@ -230,31 +226,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       />
 
       <main className="atlas-main">
-        <section ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map">
-          <SiteRail
-            sites={dashboard?.sites ?? []}
-            activeId={site?.id ?? null}
-            scanRequests={state.scanRequestBySite}
-            blockedIds={state.scanBlockedSiteIds}
-            scanAllRequests={state.scanAllRequestIds}
-            cancellingRequests={state.cancellingRequestIds}
-            progressBySite={state.progressBySite}
-            open={activePane === "sites"}
-            restoreFocus={activePane === null && returnFocus.current}
-            onOpen={() => setPane("sites")}
-            onClose={closePane}
-            onSelect={(id) => void selectSite(id)}
-            onScan={(id) => void state.scan(id)}
-            onCancel={(id) => void state.cancel(id)}
-            onAdd={openAddSite}
-            onManage={(id) => workspace.openManagement("sites", id)}
-          />
+        <section ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map" data-both-panels={sitesOpen && inspectorView ? "" : undefined}>
           <div
             className="atlas-chart-well"
             aria-busy={state.childrenLoading || state.treeLoading || undefined}
-            onClick={(event) => {
-              if (activePane && event.target instanceof Element && !event.target.closest("button, [role=button], .atlas-sector-preview")) dismissPane();
-            }}
           >
             {folder ? (
               <RadialAtlas
@@ -262,7 +237,6 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                 firstScan={firstScan}
                 parentName={breadcrumbs.at(-2)?.name}
                 canGoUp={canGoUp}
-                onTouchPreview={dismissPane}
                 onGoUp={goUp}
                 selectedId={selected?.id ?? null}
                 metric={metric}
@@ -309,78 +283,99 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
               </>
             )}
           </footer>
-          {site && (
-            <AtlasInspector
-              detailsKey={selected?.id ?? folder?.id ?? null}
-              contentsKey={contentsKey}
-              contentsPane={contentsPane}
-              contentsFileId={currentVisit?.fileId ?? null}
-              folderName={folder?.name}
-              view={inspectorView}
-              initialView={selected?.kind === "file" ? "details" : "contents"}
-              restoreFocus={activePane === null && returnFocus.current}
-              origin={inspectorOrigin}
-              onViewChange={setPane}
-              onBackToContents={goBack}
-              onClose={closePane}
-              details={location ? (
-                <StorageDetails
-                  location={location}
-                  entries={state.childrenPage?.children ?? []}
-                  selected={selected}
-                  focusRevision={state.duplicateJumpRevision}
-                  metric={metric}
-                  targetCompleteness={targetCompleteness}
-                  targetName={target?.name ?? null}
-                >
-                  {dashboard && selectedNode && (
-                    <ContentActions
-                      workspaceName={dashboard.workspace_name}
-                      siteId={site.id}
-                      contentRevision={state.contentRevision}
-                      node={selectedNode}
-                      metric={state.healthMetric}
-                      sourceAnalysisReady={siteAnalysisReady(site)}
-                      staged={state.isSelectedStaged}
-                      stagingBusy={state.stagingBusy}
-                      onStage={() => void state.stageSelected()}
-                      onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                      onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
-                    />
-                  )}
-                </StorageDetails>
-              ) : (
-                <p className="atlas-inspector-status" role="status">
-                  {state.treeError ? "Folder details are unavailable." : "Loading folder details…"}
-                </p>
-              )}
-              contents={(
-                <>
-                  <DirectoryContents
-                    onGoUp={goUp}
-                    location={location}
-                    page={state.childrenPage}
-                    selection={selected}
-                    scrollPane={contentsPane}
-                    active={inspectorView === "contents"}
-                    loading={state.childrenLoading}
-                    loadingMore={state.loadingMoreChildren}
-                    error={state.childrenError}
-                    awaitingInventory={Boolean(firstScan)}
-                    onSelect={activateNode}
-                    onPrevious={state.loadPreviousChildren}
-                    onNext={state.loadNextChildren}
-                    onRetry={state.retryChildren}
-                  />
-                  {!location && (
-                    <p className="atlas-inspector-status" role="status">
-                      {state.treeError ? "Folder contents are unavailable." : "Loading folder contents…"}
-                    </p>
-                  )}
-                </>
-              )}
+          <div className="atlas-panels">
+            <SiteRail
+              sites={dashboard?.sites ?? []}
+              activeId={site?.id ?? null}
+              scanRequests={state.scanRequestBySite}
+              blockedIds={state.scanBlockedSiteIds}
+              scanAllRequests={state.scanAllRequestIds}
+              cancellingRequests={state.cancellingRequestIds}
+              progressBySite={state.progressBySite}
+              open={sitesOpen}
+              onOpen={() => { lastOpened.current = "sites"; setSitesOpen(true); }}
+              onClose={() => setSitesOpen(false)}
+              onSelect={(id) => void selectSite(id)}
+              onScan={(id) => void state.scan(id)}
+              onCancel={(id) => void state.cancel(id)}
+              onAdd={openAddSite}
+              onManage={(id) => workspace.openManagement("sites", id)}
             />
-          )}
+            {site && (
+              <AtlasInspector
+                detailsKey={selected?.id ?? folder?.id ?? null}
+                contentsPane={contentsPane}
+                siteId={site.id}
+                contentsFileId={currentVisit?.fileId ?? null}
+                folderName={folder?.name}
+                view={inspectorView}
+                initialView={selected?.kind === "file" ? "details" : "contents"}
+                origin={inspectorOrigin}
+                onViewChange={openInspector}
+                onBackToContents={goBack}
+                onClose={() => setInspectorOpen(false)}
+                details={location ? (
+                  <StorageDetails
+                    location={location}
+                    entries={state.childrenPage?.children ?? []}
+                    selected={selected}
+                    focusRevision={state.duplicateJumpRevision}
+                    metric={metric}
+                    targetCompleteness={targetCompleteness}
+                    targetName={target?.name ?? null}
+                  >
+                    {dashboard && selectedNode && (
+                      <ContentActions
+                        workspaceName={dashboard.workspace_name}
+                        siteId={site.id}
+                        contentRevision={state.contentRevision}
+                        node={selectedNode}
+                        metric={state.healthMetric}
+                        sourceAnalysisReady={siteAnalysisReady(site)}
+                        staged={state.isSelectedStaged}
+                        stagingBusy={state.stagingBusy}
+                        onStage={() => void state.stageSelected()}
+                        onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
+                        onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
+                      />
+                    )}
+                  </StorageDetails>
+                ) : (
+                  <p className="atlas-inspector-status" role="status">
+                    {state.treeError ? "Folder details are unavailable." : "Loading folder details…"}
+                  </p>
+                )}
+                contents={(
+                  <>
+                    <DirectoryContents
+                      onGoUp={goUp}
+                      location={location}
+                      page={state.childrenPage}
+                      selection={selected}
+                      scrollPane={contentsPane}
+                      scrollPositions={contentsScroll.current}
+                      contentsKey={contentsKey}
+                      anchorIndex={state.contentsAnchorOffset}
+                      returnFileId={currentVisit?.fileId ?? null}
+                      active={inspectorView === "contents"}
+                      loading={state.childrenLoading}
+                      loadingMore={state.loadingMoreChildren}
+                      error={state.childrenError}
+                      awaitingInventory={Boolean(firstScan)}
+                      onSelect={activateNode}
+                      onLoadRange={state.loadChildrenRange}
+                      onRetry={state.retryChildren}
+                    />
+                    {!location && (
+                      <p className="atlas-inspector-status" role="status">
+                        {state.treeError ? "Folder contents are unavailable." : "Loading folder contents…"}
+                      </p>
+                    )}
+                  </>
+                )}
+              />
+            )}
+          </div>
         </section>
       </main>
 
