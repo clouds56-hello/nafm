@@ -415,11 +415,11 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [currentNavigationEntry]);
 
-  const setDirectorySort = useCallback((sort: DirectorySort) => {
+  const setDirectorySort = useCallback(async (sort: DirectorySort) => {
     const current = currentNavigationEntry();
     if (!current) return;
     const destination = withDirectorySort(current, sort);
-    if (destination !== current || childrenLoadingRef.current) void loadFolderLocation(destination, "preserve");
+    if (destination !== current || childrenLoadingRef.current) await loadFolderLocation(destination, "preserve");
   }, [currentNavigationEntry, loadFolderLocation]);
 
   const refreshTree = useCallback(async (

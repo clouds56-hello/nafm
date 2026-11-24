@@ -11,7 +11,7 @@ interface DirectoryContentsProps {
   page: StorageChildrenPage | null;
   selection: StorageNode | null;
   sort: DirectorySort;
-  onSort: (sort: DirectorySort) => void;
+  onSort: (sort: DirectorySort) => Promise<void>;
   metric: HealthMetric | null;
   targetCompleteness: number;
   scrollPane: RefObject<HTMLDivElement | null>;
@@ -173,7 +173,7 @@ export function DirectoryContents({
           <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
           {total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
         </div>
-        {total > 1 && <DirectorySortControl sort={sort} onChange={onSort} />}
+        {total > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
       </header>
 
       <div role="region" aria-label="Directory entries" aria-busy={loading || loadingMore || undefined}>

@@ -92,7 +92,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const contentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
   function changeDirectorySort(sort: DirectorySort) {
     contentsScroll.current.delete(contentsKeyFor(sort, 0));
-    void state.setDirectorySort(sort);
+    return state.setDirectorySort(sort);
   }
   const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id
     && visit.revealRevision === state.duplicateJumpRevision ? visit : null;
