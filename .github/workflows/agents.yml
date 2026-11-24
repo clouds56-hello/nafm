@@ -26,7 +26,7 @@ jobs:
           cargo install --locked cargo-zigbuild --version 0.23.3
           cargo install --locked cargo-xwin --version 0.23.0
       - name: Build and verify complete bundle
-        run: cargo run --locked -p nafm-xtask -- build-agents
+        run: cargo run --locked -p nafm-xtask -- ensure-agents
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: remote-agents

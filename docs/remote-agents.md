@@ -22,7 +22,6 @@ cargo install --locked cargo-zigbuild --version 0.23.3
 cargo install --locked cargo-xwin --version 0.23.0
 # Ensure LLVM and Zig are on PATH. CI pins Zig 0.16.0 via the ziglang package.
 cd apps/nafm-desktop
-pnpm agents:build
 pnpm tauri build
 ```
 
@@ -36,11 +35,12 @@ The Rust build tool writes ignored binaries plus a manifest under
 `apps/nafm-desktop/src-tauri/resources/agents/`. It validates executable
 machine types, Linux static linking, sizes, BLAKE3 checksums and protocol/version.
 The source fingerprint includes agent/protocol/build-tool sources and Cargo.lock.
-Desktop packaging runs `agents:check` and refuses missing, corrupt or stale bundles.
-Run `agents:build` after changing those inputs; ordinary frontend development
-does not require the bundle unless you test installation.
+Desktop packaging reuses a verified bundle. On macOS, it automatically rebuilds
+a missing, corrupt or stale bundle and verifies the result before continuing.
+Use `pnpm agents:check` for verification alone or `pnpm agents:build` to force a rebuild.
 
-Other desktop build hosts consume the same directory produced on the Mac.
+On Linux and Windows, copy the agent bundle for the same revision from CI or
+a macOS builder into that resources directory before running `pnpm tauri build`.
 CI cross-builds on macOS, then runs the actual artifacts on Linux, Windows and
 macOS before desktop packaging. Artifact transport restores executable bits.
 

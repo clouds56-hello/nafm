@@ -159,6 +159,10 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x apps/nafm-desktop/src-tauri/resources/agents/nafm-agent-*
 
+      - name: Verify the downloaded agents before packaging
+        working-directory: apps/nafm-desktop
+        run: pnpm agents:check
+
       - name: Build and attach desktop bundle
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:

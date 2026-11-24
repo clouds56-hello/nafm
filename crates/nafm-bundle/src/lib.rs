@@ -51,7 +51,7 @@ pub fn target_for(os: &str, arch: &str) -> Result<&'static str> {
 impl AgentManifest {
   pub fn validate_source(&self, root: &Path) -> Result<()> {
     if self.source_hash != source_hash(root)? {
-      return Err("agent bundle is stale; run pnpm agents:build".into());
+      return Err("agent bundle is stale".into());
     }
     Ok(())
   }
@@ -62,7 +62,7 @@ impl AgentManifest {
       || manifest.protocol_version != nafm_protocol::REMOTE_AGENT_PROTOCOL_VERSION
       || manifest.artifacts.len() != TARGETS.len()
     {
-      return Err("agent bundle version or target count mismatch; rebuild with pnpm agents:build".into());
+      return Err("agent bundle version or target count mismatch".into());
     }
     for target in TARGETS {
       let matches: Vec<_> = manifest

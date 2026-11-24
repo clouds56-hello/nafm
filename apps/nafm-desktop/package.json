@@ -6,6 +6,7 @@
   "scripts": {
     "agents:build": "cargo run --locked -p nafm-xtask -- build-agents",
     "agents:check": "cargo run --locked -p nafm-xtask -- check-agents",
+    "agents:ensure": "cargo run --locked -p nafm-xtask -- ensure-agents",
     "dev": "vite",
     "mock": "vite --host localhost --port 14243",
     "test:atlas": "playwright test",
