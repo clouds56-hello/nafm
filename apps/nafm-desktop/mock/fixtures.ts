@@ -105,9 +105,12 @@ export function buildFolder(
     pending_hash_count: sum.pending_hash_count + child.pending_hash_count,
     verified_bytes: sum.verified_bytes + child.verified_bytes,
   }), { total_bytes: 0, file_count: 0, verified_file_count: 0, pending_hash_count: 0, verified_bytes: 0 });
+  const latest = children.reduce<number | null>((date, child) =>
+    child.modified_unix_millis !== null && (date === null || child.modified_unix_millis > date)
+      ? child.modified_unix_millis : date, null);
 
   children.sort((a, b) => b.total_bytes - a.total_bytes || a.name.localeCompare(b.name));
-  return populateMetrics({ id, name, path, kind, ...totals, children });
+  return populateMetrics({ id, name, path, kind, modified_unix_millis: latest, ...totals, children });
 }
 
 function populateMetrics(node: Omit<StorageNode,
@@ -133,9 +136,12 @@ function buildTree(site: SampleSite, roots: readonly SampleRoot[], partial = fal
       return buildFolder(id, name, path, "directory", contents.map((entry) => buildEntry(id, path, entry)));
     }
 
-    const pending = partial && nextFile++ % 4 === 0;
+    const index = nextFile++;
+    const pending = partial && index % 4 === 0;
+    const daysBeforeScan = 1 + (index * 31) % 92;
     return populateMetrics({
       id, name, path, kind: "file", total_bytes: contents, file_count: 1,
+      modified_unix_millis: Date.parse(INVENTORY_DATE) - daysBeforeScan * 86_400_000 - index * 60_000,
       verified_file_count: pending ? 0 : 1, pending_hash_count: pending ? 1 : 0,
       verified_bytes: pending ? 0 : contents, children: [],
     });

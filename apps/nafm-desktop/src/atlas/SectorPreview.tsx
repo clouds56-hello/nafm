@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { fileName, formatBytes, formatShare } from "../lib/format";
-import { healthAriaDescription, nodeHealthPresentation } from "../lib/health";
+import { healthAriaDescription, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 import { CloseIcon } from "../management/Icons";
 import type { Sector } from "./radialGeometry";
@@ -37,6 +37,26 @@ interface SectorPreviewProps {
   onClose: () => void;
 }
 
+export function PreviewSummary({ node, root, metric, score, awaitingInventory = false }: {
+  node: StorageNode;
+  root: StorageNode;
+  metric: HealthMetric | null;
+  score: HealthPresentation | null;
+  awaitingInventory?: boolean;
+}) {
+  return (
+    <div className="atlas-sector-preview__body">
+      <span className="atlas-sector-preview__kind">{kindLabel(node)}</span>
+      <strong>{labelFor(node)}</strong>
+      <span className="atlas-sector-preview__meta">
+        {awaitingInventory ? "Awaiting inventory" : formatBytes(node.total_bytes)}
+        {!awaitingInventory && root.total_bytes > 0 && ` · ${formatShare(node.total_bytes, root.total_bytes)} of ${labelFor(root)}`}
+      </span>
+      {score && <span className="atlas-sector-preview__meta">{healthAriaDescription(score, metric === "coverage_health" ? "coverage" : "space", node.file_count > 0)}</span>}
+    </div>
+  );
+}
+
 export function SectorPreview({ preview, sector, root, metric, targetCompleteness, onOpen, onClose }: SectorPreviewProps) {
   const { node } = sector;
   const interactive = preview.input === "touch";
@@ -52,15 +72,7 @@ export function SectorPreview({ preview, sector, root, metric, targetCompletenes
       aria-label={interactive ? `Preview of ${labelFor(node)}` : undefined}
       aria-hidden={interactive ? undefined : true}
     >
-      <div className="atlas-sector-preview__body">
-        <span className="atlas-sector-preview__kind">{kindLabel(node)}</span>
-        <strong>{labelFor(node)}</strong>
-        <span className="atlas-sector-preview__meta">
-          {formatBytes(node.total_bytes)}
-          {root.total_bytes > 0 && ` · ${formatShare(node.total_bytes, root.total_bytes)} of ${labelFor(root)}`}
-        </span>
-        {score && <span className="atlas-sector-preview__meta">{healthAriaDescription(score, metric === "coverage_health" ? "coverage" : "space", node.file_count > 0)}</span>}
-      </div>
+      <PreviewSummary node={node} root={root} metric={metric} score={score} />
       {interactive && (
         <>
           <button type="button" className="atlas-sector-preview__open" onClick={onOpen}>{action}</button>

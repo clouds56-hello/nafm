@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  FileContentMatchesPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
+  DirectorySort, FileContentMatchesPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun,
+  StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 };
 use serde::Serialize;
 use tauri::State;
@@ -295,17 +295,21 @@ pub async fn get_storage_children(
   node_id: String,
   offset: u64,
   limit: u64,
+  sort: Option<DirectorySort>,
 ) -> Result<StorageChildrenPage, String> {
-  let repository = state.repository().await;
-  match target_site_id {
-    Some(target_site_id) => {
-      repository
-        .storage_children_with_coverage(&site_id, &target_site_id, &node_id, offset, limit)
-        .await
-    }
-    None => repository.storage_children(&site_id, &node_id, offset, limit).await,
-  }
-  .map_err(|error| error.to_string())
+  state
+    .repository()
+    .await
+    .storage_children_sorted(
+      &site_id,
+      target_site_id.as_deref(),
+      &node_id,
+      offset,
+      limit,
+      sort.unwrap_or_default(),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -320,30 +324,24 @@ pub async fn get_storage_view_snapshot(
   max_depth: u32,
   max_children: u32,
   limit: u64,
+  sort: Option<DirectorySort>,
 ) -> Result<StorageViewSnapshotResponse, String> {
-  let repository = state.repository_for(&expected_workspace).await?;
-  let snapshot = match target_site_id {
-    Some(target_site_id) => {
-      repository
-        .storage_view_snapshot_with_coverage(
-          &site_id,
-          &target_site_id,
-          &node_id,
-          offset,
-          max_depth,
-          max_children,
-          limit,
-        )
-        .await
-    }
-    None => {
-      repository
-        .storage_view_snapshot(&site_id, &node_id, offset, max_depth, max_children, limit)
-        .await
-    }
-  }
-  .map_err(|error| error.to_string())?;
-  Ok(StorageViewSnapshotResponse::from(snapshot))
+  state
+    .repository_for(&expected_workspace)
+    .await?
+    .storage_view_snapshot_sorted(
+      &site_id,
+      target_site_id.as_deref(),
+      &node_id,
+      offset,
+      max_depth,
+      max_children,
+      limit,
+      sort.unwrap_or_default(),
+    )
+    .await
+    .map(StorageViewSnapshotResponse::from)
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -364,6 +362,7 @@ pub async fn get_file_content_matches(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_storage_file_reveal(
   state: State<'_, AppState>,
   expected_workspace: String,
@@ -372,11 +371,19 @@ pub async fn get_storage_file_reveal(
   max_depth: u32,
   max_children: u32,
   limit: u64,
+  sort: Option<DirectorySort>,
 ) -> Result<StorageFileRevealResponse, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .storage_file_reveal(&file_id, target_site_id.as_deref(), max_depth, max_children, limit)
+    .storage_file_reveal_sorted(
+      &file_id,
+      target_site_id.as_deref(),
+      max_depth,
+      max_children,
+      limit,
+      sort.unwrap_or_default(),
+    )
     .await
     .map(StorageFileRevealResponse::from)
     .map_err(|error| error.to_string())
@@ -517,6 +524,7 @@ mod tests {
       name: "selected.bin".to_owned(),
       path: Some(PathBuf::from("/source/selected.bin")),
       kind: StorageNodeKind::File,
+      modified_unix_millis: Some(1000),
       total_bytes: 8,
       verified_bytes: 6,
       file_count: 1,
@@ -539,6 +547,7 @@ mod tests {
       name: "source".to_owned(),
       path: Some(PathBuf::from("/source")),
       kind: StorageNodeKind::LocalRoot,
+      modified_unix_millis: selected_file.modified_unix_millis,
       total_bytes: 8,
       verified_bytes: 6,
       file_count: 1,
@@ -595,6 +604,7 @@ mod tests {
     assert_eq!(snapshot_json["location"]["root"]["id"], "parent");
     assert!(snapshot_json["location"].get("max_depth").is_none());
     assert_eq!(snapshot_json["page"]["children"][0]["id"], "selected-file");
+    assert_eq!(snapshot_json["page"]["children"][0]["modified_unix_millis"], 1000);
 
     let json = serde_json::to_value(StorageFileRevealResponse::from(reveal)).unwrap();
     assert_eq!(json["tree"]["site_id"], "source-site");

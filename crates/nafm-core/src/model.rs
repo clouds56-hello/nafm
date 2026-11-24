@@ -90,6 +90,8 @@ pub struct StorageNode {
   pub path: Option<PathBuf>,
   pub kind: StorageNodeKind,
   pub total_bytes: u64,
+  /// File modification time, or the newest known descendant modification time for a container.
+  pub modified_unix_millis: Option<i64>,
   pub file_count: u64,
   pub verified_file_count: u64,
   pub pending_hash_count: u64,
@@ -167,6 +169,36 @@ pub struct FolderSimilarityPage {
   pub workspace_pending_hash_count: u64,
   pub workspace_incomplete_site_count: u64,
   pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectorySortField {
+  Size,
+  Name,
+  Date,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+  Asc,
+  Desc,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct DirectorySort {
+  pub field: DirectorySortField,
+  pub direction: SortDirection,
+}
+
+impl Default for DirectorySort {
+  fn default() -> Self {
+    Self {
+      field: DirectorySortField::Size,
+      direction: SortDirection::Desc,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

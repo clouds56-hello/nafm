@@ -45,16 +45,7 @@ function hitSector(inner: number, outer: number, from: number, to: number) {
   return `${orbitPath(outer, from, to)} L ${innerEnd.x} ${innerEnd.y} A ${inner} ${inner} 0 ${large} 0 ${innerStart.x} ${innerStart.y} Z`;
 }
 
-export function branchSectors(
-  parent: StorageNode,
-  tier: number,
-  from: number,
-  to: number,
-  inherited?: Pick<Sector, "color" | "branch">,
-): Sector[] {
-  const ring = RINGS[tier];
-  if (!ring || parent.children.length === 0) return [];
-
+function rankedBranches(parent: StorageNode) {
   const byBytes = parent.total_bytes > 0 || parent.children.some((child) => child.total_bytes > 0);
   const children = parent.children.map((node) => ({
     node,
@@ -64,7 +55,31 @@ export function branchSectors(
     byBytes ? parent.total_bytes : parent.file_count,
     children.reduce((total, child) => total + child.weight, 0),
   );
-  const visible = children.slice(0, MAX_SIBLINGS);
+  return { visible: children.slice(0, MAX_SIBLINGS), totalWeight };
+}
+
+function branchColor(index: number) {
+  return PALETTE[index % PALETTE.length];
+}
+
+// Directory order can change independently of the size-ranked atlas.
+export function directoryBranchColors(parent: StorageNode) {
+  const { visible } = rankedBranches(parent);
+  const colors = new Map(visible.map(({ node }, index) => [node.id, branchColor(index)]));
+  const group = visible.find(({ node }) => node.kind === "smaller_items");
+  return (node: StorageNode) => colors.get(node.id) ?? (group && colors.get(group.node.id)) ?? "var(--atlas-muted)";
+}
+
+export function branchSectors(
+  parent: StorageNode,
+  tier: number,
+  from: number,
+  to: number,
+  inherited?: Pick<Sector, "color" | "branch">,
+): Sector[] {
+  const ring = RINGS[tier];
+  if (!ring || parent.children.length === 0) return [];
+  const { visible, totalWeight } = rankedBranches(parent);
   const span = to - from;
   const reserved = tier === 0 ? ring.minimum : 0;
   const separator = Math.min(ring.gap, span / (visible.length * 3));
@@ -85,7 +100,7 @@ export function branchSectors(
       node,
       parentId: parent.id,
       hitPath: hitSector(ring.inner, ring.outer, start, end),
-      color: inherited?.color ?? PALETTE[index % PALETTE.length],
+      color: inherited?.color ?? branchColor(index),
       branch: inherited?.branch ?? node.id,
       tier,
       from: start,

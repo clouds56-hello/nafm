@@ -1,7 +1,18 @@
-import { formatHealth, healthColor } from "./format";
+import { formatCount, formatHealth, healthColor } from "./format";
 import type { HealthMetric, SiteOverview, StorageNode } from "./types";
 
 export type HealthPresentationState = "unavailable" | "partial" | "exact";
+
+export function verificationStatus(node: StorageNode) {
+  if (node.kind === "file") {
+    if (node.verified_file_count > 0) return { status: "verified", label: "Hash verified" };
+    if (node.pending_hash_count > 0) return { status: "pending", label: "Hash pending" };
+    return { status: "unknown", label: "Not verified" };
+  }
+  if (node.file_count === 0) return { status: "unknown", label: "No files to verify" };
+  const label = `${formatCount(node.verified_file_count)} of ${formatCount(node.file_count)} files verified`;
+  return { status: node.verified_file_count === node.file_count ? "verified" : "pending", label };
+}
 
 export interface HealthPresentation {
   value: number | null;

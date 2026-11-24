@@ -527,6 +527,8 @@ async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
     .unwrap();
 
   assert_eq!(reveal.tree.site.id, network.id);
+  assert_eq!(reveal.selected_file.modified_unix_millis, None);
+  assert_eq!(reveal.location.root.modified_unix_millis, None);
   assert_eq!(reveal.tree.coverage_target.as_ref().unwrap().id, target.id);
   assert_eq!(reveal.location.root.name, "Camera");
   assert_eq!(
@@ -2104,6 +2106,110 @@ async fn storage_children_pages_direct_items_independently_of_map_bounds() {
     .await
     .unwrap_err();
   assert!(matches!(error, NafmError::StorageNodeNotFound(node_id) if node_id == "storage:unknown"));
+}
+
+#[tokio::test]
+async fn directory_sort_orders_the_whole_folder_before_slicing_and_revealing() {
+  use nafm_core::{
+    DirectorySort,
+    DirectorySortField::{Date, Name, Size},
+    SortDirection::{Asc, Desc},
+  };
+  use std::time::UNIX_EPOCH;
+
+  let fixture = Fixture::new().await;
+  let media = fs::canonicalize(fixture.mkdir("media")).unwrap();
+  let empty = fixture.mkdir("empty");
+  fs::create_dir(media.join("cabinet")).unwrap();
+  for (path, size, seconds) in [
+    ("alpha", 2, 30),
+    ("Bravo", 2, 20),
+    ("zeta", 20, 10),
+    ("cabinet/early", 3, 5),
+    ("cabinet/late", 4, 30),
+  ] {
+    let path = media.join(path);
+    fs::write(&path, vec![1_u8; size]).unwrap();
+    File::open(path)
+      .unwrap()
+      .set_modified(UNIX_EPOCH + Duration::from_secs(seconds))
+      .unwrap();
+  }
+  let site = fixture.repo.create_site("source").await.unwrap();
+  fixture.add_site_folder(&site.id, &media, HiddenPolicy::Include).await;
+  fixture.add_site_folder(&site.id, &empty, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  let tree = fixture.repo.storage_tree(&site.id, 3, 12).await.unwrap();
+  let folder = child_named(&tree.root, "media");
+  assert_eq!(folder.modified_unix_millis, Some(30_000));
+  assert_eq!(child_named(folder, "cabinet").modified_unix_millis, Some(30_000));
+  assert_eq!(child_named(&tree.root, "empty").modified_unix_millis, None);
+
+  for (field, direction, expected) in [
+    (Size, Desc, ["zeta", "cabinet", "Bravo", "alpha"]),
+    (Size, Asc, ["Bravo", "alpha", "cabinet", "zeta"]),
+    (Name, Asc, ["alpha", "Bravo", "cabinet", "zeta"]),
+    (Name, Desc, ["zeta", "cabinet", "Bravo", "alpha"]),
+    (Date, Desc, ["alpha", "cabinet", "Bravo", "zeta"]),
+    (Date, Asc, ["zeta", "Bravo", "alpha", "cabinet"]),
+  ] {
+    let sort = DirectorySort { field, direction };
+    let snapshot = fixture
+      .repo
+      .storage_view_snapshot_sorted(&site.id, None, &folder.id, 0, 2, 2, 2, sort)
+      .await
+      .unwrap();
+    let rest = fixture
+      .repo
+      .storage_children_sorted(&site.id, None, &folder.id, 2, 2, sort)
+      .await
+      .unwrap();
+    let names: Vec<_> = snapshot
+      .page
+      .children
+      .iter()
+      .chain(&rest.children)
+      .map(|node| node.name.as_str())
+      .collect();
+    assert_eq!(names, expected);
+    assert_eq!(snapshot.location.root.children[0].name, "zeta");
+    assert_eq!(snapshot.location.root.children[1].kind, StorageNodeKind::SmallerItems);
+    assert_eq!(snapshot.location.root.children[1].modified_unix_millis, Some(30_000));
+  }
+  for direction in [Asc, Desc] {
+    let page = fixture
+      .repo
+      .storage_children_sorted(
+        &site.id,
+        None,
+        &tree.root.id,
+        0,
+        2,
+        DirectorySort { field: Date, direction },
+      )
+      .await
+      .unwrap();
+    assert_eq!(page.children[1].name, "empty");
+  }
+  let (file_id, ..) = tracked_file_identity(&fixture.repo, &media.join("zeta"));
+  let reveal = fixture
+    .repo
+    .storage_file_reveal_sorted(
+      &file_id,
+      None,
+      2,
+      2,
+      2,
+      DirectorySort {
+        field: Date,
+        direction: Desc,
+      },
+    )
+    .await
+    .unwrap();
+  assert_eq!(reveal.page.offset, 2);
+  assert_eq!(reveal.page.children[1].id, reveal.selected_file.id);
+  assert_eq!(reveal.selected_file.modified_unix_millis, Some(10_000));
 }
 
 #[tokio::test]

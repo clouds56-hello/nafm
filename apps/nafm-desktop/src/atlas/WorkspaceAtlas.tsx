@@ -13,7 +13,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
-import type { HealthMetric, StorageNode } from "../lib/types";
+import type { DirectorySort, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -86,7 +86,14 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
-  const contentsKey = JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, state.contentsAnchorOffset]);
+  function contentsKeyFor(sort: DirectorySort, anchor: number) {
+    return JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, sort.field, sort.direction, anchor]);
+  }
+  const contentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
+  function changeDirectorySort(sort: DirectorySort) {
+    contentsScroll.current.delete(contentsKeyFor(sort, 0));
+    void state.setDirectorySort(sort);
+  }
   const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id
     && visit.revealRevision === state.duplicateJumpRevision ? visit : null;
   // A new location or an exact-copy jump ends this list's local Back/Forward step.
@@ -352,6 +359,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                       location={location}
                       page={state.childrenPage}
                       selection={selected}
+                      sort={state.directorySort}
+                      onSort={changeDirectorySort}
+                      metric={metric}
+                      targetCompleteness={targetCompleteness}
                       scrollPane={contentsPane}
                       scrollPositions={contentsScroll.current}
                       contentsKey={contentsKey}

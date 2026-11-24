@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatHealth, formatShare } from "../lib/format";
-import { formatCompleteness, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
+import { formatCompleteness, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageLocation, StorageNode } from "../lib/types";
 import "./inspector.css";
 
@@ -21,18 +21,6 @@ function findContainingFolder(folder: StorageNode, id: string): StorageNode | un
     const container = findContainingFolder(item, id);
     if (container) return container;
   }
-}
-
-function getVerification(node: StorageNode) {
-  if (node.kind === "file") {
-    if (node.verified_file_count > 0) return { status: "verified", label: "Hash verified" };
-    if (node.pending_hash_count > 0) return { status: "pending", label: "Hash pending" };
-    return { status: "unknown", label: "Not verified" };
-  }
-
-  if (node.file_count === 0) return { status: "unknown", label: "No files to verify" };
-  const label = `${formatCount(node.verified_file_count)} of ${formatCount(node.file_count)} files verified`;
-  return { status: node.verified_file_count === node.file_count ? "verified" : "pending", label };
 }
 
 function HealthDetail({
@@ -67,7 +55,7 @@ export function StorageDetails({ location, entries, selected, focusRevision, met
   const container = selected
     ? isDirectEntry ? folder : findContainingFolder(folder, selected.id)
     : breadcrumbs.at(-2);
-  const verification = getVerification(node);
+  const verification = verificationStatus(node);
   const space = nodeHealthPresentation(node, "space_health");
   const coverage = nodeHealthPresentation(node, "coverage_health", targetCompleteness);
   const heading = node.kind === "file" ? "Selected file"

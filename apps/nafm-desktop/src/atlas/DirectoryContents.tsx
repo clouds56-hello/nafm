@@ -1,6 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { formatBytes, formatCount } from "../lib/format";
-import type { StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
+import { formatCount } from "../lib/format";
+import type { DirectorySort, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
+import { DirectorySortControl } from "./DirectorySortControl";
+import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
 import { useDirectoryViewport } from "./useDirectoryViewport";
 import "./directory.css";
 
@@ -8,6 +10,10 @@ interface DirectoryContentsProps {
   location: StorageLocation | null;
   page: StorageChildrenPage | null;
   selection: StorageNode | null;
+  sort: DirectorySort;
+  onSort: (sort: DirectorySort) => void;
+  metric: HealthMetric | null;
+  targetCompleteness: number;
   scrollPane: RefObject<HTMLDivElement | null>;
   scrollPositions: Map<string, number | "end">;
   contentsKey: string;
@@ -25,7 +31,8 @@ interface DirectoryContentsProps {
 }
 
 export function DirectoryContents({
-  location, page, selection, scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId,
+  location, page, selection, sort, onSort, metric, targetCompleteness,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -39,6 +46,9 @@ export function DirectoryContents({
   const offset = page?.offset ?? 0;
   const viewport = useDirectoryViewport({ contentsKey, anchorIndex, total, active, scrollPane, scrollPositions });
   const { listRef, first, start, end, ready } = viewport;
+  const rowPreview = useDirectoryPreview({
+    root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
+  });
 
   useEffect(() => {
     if (!active || !ready || loading || !page || end <= start) return;
@@ -159,8 +169,11 @@ export function DirectoryContents({
             </svg>
           </button>
         )}
-        <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
-        {total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
+        <div className="atlas-directory-heading">
+          <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
+          {total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
+        </div>
+        {total > 1 && <DirectorySortControl sort={sort} onChange={onSort} />}
       </header>
 
       <div role="region" aria-label="Directory entries" aria-busy={loading || loadingMore || undefined}>
@@ -180,26 +193,14 @@ export function DirectoryContents({
                     <button
                       type="button"
                       className="atlas-directory-entry"
+                      {...rowPreview.bind(node)}
                       data-entry-id={node.id}
                       tabIndex={tabStop === node.id ? 0 : -1}
                       onFocus={() => setCursor(node.id)}
                       onKeyDown={(event) => moveRow(event, node, index)}
                       onClick={(event) => activate(node, event.detail === 0)}
                     >
-                      <span className="atlas-directory-name" title={node.name}>
-                        <span className="atlas-directory-icon" data-kind={node.kind} aria-hidden="true" />
-                        <span className="atlas-directory-identity">
-                          <span>{node.name}</span>
-                          {!isFile && (
-                            <span className="atlas-directory-count">
-                              {awaitingInventory ? "Awaiting inventory"
-                                : `${formatCount(node.file_count)} ${node.file_count === 1 ? "file" : "files"}`}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                      <span className="atlas-directory-size">{awaitingInventory ? "—" : formatBytes(node.total_bytes)}</span>
-                      <span className="atlas-directory-chevron" aria-hidden="true" />
+                      <DirectoryEntryLabel node={node} awaitingInventory={awaitingInventory} showDate={sort.field === "date"} />
                     </button>
                   </div>
                 </li>
@@ -220,6 +221,7 @@ export function DirectoryContents({
           </div>
         )}
       </div>
+      {rowPreview.card}
     </section>
   );
 }

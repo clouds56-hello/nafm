@@ -27,6 +27,7 @@ import type {
   CleanupPreview,
   CancelScanMode,
   Dashboard,
+  DirectorySort,
   DuplicateFile,
   FileContentMatch,
   HealthMetric,
@@ -41,6 +42,7 @@ import type {
   StorageTree,
   StorageViewSnapshot,
 } from "../lib/types";
+import { DEFAULT_DIRECTORY_SORT } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
 const CHILDREN_PREFETCH_ROWS = 40;
@@ -57,10 +59,12 @@ interface NavigationEntry {
   limit: number;
   anchor_offset: number;
   selected_node_id: string;
+  sort: DirectorySort;
 }
 
 interface DirectoryWindow extends StorageChildrenPage {
   anchor_offset: number;
+  sort: DirectorySort;
 }
 
 interface RowRange {
@@ -82,12 +86,21 @@ function isUnavailableLocationError(message: string): boolean {
     || message.toLowerCase().startsWith("site not found:");
 }
 
-function siteRootEntry(siteId: string, targetSiteId: string | null): NavigationEntry {
+function siteRootEntry(siteId: string, targetSiteId: string | null, sort = DEFAULT_DIRECTORY_SORT): NavigationEntry {
   const rootId = `site:${siteId}`;
   return {
     site_id: siteId, target_site_id: targetSiteId, node_id: rootId,
-    offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, selected_node_id: rootId,
+    offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, selected_node_id: rootId, sort,
   };
+}
+
+function sameSort(left: DirectorySort, right: DirectorySort) {
+  return left.field === right.field && left.direction === right.direction;
+}
+
+function withDirectorySort(entry: NavigationEntry, sort: DirectorySort): NavigationEntry {
+  // Offsets and grouped-arc anchors only have meaning in the order that produced them.
+  return sameSort(entry.sort, sort) ? entry : { ...entry, sort, offset: 0, anchor_offset: 0, limit: CHILDREN_PAGE_SIZE };
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
@@ -95,6 +108,7 @@ function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boo
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
     && left.anchor_offset === right.anchor_offset
+    && sameSort(left.sort, right.sort)
     && left.selected_node_id === right.selected_node_id;
 }
 
@@ -282,6 +296,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       offset: currentPage?.parent.id === currentLocation.root.id ? currentPage.offset : 0,
       limit: Math.max(CHILDREN_PAGE_SIZE, currentPage?.children.length ?? 0),
       anchor_offset: currentPage?.anchor_offset ?? 0,
+      sort: currentPage?.sort ?? DEFAULT_DIRECTORY_SORT,
       selected_node_id: selected?.id ?? currentLocation.root.id,
     };
   }, []);
@@ -316,7 +331,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
     const read = (destination: NavigationEntry) => getStorageViewSnapshot(
       workspace, destination.site_id, destination.target_site_id, destination.node_id,
-      destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH),
+      destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH), destination.sort,
     );
 
     try {
@@ -325,7 +340,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         snapshot = await read(entry);
       } catch (loadError) {
         if (!isCurrent()) return "superseded";
-        const root = siteRootEntry(entry.site_id, entry.target_site_id);
+        const root = siteRootEntry(entry.site_id, entry.target_site_id, entry.sort);
         const canReopenRoot = historyAction === "preserve" || historyAction === "switch";
         if (!canReopenRoot || root.node_id === entry.node_id
           || !isUnavailableLocationError(errorMessage(loadError))) throw loadError;
@@ -337,6 +352,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       const { location: nextLocation, tree } = snapshot;
       const page: DirectoryWindow = {
         ...snapshot.page,
+        sort: entry.sort,
         anchor_offset: nextLocation.root.id === entry.node_id && entry.anchor_offset < snapshot.page.total_children
           ? entry.anchor_offset : snapshot.page.offset,
       };
@@ -399,6 +415,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [currentNavigationEntry]);
 
+  const setDirectorySort = useCallback((sort: DirectorySort) => {
+    const current = currentNavigationEntry();
+    if (!current) return;
+    const destination = withDirectorySort(current, sort);
+    if (destination !== current || childrenLoadingRef.current) void loadFolderLocation(destination, "preserve");
+  }, [currentNavigationEntry, loadFolderLocation]);
+
   const refreshTree = useCallback(async (
     siteId: string,
     targetSiteId: string | null,
@@ -409,7 +432,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const preserve = current?.site_id === siteId;
     const entry = preserve
       ? { ...current, target_site_id: targetSiteId }
-      : siteRootEntry(siteId, targetSiteId);
+      : siteRootEntry(siteId, targetSiteId, current?.sort);
     const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", !foreground);
     return result === "loaded";
   }, [currentNavigationEntry, loadFolderLocation]);
@@ -802,7 +825,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       return !childrenLoadingRef.current || (await loadFolderLocation(current, "preserve")) === "loaded";
     }
     const previous = lastLocationBySite.current.get(siteId);
-    const destination = previous ? { ...previous, target_site_id: target } : siteRootEntry(siteId, target);
+    const destination = previous ? { ...previous, target_site_id: target } : siteRootEntry(siteId, target, current?.sort);
     return (await loadFolderLocation(destination, "switch")) === "loaded";
   }, [currentNavigationEntry, dashboard?.sites, loadFolderLocation]);
 
@@ -940,6 +963,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       limit: CHILDREN_PAGE_SIZE,
       anchor_offset: offset,
       selected_node_id: folderId,
+      sort: group ? DEFAULT_DIRECTORY_SORT : childrenPageRef.current?.sort ?? DEFAULT_DIRECTORY_SORT,
     }, "push");
   }, [loadFolderLocation]);
 
@@ -993,15 +1017,18 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const targetSiteId = targetSiteRef.current;
     const previousVisit = [...backHistoryRef.current].reverse().find((entry) =>
       entry.site_id === siteId && entry.target_site_id === targetSiteId && entry.node_id === node.id);
+    const sort = childrenPageRef.current?.sort ?? DEFAULT_DIRECTORY_SORT;
+    const resume = previousVisit && withDirectorySort(previousVisit, sort);
     void loadFolderLocation(
       {
         site_id: siteId,
         target_site_id: targetSiteId,
         node_id: node.id,
-        offset: previousVisit?.offset ?? 0,
-        limit: previousVisit?.limit ?? CHILDREN_PAGE_SIZE,
-        anchor_offset: previousVisit?.anchor_offset ?? 0,
+        offset: resume?.offset ?? 0,
+        limit: resume?.limit ?? CHILDREN_PAGE_SIZE,
+        anchor_offset: resume?.anchor_offset ?? 0,
         selected_node_id: node.id,
+        sort,
       },
       "push",
     );
@@ -1051,14 +1078,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
     try {
       const page = await getStorageChildren(
-        loaded.site.id, loaded.coverage_target?.id ?? null, loaded.parent.id, offset, limit,
+        loaded.site.id, loaded.coverage_target?.id ?? null, loaded.parent.id, offset, limit, loaded.sort,
       );
       if (childrenRequestRef.current !== requestId) return;
       if (!page.children.length && page.offset < page.total_children) {
         throw new Error("The directory entries could not be read.");
       }
       // A rescan can shrink the folder mid-seek. Its new total clamps the scrollbar to a valid range.
-      const next = { ...page, offset: Math.min(page.offset, page.total_children), anchor_offset: loaded.anchor_offset };
+      const next = { ...page, offset: Math.min(page.offset, page.total_children), anchor_offset: loaded.anchor_offset, sort: loaded.sort };
       childrenPageRef.current = next;
       setChildrenPage(next);
     } catch (loadError) {
@@ -1112,16 +1139,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setNotice(null);
 
     try {
-      const reveal = await getStorageFileReveal(
-        requestedWorkspace,
-        match.file_id,
-        destinationTarget,
-      );
+      const sort = previousEntry?.sort ?? DEFAULT_DIRECTORY_SORT;
+      const reveal = await getStorageFileReveal(requestedWorkspace, match.file_id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
       if (locationRequestRef.current !== requestId
         || navigationOperationRef.current !== operationId
         || workspaceNameRef.current !== requestedWorkspace) return;
 
-      const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset };
+      const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset, sort };
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
@@ -1129,6 +1153,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         offset: reveal.page.offset,
         limit: reveal.page.limit,
         anchor_offset: page.anchor_offset,
+        sort,
         selected_node_id: reveal.selected_file.id,
       };
 
@@ -1334,6 +1359,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     duplicateJumpRevision,
     childrenPage,
     contentsAnchorOffset: childrenPage?.anchor_offset ?? 0,
+    directorySort: childrenPage?.sort ?? DEFAULT_DIRECTORY_SORT,
+    setDirectorySort,
     childrenLoading,
     loadingMoreChildren,
     childrenError,
@@ -1400,6 +1427,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     isSelectedStaged,
     jumpToContentMatch,
     loading,
+    setDirectorySort,
     location,
     notice,
     preview,

@@ -193,6 +193,7 @@ export interface StorageNode {
   verified_bytes: number;
   pending_hash_count: number;
   total_bytes: number;
+  modified_unix_millis: number | null;
   duplicate_bytes: number;
   duplicate_file_count: number;
   space_health: number | null;
@@ -205,6 +206,13 @@ export interface StorageNode {
   coverage_total_files: number;
   children: StorageNode[];
 }
+
+export interface DirectorySort {
+  field: "size" | "name" | "date";
+  direction: "asc" | "desc";
+}
+
+export const DEFAULT_DIRECTORY_SORT: DirectorySort = { field: "size", direction: "desc" };
 
 export interface StorageTree {
   site_id: string;

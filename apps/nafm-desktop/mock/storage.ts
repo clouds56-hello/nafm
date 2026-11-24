@@ -1,10 +1,11 @@
 import type {
-  CleanupPreview, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
+  CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
   SiteKind, SiteOverview, StageAddReport, StageRemoveReport, StageWarning, StorageChildrenPage,
   StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
+import { DEFAULT_DIRECTORY_SORT } from "../src/lib/types";
 import { buildFolder, INVENTORY_DATE } from "./fixtures";
-import { checkWorkspace, compareText, getSite, getTree, numberArg, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
+import { checkWorkspace, compareText, getSite, getTree, numberArg, record, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
 
 interface IndexedFile extends DuplicateFile {
   content: string;
@@ -23,7 +24,7 @@ function indexedFiles(workspace: PreviewWorkspace) {
     if (node.kind === "file" && node.path) {
       files.push({
         file_id: node.id, path: node.path, site_id: site.id, site_folder_id: root.id,
-        size_bytes: node.total_bytes, modified_unix_nanos: 0, content: contentKey(node),
+        size_bytes: node.total_bytes, modified_unix_nanos: (node.modified_unix_millis ?? 0) * 1_000_000, content: contentKey(node),
         kind: root.kind === "smb_root" ? "smb" : "local", verified: node.verified_file_count > 0,
       });
     }
@@ -47,8 +48,26 @@ function byContent(files: IndexedFile[]) {
   return groups;
 }
 
-function orderedChildren(node: StorageNode) {
-  return [...node.children].sort((a, b) => b.total_bytes - a.total_bytes || compareText(a.name, b.name) || compareText(a.id, b.id));
+function directorySort(value: unknown): DirectorySort {
+  if (value == null) return DEFAULT_DIRECTORY_SORT;
+  const { field, direction } = record(value);
+  if ((field !== "size" && field !== "name" && field !== "date") || (direction !== "asc" && direction !== "desc")) {
+    throw new Error("Invalid directory ordering.");
+  }
+  return { field, direction };
+}
+
+function orderedChildren(node: StorageNode, sort = DEFAULT_DIRECTORY_SORT) {
+  return [...node.children].sort((a, b) => {
+    let order: number;
+    if (sort.field === "date") {
+      const missing = Number(a.modified_unix_millis === null) - Number(b.modified_unix_millis === null);
+      if (missing) return missing;
+      order = (a.modified_unix_millis ?? 0) - (b.modified_unix_millis ?? 0);
+    } else if (sort.field === "name") order = compareText(a.name.toLowerCase(), b.name.toLowerCase());
+    else order = a.total_bytes - b.total_bytes;
+    return (sort.direction === "desc" ? -order : order) || compareText(a.name, b.name) || compareText(a.id, b.id);
+  });
 }
 
 function findPath(node: StorageNode, id: string): StorageNode[] | undefined {
@@ -175,7 +194,7 @@ function makeLocation(model: ReturnType<typeof projectSite>, args: CommandArgs):
 function makeChildren(model: ReturnType<typeof projectSite>, args: CommandArgs): StorageChildrenPage {
   const { node } = nodePath(model.root, args);
   const { offset, limit } = paging(args);
-  const children = orderedChildren(node);
+  const children = orderedChildren(node, directorySort(args.sort));
   const start = pageOffset(children.length, offset, limit);
   return {
     site: siteRecord(model.site), coverage_target: model.coverageTarget, parent: model.project(node, []),
@@ -238,7 +257,7 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     const node = path?.at(-1);
     if (!parent || !node) throw new Error("The file directory was not found.");
     const { limit } = paging({ ...args, offset: 0 });
-    const index = orderedChildren(parent).findIndex((child) => child.id === id);
+    const index = orderedChildren(parent, directorySort(args.sort)).findIndex((child) => child.id === id);
     return {
       ...makeSnapshot(source, { ...args, nodeId: parent.id, offset: Math.floor(index / limit) * limit }),
       selected_file: source.project(node, []),

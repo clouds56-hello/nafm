@@ -15,12 +15,12 @@ use crate::credentials::{CredentialStore, SmbLocation};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
-  AddSiteFolderRequest, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus,
-  FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
-  ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,
-  StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport, StageWarning,
-  StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
-  StorageTree, StorageViewSnapshot,
+  AddSiteFolderRequest, DirectorySort, DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch,
+  FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping,
+  ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus,
+  SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
+  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation,
+  StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -42,6 +42,7 @@ struct StorageViewParameters {
   max_depth: u32,
   max_children: u32,
   page_limit: u64,
+  sort: DirectorySort,
 }
 
 #[derive(Clone)]
@@ -112,6 +113,7 @@ struct StorageFileRecord {
   site_folder_id: String,
   path: PathBuf,
   size_bytes: u64,
+  modified_unix_nanos: Option<i64>,
   hash_verified: bool,
   content_key: Option<StorageContentKey>,
   source_copy_count: u64,
@@ -142,6 +144,7 @@ struct StorageNodeBuilder {
   path: Option<PathBuf>,
   kind: StorageNodeKind,
   total_bytes: u64,
+  modified_unix_nanos: Option<i64>,
   file_count: u64,
   verified_file_count: u64,
   pending_hash_count: u64,
@@ -165,6 +168,7 @@ impl StorageNodeBuilder {
       path,
       kind,
       total_bytes: 0,
+      modified_unix_nanos: None,
       file_count: 0,
       verified_file_count: 0,
       pending_hash_count: 0,
@@ -182,6 +186,7 @@ impl StorageNodeBuilder {
   }
 
   fn add_file_metrics(&mut self, file: &StorageFileRecord) {
+    self.modified_unix_nanos = self.modified_unix_nanos.max(file.modified_unix_nanos);
     self.total_bytes = self.total_bytes.saturating_add(file.size_bytes);
     self.file_count = self.file_count.saturating_add(1);
     self.space_total_files = self.space_total_files.saturating_add(1);
@@ -907,17 +912,9 @@ impl Repository {
     offset: u64,
     limit: u64,
   ) -> Result<StorageChildrenPage> {
-    let db_path = self.db_path.clone();
-    let site_selector = site_selector.to_owned();
-    let node_id = node_id.to_owned();
-    task::spawn_blocking(move || {
-      let conn = open_connection(db_path)?;
-      with_deferred_transaction(&conn, || {
-        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-        storage_children_page(&conn, site, None, &node_id, offset, limit)
-      })
-    })
-    .await?
+    self
+      .storage_children_sorted(site_selector, None, node_id, offset, limit, DirectorySort::default())
+      .await
   }
 
   pub async fn storage_children_with_coverage(
@@ -928,17 +925,40 @@ impl Repository {
     offset: u64,
     limit: u64,
   ) -> Result<StorageChildrenPage> {
+    self
+      .storage_children_sorted(
+        site_selector,
+        Some(target_site_selector),
+        node_id,
+        offset,
+        limit,
+        DirectorySort::default(),
+      )
+      .await
+  }
+
+  pub async fn storage_children_sorted(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+    sort: DirectorySort,
+  ) -> Result<StorageChildrenPage> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
-    let target_site_selector = target_site_selector.to_owned();
+    let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
-        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-        let target_site =
-          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
-        storage_children_page(&conn, site, Some(target_site), &node_id, offset, limit)
+        let site = require_site(&conn, &site_selector)?;
+        let target = target_site_selector
+          .as_deref()
+          .map(|id| require_site(&conn, id))
+          .transpose()?;
+        storage_children_page(&conn, site, target, &node_id, offset, limit, sort)
       })
     })
     .await?
@@ -953,28 +973,18 @@ impl Repository {
     max_children: u32,
     page_limit: u64,
   ) -> Result<StorageViewSnapshot> {
-    let db_path = self.db_path.clone();
-    let site_selector = site_selector.to_owned();
-    let node_id = node_id.to_owned();
-    task::spawn_blocking(move || {
-      let conn = open_connection(db_path)?;
-      with_deferred_transaction(&conn, || {
-        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-        storage_view_snapshot(
-          &conn,
-          site,
-          None,
-          &node_id,
-          StorageViewParameters {
-            offset,
-            max_depth,
-            max_children,
-            page_limit,
-          },
-        )
-      })
-    })
-    .await?
+    self
+      .storage_view_snapshot_sorted(
+        site_selector,
+        None,
+        node_id,
+        offset,
+        max_depth,
+        max_children,
+        page_limit,
+        DirectorySort::default(),
+      )
+      .await
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -988,26 +998,55 @@ impl Repository {
     max_children: u32,
     page_limit: u64,
   ) -> Result<StorageViewSnapshot> {
+    self
+      .storage_view_snapshot_sorted(
+        site_selector,
+        Some(target_site_selector),
+        node_id,
+        offset,
+        max_depth,
+        max_children,
+        page_limit,
+        DirectorySort::default(),
+      )
+      .await
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_view_snapshot_sorted(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    offset: u64,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+    sort: DirectorySort,
+  ) -> Result<StorageViewSnapshot> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
-    let target_site_selector = target_site_selector.to_owned();
+    let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
-        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-        let target_site =
-          find_site(&conn, &target_site_selector)?.ok_or_else(|| NafmError::SiteNotFound(target_site_selector))?;
+        let site = require_site(&conn, &site_selector)?;
+        let target = target_site_selector
+          .as_deref()
+          .map(|id| require_site(&conn, id))
+          .transpose()?;
         storage_view_snapshot(
           &conn,
           site,
-          Some(target_site),
+          target,
           &node_id,
           StorageViewParameters {
             offset,
             max_depth,
             max_children,
             page_limit,
+            sort,
           },
         )
       })
@@ -1023,6 +1062,27 @@ impl Repository {
     max_children: u32,
     page_limit: u64,
   ) -> Result<StorageFileReveal> {
+    self
+      .storage_file_reveal_sorted(
+        file_id,
+        target_site_selector,
+        max_depth,
+        max_children,
+        page_limit,
+        DirectorySort::default(),
+      )
+      .await
+  }
+
+  pub async fn storage_file_reveal_sorted(
+    &self,
+    file_id: &str,
+    target_site_selector: Option<&str>,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+    sort: DirectorySort,
+  ) -> Result<StorageFileReveal> {
     let db_path = self.db_path.clone();
     let file_id = file_id.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
@@ -1031,12 +1091,21 @@ impl Repository {
       with_deferred_transaction(&conn, || {
         let file =
           reveal_file_record(&conn, &file_id)?.ok_or_else(|| NafmError::TrackedFileNotFound(file_id.clone()))?;
-        let site = find_site(&conn, &file.site_id)?.ok_or_else(|| NafmError::SiteNotFound(file.site_id.clone()))?;
-        let coverage_target = match target_site_selector {
-          Some(selector) => Some(find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector))?),
-          None => None,
-        };
-        storage_file_reveal(&conn, site, coverage_target, &file, max_depth, max_children, page_limit)
+        let site = require_site(&conn, &file.site_id)?;
+        let coverage_target = target_site_selector
+          .as_deref()
+          .map(|id| require_site(&conn, id))
+          .transpose()?;
+        storage_file_reveal(
+          &conn,
+          site,
+          coverage_target,
+          &file,
+          max_depth,
+          max_children,
+          page_limit,
+          sort,
+        )
       })
     })
     .await?
@@ -3976,17 +4045,18 @@ fn storage_file_records(
   let published_inventory_revision = site_published_inventory_revision(conn, site_id)?;
   let mut rows = conn
     .prepare(
-      "select site_folder_id, path, size_bytes, hash_algorithm, content_hash,
+      "select f.site_folder_id, f.path, f.size_bytes, f.hash_algorithm, f.content_hash,
          coalesce(
            ?2 is not null
              and inventory_revision = ?2
              and content_hash is not null
              and hash_revision = inventory_revision,
            false
-         )
-       from file_records
-       where site_id = ?1
-       order by path",
+         ),
+         case when f.modified_unix_nanos = 0 and folder.kind = 'smb' then null else f.modified_unix_nanos end
+       from file_records f join site_folders folder on folder.id = f.site_folder_id
+       where f.site_id = ?1
+       order by f.path",
     )?
     .query_map(params![site_id, published_inventory_revision], |row| {
       Ok((
@@ -3995,6 +4065,7 @@ fn storage_file_records(
           path: PathBuf::from(row.get::<_, String>(1)?),
           size_bytes: row.get(2)?,
           hash_verified: row.get(5)?,
+          modified_unix_nanos: row.get(6)?,
           content_key: None,
           source_copy_count: 0,
           covered_by_target: None,
@@ -4231,6 +4302,7 @@ fn storage_view_snapshot(
     max_depth,
     max_children,
     page_limit,
+    sort,
   } = parameters;
   if parse_smaller_items_node_id(node_id).is_some() {
     return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
@@ -4250,8 +4322,7 @@ fn storage_view_snapshot(
     .collect();
   let location_root = finish_storage_node((*selected).clone(), 0, max_depth, max_children);
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
-  let mut child_builders = selected.children.values().collect::<Vec<_>>();
-  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let child_builders = ordered_directory_entries(selected, sort);
   let total_children = child_builders.len() as u64;
   let page_offset = if total_children == 0 {
     0
@@ -4296,6 +4367,7 @@ fn storage_view_snapshot(
   })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn storage_file_reveal(
   conn: &Connection,
   site: Site,
@@ -4304,6 +4376,7 @@ fn storage_file_reveal(
   max_depth: u32,
   max_children: u32,
   page_limit: u64,
+  sort: DirectorySort,
 ) -> Result<StorageFileReveal> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let selected_node_id = format!("storage:{}:{}", file.site_folder_id, file.path.display());
@@ -4318,8 +4391,7 @@ fn storage_file_reveal(
   let parent = parent_path
     .last()
     .expect("a selected storage file should have a parent");
-  let mut child_builders = parent.children.values().collect::<Vec<_>>();
-  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let child_builders = ordered_directory_entries(parent, sort);
   let selected_index = child_builders
     .iter()
     .position(|child| child.id == selected.id)
@@ -4445,6 +4517,7 @@ fn storage_children_page(
   node_id: &str,
   offset: u64,
   limit: u64,
+  sort: DirectorySort,
 ) -> Result<StorageChildrenPage> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
@@ -4475,8 +4548,7 @@ fn storage_children_page(
 
   let parent_builder =
     find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
-  let mut child_builders = parent_builder.children.values().collect::<Vec<_>>();
-  child_builders.sort_by(|left, right| storage_node_builder_order(left, right));
+  let child_builders = ordered_directory_entries(parent_builder, sort);
   let total_children = child_builders.len() as u64;
   let children = child_builders
     .into_iter()
@@ -4528,16 +4600,56 @@ fn find_storage_node_builder_path<'a>(
   None
 }
 
-fn storage_node_builder_order(left: &StorageNodeBuilder, right: &StorageNodeBuilder) -> std::cmp::Ordering {
-  right
-    .total_bytes
-    .cmp(&left.total_bytes)
-    .then_with(|| left.name.cmp(&right.name))
-    .then_with(|| left.id.cmp(&right.id))
+fn entry_identity_order(left: &StorageNodeBuilder, right: &StorageNodeBuilder) -> std::cmp::Ordering {
+  left.name.cmp(&right.name).then_with(|| left.id.cmp(&right.id))
+}
+
+fn entry_size_order(
+  left: &StorageNodeBuilder,
+  right: &StorageNodeBuilder,
+  direction: SortDirection,
+) -> std::cmp::Ordering {
+  direction
+    .apply(left.total_bytes.cmp(&right.total_bytes))
+    .then_with(|| entry_identity_order(left, right))
+}
+
+impl SortDirection {
+  fn apply(self, order: std::cmp::Ordering) -> std::cmp::Ordering {
+    match self {
+      Self::Asc => order,
+      Self::Desc => order.reverse(),
+    }
+  }
+}
+
+fn ordered_directory_entries(parent: &StorageNodeBuilder, sort: DirectorySort) -> Vec<&StorageNodeBuilder> {
+  use std::cmp::{Ordering, Reverse};
+  let mut entries = parent.children.values().collect::<Vec<_>>();
+  match sort.field {
+    DirectorySortField::Size => entries.sort_by(|left, right| entry_size_order(left, right, sort.direction)),
+    DirectorySortField::Name => match sort.direction {
+      // Compute the folded name once per sibling. Original spelling and ID break ties in either direction.
+      SortDirection::Asc => entries.sort_by_cached_key(|node| (node.name.to_lowercase(), &node.name, &node.id)),
+      SortDirection::Desc => {
+        entries.sort_by_cached_key(|node| (Reverse(node.name.to_lowercase()), &node.name, &node.id))
+      }
+    },
+    DirectorySortField::Date => entries.sort_by(|left, right| {
+      let dates = match (left.modified_unix_nanos, right.modified_unix_nanos) {
+        (Some(a), Some(b)) => sort.direction.apply(a.cmp(&b)),
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+      };
+      dates.then_with(|| entry_identity_order(left, right))
+    }),
+  }
+  entries
 }
 
 fn sort_storage_node_builders(nodes: &mut [StorageNodeBuilder]) {
-  nodes.sort_by(storage_node_builder_order);
+  nodes.sort_by(|left, right| entry_size_order(left, right, SortDirection::Desc));
 }
 
 fn storage_root_name(folder: &SiteFolder) -> String {
@@ -4671,6 +4783,7 @@ fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, 
     path: builder.path,
     kind: builder.kind,
     total_bytes: builder.total_bytes,
+    modified_unix_millis: builder.modified_unix_nanos.map(|nanos| nanos.div_euclid(1_000_000)),
     file_count: builder.file_count,
     verified_file_count: builder.verified_file_count,
     pending_hash_count: builder.pending_hash_count,
@@ -4697,6 +4810,7 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
     path: builder.path.clone(),
     kind: builder.kind,
     total_bytes: builder.total_bytes,
+    modified_unix_millis: builder.modified_unix_nanos.map(|nanos| nanos.div_euclid(1_000_000)),
     file_count: builder.file_count,
     verified_file_count: builder.verified_file_count,
     pending_hash_count: builder.pending_hash_count,
@@ -4762,6 +4876,11 @@ fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<
     name: "Smaller items".to_owned(),
     path: None,
     kind: StorageNodeKind::SmallerItems,
+    modified_unix_millis: nodes
+      .iter()
+      .filter_map(|node| node.modified_unix_nanos)
+      .max()
+      .map(|nanos| nanos.div_euclid(1_000_000)),
     total_bytes,
     file_count,
     verified_file_count,
@@ -4857,6 +4976,10 @@ fn file_counts_by_parent_folder(conn: &Connection, site_id: Option<&str>) -> Res
   }
 
   Ok(counts)
+}
+
+fn require_site(conn: &Connection, selector: &str) -> Result<Site> {
+  find_site(conn, selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.to_owned()))
 }
 
 fn find_site(conn: &Connection, selector: &str) -> Result<Option<Site>> {

@@ -48,6 +48,12 @@ to its parent, and Enter opens the focused item.
 
 The floating **Contents & details** button opens the inspector. Sites and the
 inspector can stay open together while you browse. Each has its own close button.
+Contents rows use the atlas colors. Hover over a row or focus it with the
+keyboard to see its path, size, share of the folder, verification, and date.
+The sort control beside the folder name orders the whole list by size, name,
+or date in either direction. A folder's date is the most recent modification
+among its indexed files. Entries with unknown dates appear last when sorting
+by date.
 The **Contents** scrollbar spans the entire folder. Drag its thumb to jump to
 any part of the list, or use Home and End on a row to reach the first or last
 entry. Use Up and Down to move between entries,

@@ -16,6 +16,7 @@ import type {
   CancelScanMode,
   CleanupPreview,
   Dashboard,
+  DirectorySort,
   FileContentMatchesPage,
   HiddenPolicy,
   ManagementMutationResult,
@@ -217,6 +218,7 @@ export function getStorageChildren(
   nodeId: string,
   offset: number,
   limit: number,
+  sort?: DirectorySort,
 ): Promise<StorageChildrenPage> {
   return invoke<StorageChildrenPage>("get_storage_children", {
     siteId,
@@ -224,6 +226,7 @@ export function getStorageChildren(
     nodeId,
     offset,
     limit,
+    sort,
   });
 }
 
@@ -236,6 +239,7 @@ export function getStorageViewSnapshot(
   maxDepth = 5,
   maxChildren = 12,
   limit = 6,
+  sort?: DirectorySort,
 ): Promise<StorageViewSnapshot> {
   return invoke<StorageViewSnapshot>("get_storage_view_snapshot", {
     expectedWorkspace,
@@ -246,6 +250,7 @@ export function getStorageViewSnapshot(
     maxDepth,
     maxChildren,
     limit,
+    sort,
   });
 }
 
@@ -256,11 +261,13 @@ export function getStorageFileReveal(
   maxDepth = 5,
   maxChildren = 12,
   limit = 6,
+  sort?: DirectorySort,
 ): Promise<StorageFileReveal> {
   return invoke<StorageFileReveal>("get_storage_file_reveal", {
     expectedWorkspace,
     fileId,
     targetSiteId,
+    sort,
     maxDepth,
     maxChildren,
     limit,
