@@ -26,7 +26,7 @@ also contains **Scan all**, **Review**, and **Settings**.
 For a newly added site, choose **Scan this site** in the center of the atlas.
 The dial shows progress until the inventory is available, then the rings open
 for browsing while file verification continues. Switching sites remembers
-each site's folder, Contents page, and inspector view for the session.
+each site's folder, scroll position in Contents, and inspector view for the session.
 
 ```sh
 cd apps/nafm-desktop
@@ -46,9 +46,10 @@ and **Next location** retrace folder, site, and comparison changes. On the
 map, Left and Right move between siblings, Down moves to a child, Up moves
 to its parent, and Enter opens the focused item.
 
-The floating **Contents & details** button opens the inspector. In **Contents**,
-use Up and Down to move between entries, Enter or Right to open an entry,
-Left to return to the parent folder, and Page Up or Page Down to change pages.
+The floating **Contents & details** button opens the inspector. **Contents**
+loads more entries as you scroll. Use Up and Down to move between entries,
+Page Up and Page Down to move by a screenful, Enter or Right to open an entry,
+and Left to return to the parent folder.
 When you open a file from this list, choose **← Contents** or press Left or Escape
 to resume browsing at that file. **Previous location** also returns to the
 list, and **Next location** reopens the file.
@@ -67,6 +68,7 @@ partially verified, empty, and scanning workspaces. Choose **Slow folder reads**
 to try changing destinations while a folder is loading. **Reset** reloads the
 current scenario, and **App only** opens the app view. Changes made in the
 mock last until it reloads. Scans and SMB setup are simulated in the browser.
+Open **Photo Library** and its **Contents** to scroll through 96 photo proofs.
 
 Use the mock for frontend review. Vite reloads it when the shared frontend
 changes. Update the mock fixtures and command responses when a UI change needs

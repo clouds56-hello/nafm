@@ -43,6 +43,8 @@ import type {
 } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
+const SCROLL_BATCH_SIZE = 48;
+const MAX_CHILDREN_BATCH = 200;
 const ANALYSIS_REFRESH_DELAY_MS = 650;
 const FINAL_ANALYSIS_REFRESH_DELAY_MS = 75;
 const FINAL_ANALYSIS_REFRESH_RETRY_MS = 150;
@@ -52,7 +54,13 @@ interface NavigationEntry {
   target_site_id: string | null;
   node_id: string;
   offset: number;
+  limit: number;
+  anchor_offset: number;
   selected_node_id: string;
+}
+
+interface DirectoryWindow extends StorageChildrenPage {
+  anchor_offset: number;
 }
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
@@ -71,14 +79,24 @@ function isUnavailableLocationError(message: string): boolean {
 
 function siteRootEntry(siteId: string, targetSiteId: string | null): NavigationEntry {
   const rootId = `site:${siteId}`;
-  return { site_id: siteId, target_site_id: targetSiteId, node_id: rootId, offset: 0, selected_node_id: rootId };
+  return {
+    site_id: siteId, target_site_id: targetSiteId, node_id: rootId,
+    offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, selected_node_id: rootId,
+  };
+}
+
+function joinChildrenPages(first: StorageChildrenPage, second: StorageChildrenPage): StorageChildrenPage | null {
+  if (first.offset + first.children.length !== second.offset || first.total_children !== second.total_children) return null;
+  const ids = new Set(first.children.map((node) => node.id));
+  if (second.children.some((node) => ids.has(node.id))) return null;
+  return { ...second, offset: first.offset, children: [...first.children, ...second.children] };
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
   return left.site_id === right.site_id
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
-    && left.offset === right.offset
+    && left.anchor_offset === right.anchor_offset
     && left.selected_node_id === right.selected_node_id;
 }
 
@@ -117,8 +135,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const [selectedNode, setSelectedNode] = useState<StorageNode | null>(null);
   const [backHistory, setBackHistory] = useState<NavigationEntry[]>([]);
   const [forwardHistory, setForwardHistory] = useState<NavigationEntry[]>([]);
-  const [childrenPage, setChildrenPage] = useState<StorageChildrenPage | null>(null);
+  const [childrenPage, setChildrenPage] = useState<DirectoryWindow | null>(null);
   const [childrenLoading, setChildrenLoading] = useState(false);
+  const [loadingMoreChildren, setLoadingMoreChildren] = useState(false);
   const [childrenError, setChildrenError] = useState<string | null>(null);
   const [progressBySite, setProgressBySite] = useState<Map<string, ScanProgressView>>(new Map());
   const [completionBySite, setCompletionBySite] = useState<Map<string, ScanCompletionView>>(new Map());
@@ -141,12 +160,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const navigationOperationRef = useRef(0);
   const childrenRequestRef = useRef(0);
   const childrenLoadingRef = useRef(false);
-  const childrenRetryRef = useRef<{ node: StorageNode; offset: number } | null>(null);
+  const loadingMoreRef = useRef(false);
+  const childrenRetryRef = useRef<"previous" | "next" | null>(null);
   const selectedNodeRef = useRef<StorageNode | null>(null);
   const lastLocationBySite = useRef(new Map<string, NavigationEntry>());
   const backHistoryRef = useRef<NavigationEntry[]>([]);
   const forwardHistoryRef = useRef<NavigationEntry[]>([]);
-  const childrenPageRef = useRef<StorageChildrenPage | null>(null);
+  const childrenPageRef = useRef<DirectoryWindow | null>(null);
   const dashboardRef = useRef<Dashboard | null>(null);
   const completionBySiteRef = useRef<Map<string, ScanCompletionView>>(new Map());
   const currentSiteIdsRef = useRef<Set<string>>(new Set());
@@ -211,6 +231,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     navigationOperationRef.current += 1;
     navigationInProgressRef.current = false;
     childrenLoadingRef.current = false;
+    loadingMoreRef.current = false;
     childrenRetryRef.current = null;
     locationRef.current = null;
     childrenPageRef.current = null;
@@ -224,6 +245,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setTreeError(null);
     setChildrenError(null);
     setChildrenLoading(false);
+    setLoadingMoreChildren(false);
     setBackHistory([]);
     setForwardHistory([]);
   }, []);
@@ -260,75 +282,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       target_site_id: targetSiteRef.current,
       node_id: currentLocation.root.id,
       offset: currentPage?.parent.id === currentLocation.root.id ? currentPage.offset : 0,
+      limit: Math.max(CHILDREN_PAGE_SIZE, currentPage?.children.length ?? 0),
+      anchor_offset: currentPage?.anchor_offset ?? 0,
       selected_node_id: selected?.id ?? currentLocation.root.id,
     };
-  }, []);
-
-  const loadChildren = useCallback(async (
-    siteId: string,
-    targetSiteId: string | null,
-    node: StorageNode,
-    offset = 0,
-    preserveSelection = false,
-    keepPage = false,
-  ) => {
-    const requestId = childrenRequestRef.current + 1;
-    childrenRequestRef.current = requestId;
-    childrenLoadingRef.current = true;
-    setChildrenLoading(true);
-    if (!keepPage) {
-      childrenPageRef.current = null;
-      setChildrenPage(null);
-    }
-    childrenRetryRef.current = null;
-    setChildrenError(null);
-    try {
-      let page = await getStorageChildren(
-        siteId,
-        targetSiteId,
-        node.id,
-        offset,
-        CHILDREN_PAGE_SIZE,
-      );
-      if (childrenRequestRef.current !== requestId) return;
-
-      if (page.total_children > 0 && page.offset >= page.total_children) {
-        const lastOffset = Math.floor((page.total_children - 1) / CHILDREN_PAGE_SIZE)
-          * CHILDREN_PAGE_SIZE;
-        page = await getStorageChildren(
-          siteId,
-          targetSiteId,
-          node.id,
-          lastOffset,
-          CHILDREN_PAGE_SIZE,
-        );
-        if (childrenRequestRef.current !== requestId) return;
-      }
-
-      childrenPageRef.current = page;
-      childrenRetryRef.current = null;
-      setChildrenPage(page);
-
-      const currentSelection = selectedNodeRef.current;
-      const refreshedSelection = currentSelection?.id === page.parent.id
-        ? page.parent
-        : page.children.find((child) => child.id === currentSelection?.id);
-      const nextSelection = preserveSelection
-        ? refreshedSelection ?? currentSelection ?? page.parent
-        : page.parent;
-      selectedNodeRef.current = nextSelection;
-      setSelectedNode(nextSelection);
-    } catch (childrenLoadError) {
-      if (childrenRequestRef.current === requestId) {
-        childrenRetryRef.current = { node, offset };
-        setChildrenError(errorMessage(childrenLoadError));
-      }
-    } finally {
-      if (childrenRequestRef.current === requestId) {
-        childrenLoadingRef.current = false;
-        setChildrenLoading(false);
-      }
-    }
   }, []);
 
   const loadFolderLocation = useCallback(async (
@@ -340,6 +297,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (!workspace) return "failed";
     const requestId = ++locationRequestRef.current;
     const childrenRequestId = ++childrenRequestRef.current;
+    loadingMoreRef.current = false;
+    setLoadingMoreChildren(false);
     const previousEntry = currentNavigationEntry();
     const isCurrent = () => locationRequestRef.current === requestId
       && childrenRequestRef.current === childrenRequestId
@@ -356,10 +315,26 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setNotice(null);
     }
 
-    const read = (destination: NavigationEntry) => getStorageViewSnapshot(
-      workspace, destination.site_id, destination.target_site_id, destination.node_id,
-      destination.offset, 5, 12, CHILDREN_PAGE_SIZE,
-    );
+    const read = async (destination: NavigationEntry): Promise<StorageViewSnapshot> => {
+      const snapshot = await getStorageViewSnapshot(
+        workspace, destination.site_id, destination.target_site_id, destination.node_id,
+        destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH),
+      );
+      // History stores the loaded range, so returning to a long list can restore its scroll position.
+      let page = snapshot.page;
+      while (isCurrent() && page.children.length < destination.limit) {
+        const offset = page.offset + page.children.length;
+        if (offset >= page.total_children) break;
+        const next = await getStorageChildren(
+          destination.site_id, destination.target_site_id, destination.node_id,
+          offset, Math.min(destination.limit - page.children.length, MAX_CHILDREN_BATCH),
+        );
+        const joined = joinChildrenPages(page, next);
+        if (!joined || next.children.length === 0) break;
+        page = joined;
+      }
+      return { ...snapshot, page };
+    };
 
     try {
       let snapshot: StorageViewSnapshot;
@@ -376,7 +351,12 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       }
       if (!isCurrent()) return "superseded";
 
-      const { location: nextLocation, page, tree } = snapshot;
+      const { location: nextLocation, tree } = snapshot;
+      const page: DirectoryWindow = {
+        ...snapshot.page,
+        anchor_offset: nextLocation.root.id === entry.node_id && entry.anchor_offset < snapshot.page.total_children
+          ? entry.anchor_offset : snapshot.page.offset,
+      };
       const selectedId = historyAction === "preserve"
         ? selectedNodeRef.current?.id ?? entry.selected_node_id
         : entry.selected_node_id;
@@ -441,7 +421,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     targetSiteId: string | null,
     foreground = false,
   ) => {
-    if (!foreground && (navigationInProgressRef.current || childrenLoadingRef.current)) return false;
+    if (!foreground && (navigationInProgressRef.current || childrenLoadingRef.current || loadingMoreRef.current)) return false;
     const current = currentNavigationEntry();
     const preserve = current?.site_id === siteId;
     const entry = preserve
@@ -962,11 +942,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (node.kind === "smaller_items" && !group) return;
     if (!group && locationRef.current?.root.id === node.id) return;
     const folderId = group?.[2] ?? node.id;
+    const offset = group ? Number(group[1]) : 0;
     void loadFolderLocation({
       site_id: siteId,
       target_site_id: targetSiteRef.current,
       node_id: folderId,
-      offset: group ? Number(group[1]) : 0,
+      offset,
+      limit: CHILDREN_PAGE_SIZE,
+      anchor_offset: offset,
       selected_node_id: folderId,
     }, "push");
   }, [loadFolderLocation]);
@@ -1027,6 +1010,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         target_site_id: targetSiteId,
         node_id: node.id,
         offset: previousVisit?.offset ?? 0,
+        limit: previousVisit?.limit ?? CHILDREN_PAGE_SIZE,
+        anchor_offset: previousVisit?.anchor_offset ?? 0,
         selected_node_id: node.id,
       },
       "push",
@@ -1039,50 +1024,68 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (parent) navigateBreadcrumb(parent);
   }, [navigateBreadcrumb]);
 
-  const retryChildren = useCallback(() => {
-    const siteId = selectedSiteRef.current;
-    const failedRequest = childrenRetryRef.current;
-    const parent = failedRequest?.node ?? childrenPage?.parent ?? activeSelectedNode;
-    if (siteId && parent) {
-      void loadChildren(
-        siteId,
-        targetSiteRef.current,
-        parent,
-        failedRequest?.offset ?? childrenPage?.offset ?? 0,
-        true,
-        Boolean(childrenPage),
+  const extendChildren = useCallback(async (direction: "previous" | "next") => {
+    const loaded = childrenPage;
+    if (!loaded || loaded !== childrenPageRef.current || childrenLoadingRef.current || loadingMoreRef.current) return;
+
+    const end = loaded.offset + loaded.children.length;
+    const previous = direction === "previous";
+    if (previous ? loaded.offset === 0 : end >= loaded.total_children) return;
+
+    // Fetch larger batches after the small initial read that also renders the atlas.
+    const batch = Math.min(MAX_CHILDREN_BATCH, Math.max(SCROLL_BATCH_SIZE, loaded.children.length));
+    const offset = previous ? Math.max(0, loaded.offset - batch) : end;
+    const limit = previous ? loaded.offset - offset : batch;
+    const requestId = ++childrenRequestRef.current;
+    loadingMoreRef.current = true;
+    setLoadingMoreChildren(true);
+    childrenRetryRef.current = null;
+    setChildrenError(null);
+
+    try {
+      const page = await getStorageChildren(
+        loaded.site.id, loaded.coverage_target?.id ?? null, loaded.parent.id, offset, limit,
       );
+      if (childrenRequestRef.current !== requestId) return;
+      const joined = previous ? joinChildrenPages(page, loaded) : joinChildrenPages(loaded, page);
+      if (!joined) {
+        // A rescan changed the directory between reads. Rebuild the requested range as one fresh view.
+        const current = currentNavigationEntry();
+        if (current) {
+          const result = await loadFolderLocation({
+            ...current, offset: previous ? offset : loaded.offset,
+            limit: loaded.children.length + limit,
+          }, "preserve");
+          if (result === "failed" || result === "unavailable") {
+            childrenRetryRef.current = direction;
+            setChildrenError("The directory changed. Retry to reload its entries.");
+          }
+        }
+        return;
+      }
+      if (page.children.length === 0) throw new Error("The directory entries could not be read.");
+      const expanded = { ...joined, anchor_offset: loaded.anchor_offset };
+      childrenPageRef.current = expanded;
+      setChildrenPage(expanded);
+    } catch (loadError) {
+      if (childrenRequestRef.current === requestId) {
+        childrenRetryRef.current = direction;
+        setChildrenError(errorMessage(loadError));
+      }
+    } finally {
+      if (childrenRequestRef.current === requestId) {
+        loadingMoreRef.current = false;
+        setLoadingMoreChildren(false);
+      }
     }
-  }, [activeSelectedNode, childrenPage, loadChildren]);
+  }, [childrenPage, currentNavigationEntry, loadFolderLocation]);
 
-  const loadPreviousChildren = useCallback(() => {
-    const siteId = selectedSiteRef.current;
-    if (!siteId || !childrenPage || childrenLoadingRef.current || childrenPage.offset <= 0) return;
-    const previousOffset = Math.max(0, childrenPage.offset - childrenPage.limit);
-    void loadChildren(
-      siteId,
-      targetSiteRef.current,
-      childrenPage.parent,
-      previousOffset,
-      true,
-      true,
-    );
-  }, [childrenPage, loadChildren]);
+  const retryChildren = useCallback(() => {
+    if (childrenRetryRef.current) void extendChildren(childrenRetryRef.current);
+  }, [extendChildren]);
 
-  const loadNextChildren = useCallback(() => {
-    const siteId = selectedSiteRef.current;
-    if (!siteId || !childrenPage || childrenLoadingRef.current) return;
-    const nextOffset = childrenPage.offset + childrenPage.limit;
-    if (nextOffset >= childrenPage.total_children) return;
-    void loadChildren(
-      siteId,
-      targetSiteRef.current,
-      childrenPage.parent,
-      nextOffset,
-      true,
-      true,
-    );
-  }, [childrenPage, loadChildren]);
+  const loadPreviousChildren = useCallback(() => { void extendChildren("previous"); }, [extendChildren]);
+  const loadNextChildren = useCallback(() => { void extendChildren("next"); }, [extendChildren]);
 
   const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
     const workspaceName = workspaceNameRef.current;
@@ -1105,6 +1108,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const requestedWorkspace = workspaceName;
     locationRequestRef.current = requestId;
     childrenRequestRef.current += 1;
+    loadingMoreRef.current = false;
+    setLoadingMoreChildren(false);
     navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
     setChildrenLoading(true);
@@ -1121,11 +1126,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         || navigationOperationRef.current !== operationId
         || workspaceNameRef.current !== requestedWorkspace) return;
 
+      const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset };
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
         node_id: reveal.location.root.id,
         offset: reveal.page.offset,
+        limit: reveal.page.limit,
+        anchor_offset: page.anchor_offset,
         selected_node_id: reveal.selected_file.id,
       };
 
@@ -1136,7 +1144,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       selectedSiteRef.current = destinationEntry.site_id;
       targetSiteRef.current = destinationEntry.target_site_id;
       locationRef.current = reveal.location;
-      childrenPageRef.current = reveal.page;
+      childrenPageRef.current = page;
       selectedNodeRef.current = reveal.selected_file;
       childrenRequestRef.current += 1;
       childrenRetryRef.current = null;
@@ -1144,7 +1152,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setActiveSiteId(destinationEntry.site_id);
       setCoverageTargetSiteId(destinationEntry.target_site_id);
       setLocation(reveal.location);
-      setChildrenPage(reveal.page);
+      setChildrenPage(page);
       setChildrenError(null);
       setSelectedNode(reveal.selected_file);
       setDuplicateJumpRevision((current) => current + 1);
@@ -1330,17 +1338,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     jumpToContentMatch,
     duplicateJumpRevision,
     childrenPage,
+    contentsAnchorOffset: childrenPage?.anchor_offset ?? 0,
     childrenLoading,
+    loadingMoreChildren,
     childrenError,
-    childrenRangeStart: childrenPage && childrenPage.total_children > 0
-      ? childrenPage.offset + 1
-      : 0,
-    childrenRangeEnd: childrenPage
-      ? Math.min(childrenPage.offset + childrenPage.children.length, childrenPage.total_children)
-      : 0,
-    canLoadPrevious: Boolean(childrenPage && !childrenLoading && childrenPage.offset > 0),
-    canLoadNext: Boolean(childrenPage && !childrenLoading
-      && childrenPage.offset + childrenPage.limit < childrenPage.total_children),
     canGoBack: !childrenLoading && backHistory.length > 0,
     canGoForward: !childrenLoading && forwardHistory.length > 0,
     canGoUp: !childrenLoading && (location?.breadcrumbs.length ?? 0) > 1,
@@ -1390,6 +1391,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     cancel,
     childrenError,
     childrenLoading,
+    loadingMoreChildren,
     childrenPage,
     completionBySite,
     cancellingRequestIds,

@@ -17,7 +17,7 @@ import type { HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
-  pageKey: string;
+  contentsKey: string;
   fileId: string;
   revealRevision: number;
 }
@@ -40,6 +40,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const [pane, setPane] = useState<"sites" | InspectorPane>(null);
   const inspectorBySite = useRef(new Map<string, InspectorPane>());
   const mapRegion = useRef<HTMLElement>(null);
+  const contentsPane = useRef<HTMLDivElement>(null);
   const focusFirstSite = useRef(false);
   const visit = typeof pane === "object" ? pane : null;
   const activePane = typeof pane === "string" ? pane : visit?.view ?? null;
@@ -73,8 +74,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
-  const pageKey = JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, state.childrenPage?.offset]);
-  const currentVisit = visit?.pageKey === pageKey && visit.fileId === selected?.id
+  const contentsKey = JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, state.contentsAnchorOffset]);
+  const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id
     && visit.revealRevision === state.duplicateJumpRevision ? visit : null;
   // A new location or an exact-copy jump ends this list's local Back/Forward step.
   useEffect(() => {
@@ -176,7 +177,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
     if (node.kind === "file" && !origin) {
-      setPane({ view: "details", fileId: node.id, pageKey, revealRevision: state.duplicateJumpRevision });
+      setPane({ view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision });
     } else if (node.kind === "file" || node.kind === "smaller_items") {
       if (origin) inspectorOrigin.current = origin;
       setPane(node.kind === "file" ? "details" : "contents");
@@ -311,7 +312,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           {site && (
             <AtlasInspector
               detailsKey={selected?.id ?? folder?.id ?? null}
-              contentsKey={pageKey}
+              contentsKey={contentsKey}
+              contentsPane={contentsPane}
               contentsFileId={currentVisit?.fileId ?? null}
               folderName={folder?.name}
               view={inspectorView}
@@ -359,7 +361,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     location={location}
                     page={state.childrenPage}
                     selection={selected}
+                    scrollPane={contentsPane}
+                    active={inspectorView === "contents"}
                     loading={state.childrenLoading}
+                    loadingMore={state.loadingMoreChildren}
                     error={state.childrenError}
                     awaitingInventory={Boolean(firstScan)}
                     onSelect={activateNode}

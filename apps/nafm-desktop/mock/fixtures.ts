@@ -47,6 +47,9 @@ const photographs: readonly SampleEntry[] = [
   ["Location scouting", [["Coastal walk.raw", 22 * GiB], ["Old town.raw", 15 * GiB]]],
   ["Studio portraits", [["Medium format scans.tif", 37 * GiB], ["Portrait selects.zip", 21 * GiB]]],
   ["Reference images", [["Surfaces.tif", 7 * GiB], ["Lighting notes.pdf", 24 * MiB]]],
+  ...Array.from({ length: 96 }, (_, index): SampleEntry => [
+    `Proof ${String(index + 1).padStart(3, "0")}.jpg`, 2 * MiB - index * 1024,
+  ]),
 ];
 
 const deliverables: readonly SampleEntry[] = [

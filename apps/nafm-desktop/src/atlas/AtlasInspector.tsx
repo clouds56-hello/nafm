@@ -9,6 +9,7 @@ interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
   contentsKey: string;
+  contentsPane: RefObject<HTMLDivElement | null>;
   contentsFileId: string | null;
   folderName?: string;
   detailsKey: string | null;
@@ -26,8 +27,26 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
+function focusContentsRow(pane: HTMLDivElement, fileId: string | null) {
+  const bounds = pane.getBoundingClientRect();
+  const top = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? bounds.top;
+  const file = fileId ? pane.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(fileId)}"]`) : null;
+  let row = file;
+  if (!row && pane.scrollTop > 0) {
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, top + 1);
+    const visible = hit?.closest('[role="row"]')?.querySelector("button");
+    if (visible && pane.contains(visible)) row = visible;
+  }
+  row ??= pane.querySelector<HTMLButtonElement>('[data-entry-id][tabindex="0"]');
+  if (!row) return false;
+  const rect = row.getBoundingClientRect();
+  row.focus({ preventScroll: true });
+  if (rect.bottom <= top || rect.top >= bounds.bottom) row.scrollIntoView({ block: "nearest" });
+  return true;
+}
+
 export function AtlasInspector({
-  view, initialView, contentsKey, contentsFileId, folderName, detailsKey, restoreFocus, origin,
+  view, initialView, contentsKey, contentsPane, contentsFileId, folderName, detailsKey, restoreFocus, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -38,7 +57,6 @@ export function AtlasInspector({
   const backButton = useRef<HTMLButtonElement>(null);
   const previousScreen = useRef<InspectorView | "file" | null>(null);
   const enterList = useRef(false);
-  const contentsPane = useRef<HTMLDivElement>(null);
   const detailsPane = useRef<HTMLDivElement>(null);
   const contentsScroll = useRef(new Map<string, number>());
   const detailsScroll = useRef({ target: detailsKey, top: 0 });
@@ -49,7 +67,7 @@ export function AtlasInspector({
     if (detailsScroll.current.target !== detailsKey) detailsScroll.current = { target: detailsKey, top: 0 };
     if (view === "contents" && contentsPane.current) contentsPane.current.scrollTop = contentsScroll.current.get(contentsKey) ?? 0;
     if (view === "details" && detailsPane.current) detailsPane.current.scrollTop = detailsScroll.current.top;
-  }, [view, screen, contentsKey, detailsKey]);
+  }, [view, screen, contentsKey, contentsPane, detailsKey]);
 
   useLayoutEffect(() => {
     const previous = previousScreen.current;
@@ -57,10 +75,9 @@ export function AtlasInspector({
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
     } else if (screen === "contents" && (previous === "file" || enterList.current)) {
-      const rows = contentsPane.current;
-      const openedRow = contentsFileId ? rows?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(contentsFileId)}"]`) : null;
-      const row = openedRow ?? rows?.querySelector<HTMLButtonElement>('[data-entry-id][tabindex="0"]');
-      (row ?? contentsTab.current)?.focus({ preventScroll: previous === "file" });
+      if (!contentsPane.current || !focusContentsRow(contentsPane.current, contentsFileId)) {
+        contentsTab.current?.focus({ preventScroll: true });
+      }
     } else if (screen) {
       (screen === "contents" ? contentsTab : detailsTab).current?.focus({ preventScroll: true });
     } else if (previous) {
@@ -72,7 +89,7 @@ export function AtlasInspector({
     }
     enterList.current = false;
     previousScreen.current = screen;
-  }, [screen, contentsFileId, restoreFocus, origin]);
+  }, [screen, contentsFileId, contentsPane, restoreFocus, origin]);
 
   if (!view) {
     return (

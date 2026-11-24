@@ -7,20 +7,14 @@
   border-top: 1px solid var(--atlas-border);
 }
 
-.atlas-directory-header,
-.atlas-directory-pages {
+.atlas-directory-header {
   display: flex;
   min-width: 0;
   align-items: center;
-  flex-wrap: wrap;
-}
-
-.atlas-directory-header {
   position: sticky;
   z-index: 1;
   top: 0;
   min-height: 40px;
-  flex-wrap: nowrap;
   gap: 6px;
   margin-inline: calc(-1 * var(--atlas-inspector-padding, 14px));
   padding: 4px var(--atlas-inspector-padding, 14px);
@@ -40,16 +34,12 @@
   white-space: nowrap;
 }
 
-.atlas-directory-pages { gap: 4px; }
-
-.atlas-directory-range {
-  margin-inline-end: 4px;
+.atlas-directory-total {
   color: var(--atlas-muted);
   font: 11px/1.4 var(--atlas-mono);
   white-space: nowrap;
 }
 
-.atlas-directory-page,
 .atlas-directory-up {
   display: grid;
   width: 30px;
@@ -57,28 +47,22 @@
   flex: none;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--atlas-border);
+  border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: var(--atlas-ink);
 }
 
-.atlas-directory-up { border-color: transparent; }
-:is(.atlas-directory-page, .atlas-directory-up):disabled { opacity: .4; }
-:is(.atlas-directory-page, .atlas-directory-up):hover:enabled { background: #23263a; color: var(--atlas-accent); }
+.atlas-directory-up:disabled { opacity: .4; }
+.atlas-directory-up:hover:enabled { background: #23263a; color: var(--atlas-accent); }
 
-.atlas-directory-page::before,
 .atlas-directory-chevron {
   width: 6px;
   height: 6px;
   border-bottom: 1px solid currentColor;
   border-left: 1px solid currentColor;
-  transform: translateX(1px) rotate(45deg);
-  content: "";
+  transform: translateX(-1px) rotate(225deg);
 }
-
-.atlas-directory-page.is-next::before,
-.atlas-directory-chevron { transform: translateX(-1px) rotate(225deg); }
 
 .atlas-directory-list {
   margin: 0;
@@ -180,6 +164,12 @@
   overflow-wrap: anywhere;
 }
 
+.atlas-directory-feedback {
+  position: sticky;
+  bottom: 0;
+  background: var(--atlas-surface);
+}
+
 .atlas-directory :where(button, h2):focus-visible {
   outline: 2px solid var(--atlas-accent);
   outline-offset: -2px;
@@ -191,7 +181,5 @@
 
 @media (max-width: 760px), (pointer: coarse) {
   .atlas-directory-entry { min-height: 44px; }
-  .atlas-directory-page,
   .atlas-directory-up { width: 42px; height: 42px; }
-  .atlas-directory-pages { gap: 2px; }
 }
