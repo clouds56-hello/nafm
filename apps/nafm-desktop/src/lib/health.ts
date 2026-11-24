@@ -21,6 +21,10 @@ export interface HealthPresentation {
   color: string;
 }
 
+export function isPerfectHealth(presentation: HealthPresentation): boolean {
+  return presentation.state === "exact" && presentation.value === 100;
+}
+
 const PARTIAL_HEALTH_MIN_INTENSITY = 0.4;
 
 function clampRatio(value: number): number {
@@ -62,7 +66,7 @@ export function formatCompleteness(value: number): string {
   const completeness = clampRatio(value);
   if (completeness === 0) return "0%";
   if (completeness === 1) return "100%";
-  return `${Math.min(99, Math.max(1, Math.round(completeness * 100)))}%`;
+  return `${formatHealth(Math.max(1, completeness * 100))}%`;
 }
 
 export function healthPresentation(
@@ -115,8 +119,9 @@ export function nodeHealthPresentation(
   return healthPresentation(node[metric], estimate, completeness);
 }
 
-export function formatHealthForCanvas(presentation: HealthPresentation): string {
-  return formatHealth(presentation.value);
+export function formatHealthScore(presentation: HealthPresentation): string {
+  const value = formatHealth(presentation.value);
+  return presentation.state === "partial" ? `≈${value}` : value;
 }
 
 export function healthAriaDescription(
@@ -132,8 +137,10 @@ export function healthAriaDescription(
       ? `${metricLabel} health unavailable; ${formatCompleteness(presentation.completeness)} is verified but not comparable`
       : `${metricLabel} health unavailable; no content is verified`;
   }
+  const score = formatHealth(presentation.value).replace(/^</, "less than ");
   if (presentation.state === "partial") {
-    return `estimated ${formatHealth(presentation.value)} ${metricLabel} health, ${formatCompleteness(presentation.completeness)} verified`;
+    const verified = formatCompleteness(presentation.completeness).replace(/^</, "less than ");
+    return `estimated ${score} ${metricLabel} health, ${verified} verified`;
   }
-  return `${formatHealth(presentation.value)} ${metricLabel} health`;
+  return `${isPerfectHealth(presentation) ? "exactly " : ""}${score} ${metricLabel} health`;
 }

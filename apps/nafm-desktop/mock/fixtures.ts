@@ -10,6 +10,7 @@ type SampleRoot = { name: string; path: string; entries: readonly SampleEntry[] 
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
+const brandGuidelines: SampleEntry = ["Brand guidelines.pdf", 65 * MiB];
 export const INVENTORY_DATE = "2025-11-04T10:15:00.000Z";
 
 const months = [
@@ -46,7 +47,7 @@ const photographs: readonly SampleEntry[] = [
   ["Editorial", [["Summer contact sheets.tif", 24 * GiB], ["Street portraits.raw", 19 * GiB]]],
   ["Location scouting", [["Coastal walk.raw", 22 * GiB], ["Old town.raw", 15 * GiB]]],
   ["Studio portraits", [["Medium format scans.tif", 37 * GiB], ["Portrait selects.zip", 21 * GiB]]],
-  ["Reference images", [["Surfaces.tif", 7 * GiB], ["Lighting notes.pdf", 24 * MiB]]],
+  ["Reference images", [["Surfaces.tif", 7 * GiB], brandGuidelines]],
   ...Array.from({ length: 96 }, (_, index): SampleEntry => [
     `Proof ${String(index + 1).padStart(3, "0")}.jpg`, 2 * MiB - index * 1024,
   ]),
@@ -63,7 +64,7 @@ const sound: readonly SampleEntry[] = [
 ];
 
 const documents: readonly SampleEntry[] = [
-  ["Brand guidelines.pdf", 65 * MiB],
+  brandGuidelines,
   ["Planning", [["Shot list.pdf", 12 * MiB], ["Schedule.csv", 19 * 1024]]],
   ["Readme.txt", 0],
 ];

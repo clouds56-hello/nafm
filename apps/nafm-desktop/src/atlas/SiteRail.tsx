@@ -37,7 +37,7 @@ function scanProgressValue(progress: ScanProgressView | undefined) {
   if (!progress) return undefined;
   if (progress.phase === "finalizing") return 100;
   if (progress.phase !== "hashing" || !progress.total_files) return undefined;
-  return Math.round(percent(progress.processed_files, progress.total_files));
+  return percent(progress.processed_files, progress.total_files);
 }
 
 export function SiteRail({

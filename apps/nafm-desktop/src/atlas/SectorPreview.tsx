@@ -1,8 +1,8 @@
 import type { CSSProperties } from "react";
 import { fileName, formatBytes, formatShare } from "../lib/format";
-import { healthAriaDescription, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
+import { healthAriaDescription, isPerfectHealth, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
-import { CloseIcon } from "../management/Icons";
+import { CheckIcon, CloseIcon } from "../management/Icons";
 import type { Sector } from "./radialGeometry";
 
 export function labelFor(node: StorageNode): string {
@@ -52,7 +52,12 @@ export function PreviewSummary({ node, root, metric, score, awaitingInventory = 
         {awaitingInventory ? "Awaiting inventory" : formatBytes(node.total_bytes)}
         {!awaitingInventory && root.total_bytes > 0 && ` · ${formatShare(node.total_bytes, root.total_bytes)} of ${labelFor(root)}`}
       </span>
-      {score && <span className="atlas-sector-preview__meta">{healthAriaDescription(score, metric === "coverage_health" ? "coverage" : "space", node.file_count > 0)}</span>}
+      {score && (
+        <span className="atlas-sector-preview__meta">
+          {healthAriaDescription(score, metric === "coverage_health" ? "coverage" : "space", node.file_count > 0)}
+          {isPerfectHealth(score) && <CheckIcon className="atlas-score-check" />}
+        </span>
+      )}
     </div>
   );
 }

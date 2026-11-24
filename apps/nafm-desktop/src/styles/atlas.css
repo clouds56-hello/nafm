@@ -83,6 +83,17 @@ button:disabled { cursor: default; }
 
 .atlas-health-key i { width: 46px; height: 4px; border-radius: 3px; }
 
+.atlas-score-check {
+  width: 1.15em;
+  height: 1.15em;
+  margin-inline-start: .3em;
+  border-radius: 50%;
+  background: #213d3b;
+  color: #8ee3ce;
+  stroke-width: 2.5;
+  vertical-align: -.18em;
+}
+
 .atlas-visualization {
   position: relative;
   display: grid;

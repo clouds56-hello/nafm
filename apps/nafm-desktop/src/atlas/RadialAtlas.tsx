@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { formatBytes, formatCount, formatHealth, formatShare } from "../lib/format";
-import { formatCompleteness, healthAriaDescription, nodeHealthPresentation } from "../lib/health";
+import { formatBytes, formatCount, formatShare } from "../lib/format";
+import { formatCompleteness, formatHealthScore, healthAriaDescription, isPerfectHealth, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
+import { CheckIcon } from "../management/Icons";
 import { FirstScanCenter, type FirstScanState } from "./FirstScanCenter";
 import { CENTER, ORIGIN, RINGS, SEAM, TURN, branchSectors, polar, type Sector } from "./radialGeometry";
 import { RingLabel, useRingLabels } from "./RingLabel";
@@ -100,6 +101,7 @@ function RadialPlot({
   const unitStart = formattedSize.lastIndexOf(" ");
   const size = formattedSize.slice(0, unitStart);
   const unit = formattedSize.slice(unitStart + 1);
+  const scoreText = rootScore && formatHealthScore(rootScore);
 
   useEffect(() => {
     if (preview?.input !== "touch") return;
@@ -288,10 +290,10 @@ function RadialPlot({
               <span aria-hidden="true" className="radial-atlas__kind" data-metric={metric ?? undefined} style={{ color: rootScore?.color }}>
                 {rootScore ? metricLabel : kindLabel(root)}
               </span>
-              <strong className="radial-atlas__size" aria-hidden="true">
-                {rootScore?.state === "partial" && "≈"}
-                {rootScore ? formatHealth(rootScore.value) : size}
+              <strong className="radial-atlas__size" data-long-score={(scoreText?.length ?? 0) > 3 || undefined} aria-hidden="true">
+                {scoreText ?? size}
                 <span>{rootScore ? rootScore.value === null ? "" : "/100" : unit}</span>
+                {rootScore && isPerfectHealth(rootScore) && <CheckIcon className="atlas-score-check" />}
               </strong>
               <span className="radial-atlas__name" aria-hidden="true" title={labelFor(root)}>{labelFor(root)}</span>
               {caption && <span className="radial-atlas__detail" aria-hidden="true" title={caption}>{caption}</span>}

@@ -1,7 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { formatBytes, formatCount, formatFileEquivalent, formatHealth, formatShare } from "../lib/format";
-import { formatCompleteness, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
+import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
+import { formatCompleteness, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import { CheckIcon } from "../management/Icons";
 import "./inspector.css";
 
 interface StorageDetailsProps {
@@ -31,7 +32,8 @@ function HealthDetail({
       <dt>{label}</dt>
       <dd>
         <span className="atlas-detail-score">
-          {score.value === null ? emptyLabel : `${score.state === "partial" ? "~" : ""}${formatHealth(score.value)}/100`}
+          {score.value === null ? emptyLabel : `${formatHealthScore(score)}/100`}
+          {isPerfectHealth(score) && <CheckIcon className="atlas-score-check" role="img" aria-hidden={false} aria-label="Perfect score" />}
         </span>
         {evidence && score.value !== null && <span className="atlas-detail-note">{evidence}</span>}
         {score.state === "partial" && <span className="atlas-detail-note">{formatCompleteness(score.completeness)} verified</span>}

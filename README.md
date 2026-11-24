@@ -66,7 +66,10 @@ When you open a file from this list, choose **← Contents** or press Left or Es
 to resume browsing at that file. **Previous location** also returns to the
 list, and **Next location** reopens the file.
 In **Map options**, choose **Space health** to see duplication or **Coverage**
-to compare against another source. Details lets you find similar folders or
+to compare against another source. A checkmark beside **100/100** means the
+verified score is exactly 100. Near-perfect scores show up to two decimal
+places, or **<100** when the difference is too small to show. An **≈**
+marks an estimate. Details lets you find similar folders or
 exact copies and stage verified duplicates. **Review** previews cleanup.
 
 ### Interactive mock dashboard

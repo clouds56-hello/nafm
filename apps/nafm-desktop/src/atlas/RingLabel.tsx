@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useState, type RefObject } from "react";
-import { formatBytes, formatHealth } from "../lib/format";
-import { nodeHealthPresentation } from "../lib/health";
+import { formatBytes } from "../lib/format";
+import { formatHealthScore, isPerfectHealth, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric } from "../lib/types";
 import { CENTER, RINGS, orbitPath, type Sector } from "./radialGeometry";
 import { labelFor } from "./SectorPreview";
@@ -42,7 +42,7 @@ function ringValue(sector: Sector, metric: HealthMetric | null, targetCompletene
   if (metric === null) return formatBytes(sector.node.total_bytes);
   const score = nodeHealthPresentation(sector.node, metric, targetCompleteness);
   if (score.value === null) return "";
-  return `${score.state === "partial" ? "≈" : ""}${formatHealth(score.value)}/100`;
+  return `${formatHealthScore(score)}/100${isPerfectHealth(score) ? " ✓" : ""}`;
 }
 
 function layoutLabels(

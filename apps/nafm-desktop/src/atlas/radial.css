@@ -172,6 +172,14 @@
   letter-spacing: -.04em;
 }
 
+.radial-atlas__size[data-long-score] { font-size: clamp(16px, 6.1cqw, 44px); }
+.radial-atlas__size .atlas-score-check {
+  flex: none;
+  align-self: center;
+  margin: 0;
+  font-size: clamp(12px, 2.5cqw, 18px);
+}
+
 .radial-atlas__name,
 .radial-atlas__detail {
   max-width: 100%;
