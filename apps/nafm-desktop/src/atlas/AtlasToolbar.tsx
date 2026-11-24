@@ -1,9 +1,10 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
-import type { SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
+import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
+import { FolderOpenControl } from "./FolderOpenControl";
 import "./atlas-toolbar.css";
 
 const mapModes = [
@@ -31,6 +32,7 @@ export interface AtlasToolbarProps {
     onForward: () => void;
     onUp: () => void;
     onBreadcrumb: (node: StorageNode) => void;
+    onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   };
   map: {
     mode: MapMode;
@@ -112,6 +114,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
           {navigation.siteName ?? "Explore your storage"}
         </h1>
       )}
+      {current && <FolderOpenControl node={current} onOpen={navigation.onOpenFolder} />}
     </nav>
   );
 }

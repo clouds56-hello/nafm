@@ -143,6 +143,7 @@
 
 .atlas-directory-list {
   --directory-row-height: 38px;
+  --folder-action-size: 30px;
   position: relative;
   overflow: clip;
   margin: 0;
@@ -157,7 +158,7 @@
   border-top: 1px solid var(--atlas-border);
 }
 .atlas-directory-list > [aria-rowindex="1"] { border-color: transparent; }
-.atlas-directory-list [role="gridcell"] { height: 100%; }
+.atlas-directory-list [role="gridcell"] { display: flex; align-items: center; height: 100%; }
 
 .atlas-directory-placeholder {
   display: flex;
@@ -196,12 +197,13 @@
 
 .atlas-directory-entry {
   display: grid;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 100%;
-  grid-template-columns: minmax(0, 1fr) max-content 8px;
+  grid-template-columns: minmax(0, 1fr) max-content var(--folder-action-size);
   align-items: center;
   gap: 8px;
-  padding: 5px 6px;
+  padding: 5px 0 5px 6px;
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -210,6 +212,13 @@
   text-align: left;
 }
 
+.atlas-directory-list [data-openable] > .atlas-directory-entry {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  padding-right: 8px;
+}
+.atlas-directory-list [data-openable] .atlas-directory-chevron { display: none; }
+.atlas-directory-list .atlas-folder-open-trigger { width: var(--folder-action-size); }
+.atlas-directory-list .atlas-directory-chevron { justify-self: center; }
 .atlas-directory-entry:hover { background: #202234; }
 .atlas-directory-list [aria-selected="true"] .atlas-directory-entry {
   background: #242741;
@@ -308,7 +317,7 @@
 }
 
 @media (max-width: 760px), (pointer: coarse) {
-  .atlas-directory-list { --directory-row-height: 45px; }
+  .atlas-directory-list { --directory-row-height: 45px; --folder-action-size: 40px; }
   .atlas-directory-up { width: 42px; height: 42px; }
   .atlas-directory-sort { min-height: 42px; }
   .atlas-sort-choices span { min-height: 40px; }

@@ -67,7 +67,7 @@ test("all six orders apply to the whole virtual directory and preserve file retu
   const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
   const method = page.getByRole("radiogroup", { name: "Sort by" });
   const direction = page.getByRole("radiogroup", { name: "Direction" });
-  const row = (n: number) => contents.locator(`[aria-rowindex="${n}"] button`);
+  const row = (n: number) => contents.locator(`[aria-rowindex="${n}"] [data-entry-id]`);
 
   let previous = orders[0];
   for (const order of orders) {
@@ -111,7 +111,7 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   await page.getByRole("button", { name: "Contents & details" }).click();
   const contents = page.getByRole("tabpanel", { name: "Contents" });
   const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
-  const firstRow = contents.locator('[aria-rowindex="1"] button');
+  const firstRow = contents.locator('[aria-rowindex="1"] [data-entry-id]');
   await expect(firstRow).toHaveAccessibleName(/^Projects/);
 
   const firstRead = await delaySortRead(page, { field: "name", direction: "desc" });
@@ -148,7 +148,7 @@ test("each site restores its own Contents order after switching and reopening", 
   const fieldFolder = (view: Page) => contents(view).getByRole("button", { name: /^Field Drive\b/ }).click();
 
   async function expectOrder(view: Page, sort: DirectorySort, first: RegExp) {
-    await expect(contents(view).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(first);
+    await expect(contents(view).locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(first);
     await sortButton(view).click();
     await expect(view.getByRole("radio", { name: fields[sort.field], exact: true })).toBeChecked();
     await expect(view.getByRole("radio", { name: directions[sort.direction], exact: true })).toBeChecked();
@@ -164,9 +164,9 @@ test("each site restores its own Contents order after switching and reopening", 
   await page.getByRole("radio", { name: "Name", exact: true }).click();
   await page.getByRole("radio", { name: "Ascending", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^2024 April/);
+  await expect(contents(page).locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^2024 April/);
   await page.getByRole("button", { name: "Previous location", exact: true }).click();
-  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Deliverables/);
+  await expect(contents(page).locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^Deliverables/);
 
   await page.getByRole("button", { name: "Sites", exact: true }).click();
   await openSite(page, "Field drive");
@@ -175,7 +175,7 @@ test("each site restores its own Contents order after switching and reopening", 
   await sortButton(page).click();
   await page.getByRole("radio", { name: "Date modified", exact: true }).click();
   await page.keyboard.press("Escape");
-  await expect(contents(page).locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Survey log\.pdf/);
+  await expect(contents(page).locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^Survey log\.pdf/);
 
   await openSite(page, "Studio archive");
   await expectOrder(page, studioOrder, /^Deliverables/);
@@ -207,7 +207,7 @@ test("closing while Contents is still sorting saves the latest choice", async ({
   await reopened.goto("/mock/");
   await reopened.getByRole("button", { name: "Contents & details" }).click();
   const contents = reopened.getByRole("tabpanel", { name: "Contents" });
-  await expect(contents.locator('[aria-rowindex="1"] button')).toHaveAccessibleName(/^Documents/);
+  await expect(contents.locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^Documents/);
   await contents.getByRole("button", { name: "Sort contents" }).click();
   await expect(reopened.getByRole("radio", { name: "Date modified", exact: true })).toBeChecked();
   await expect(reopened.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();

@@ -212,6 +212,15 @@ export interface DirectorySort {
   direction: "asc" | "desc";
 }
 
+export type FolderOpenDestination = "file_manager" | "terminal";
+
+export interface FolderOpenRequest {
+  workspace_name: string;
+  site_id: string;
+  node_id: string;
+  destination: FolderOpenDestination;
+}
+
 export const DEFAULT_DIRECTORY_SORT: DirectorySort = { field: "size", direction: "desc" };
 
 export interface StorageTree {

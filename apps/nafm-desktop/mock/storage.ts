@@ -245,6 +245,20 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return makeSnapshot(model(args), args);
   }
 
+  function openFolderIn(request: CommandArgs) {
+    const workspace = current();
+    checkWorkspace(workspace, request.workspace_name);
+    const tree = getTree(workspace, stringArg(request.site_id, "source ID"));
+    const node = findPath(tree, stringArg(request.node_id, "folder ID"))?.at(-1);
+    if (!node?.path || (node.kind !== "directory" && node.kind !== "local_root" && node.kind !== "smb_root")) {
+      throw new Error("The folder is no longer available.");
+    }
+    if (request.destination === "file_manager") return `Preview would open ${node.name} in the file manager.`;
+    if (request.destination !== "terminal") throw new Error("Unknown folder destination.");
+    if (/^smb:\/\//i.test(node.path)) throw new Error("Terminal requires a local folder.");
+    return `Preview would open ${node.name} in the terminal.`;
+  }
+
   function reveal(args: CommandArgs): StorageFileReveal {
     const workspace = current();
     checkWorkspace(workspace, args.expectedWorkspace);
@@ -428,6 +442,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
     children: (args: CommandArgs) => makeChildren(model(args), args),
-    snapshot, reveal, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
+    snapshot, openFolderIn, reveal, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
   };
 }

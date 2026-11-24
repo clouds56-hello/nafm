@@ -1,0 +1,84 @@
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+
+export function useAnchoredPopover(initialFocus: string, scrollBehavior: "follow" | "dismiss" = "follow") {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const [focusSelector, setFocusSelector] = useState<string | null>(null);
+  const open = focusSelector !== null;
+
+  function show(selector = initialFocus) {
+    setFocusSelector(selector);
+  }
+
+  function toggle() {
+    setFocusSelector((current) => current === null ? initialFocus : null);
+  }
+
+  function close(restoreFocus = false) {
+    setFocusSelector(null);
+    if (restoreFocus) trigger.current?.focus({ preventScroll: true });
+  }
+
+  useLayoutEffect(() => {
+    const button = trigger.current;
+    const popup = panel.current;
+    if (!focusSelector || !button || !popup) return;
+    popup.showPopover?.();
+
+    const position = () => {
+      const anchor = button.getBoundingClientRect();
+      const { width } = popup.getBoundingClientRect();
+      const gap = 6;
+      const edge = 8;
+      const below = window.innerHeight - anchor.bottom - gap - edge;
+      const above = anchor.top - gap - edge;
+      const openAbove = popup.scrollHeight + 2 > below && above > below;
+      popup.style.maxHeight = Math.max(0, openAbove ? above : below) + "px";
+      popup.style.top = (openAbove ? anchor.top - gap - popup.offsetHeight : anchor.bottom + gap) + "px";
+      popup.style.left = Math.max(edge, Math.min(anchor.right - width, window.innerWidth - edge - width)) + "px";
+    };
+    const handleScroll = (event: Event) => {
+      if (scrollBehavior === "dismiss" && event.target instanceof Node && event.target.contains(button)) {
+        setFocusSelector(null);
+        if (popup.contains(document.activeElement)) button.focus({ preventScroll: true });
+      } else {
+        position();
+      }
+    };
+    const dismissOutside = (event: Event) => {
+      if (event.target instanceof Node && !popup.contains(event.target) && !button.contains(event.target)) {
+        setFocusSelector(null);
+      }
+    };
+    position();
+    popup.querySelector<HTMLElement>(focusSelector)?.focus({ preventScroll: true });
+    window.addEventListener("resize", position);
+    document.addEventListener("scroll", handleScroll, true);
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside);
+    return () => {
+      window.removeEventListener("resize", position);
+      document.removeEventListener("scroll", handleScroll, true);
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside);
+    };
+  }, [focusSelector, scrollBehavior]);
+
+  const containerProps = {
+    onMouseDown(event: MouseEvent) {
+      // Keep WebKit from focusing the scroll pane before the control receives its click.
+      if (event.button === 0 && event.target instanceof Element) {
+        event.preventDefault();
+        event.target.closest<HTMLElement>("button, input")?.focus({ preventScroll: true });
+      }
+    },
+    onKeyDown(event: KeyboardEvent) {
+      if (!open || event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+    },
+  };
+
+  return { open, trigger, panel, show, close, toggle, containerProps };
+}

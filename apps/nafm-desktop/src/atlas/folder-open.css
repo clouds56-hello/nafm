@@ -1,0 +1,67 @@
+.atlas-folder-open {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.atlas-folder-open-trigger {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--atlas-muted);
+}
+.atlas-folder-open-trigger svg { width: 16px; height: 16px; }
+.atlas-folder-open-trigger:hover, .atlas-folder-open-trigger[aria-expanded="true"] {
+  border-color: var(--atlas-border);
+  background: #23263a;
+  color: var(--atlas-accent);
+}
+
+.atlas-folder-open-menu {
+  position: fixed;
+  inset: auto;
+  z-index: 14;
+  width: min(176px, calc(100vw - 16px));
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid #484c65;
+  border-radius: 8px;
+  background: var(--atlas-surface);
+  color: var(--atlas-ink);
+  box-shadow: 0 8px 24px #08091370;
+}
+.atlas-folder-open-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-ink);
+  font: 550 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  text-align: start;
+}
+.atlas-folder-open-menu svg { flex: none; width: 16px; height: 16px; color: var(--atlas-accent); }
+.atlas-folder-open-menu button:hover:not([aria-disabled="true"]),
+.atlas-folder-open-menu button:focus-visible { background: #25283d; }
+.atlas-folder-open-menu button:focus-visible,
+.atlas-folder-open-trigger:focus-visible { outline: 2px solid var(--atlas-accent); outline-offset: -2px; }
+.atlas-folder-open-menu button[aria-disabled="true"], .atlas-folder-open-menu button[aria-disabled="true"] svg {
+  color: var(--atlas-muted);
+  cursor: default;
+}
+.atlas-folder-open-menu small { display: block; margin-top: 2px; font-size: 10px; font-weight: 400; }
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-folder-open-trigger { width: 40px; height: 40px; }
+  .atlas-folder-open-menu button { min-height: 42px; }
+}

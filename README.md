@@ -48,6 +48,10 @@ to its parent, and Enter opens the focused item.
 
 The floating **Contents & details** button opens the inspector. Sites and the
 inspector can stay open together while you browse. Each has its own close button.
+Use the **Open in** icon beside the current folder path or a folder in
+**Contents** or **Details**. Choose **File manager** to browse it in a separate
+window or **Terminal** to start a terminal in that folder. Direct SMB URLs open
+in the file manager. The interactive mock previews the chosen action.
 Contents rows use the atlas colors. Hover over a row or focus it with the
 keyboard to see its path, size, share of the folder, verification, and date.
 Open the sort button beside the folder name. Choose **Size**, **Name**, or

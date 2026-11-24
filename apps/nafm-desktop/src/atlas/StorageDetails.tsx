@@ -1,7 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { formatCompleteness, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
-import type { HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import type { FolderOpenDestination, HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import { FolderOpenControl } from "./FolderOpenControl";
 import { CheckIcon } from "../management/Icons";
 import "./inspector.css";
 
@@ -13,6 +14,7 @@ interface StorageDetailsProps {
   metric: HealthMetric | null;
   targetCompleteness: number;
   targetName: string | null;
+  onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   children?: ReactNode;
 }
 
@@ -42,7 +44,7 @@ function HealthDetail({
   );
 }
 
-export function StorageDetails({ location, entries, selected, focusRevision, metric, targetCompleteness, targetName, children }: StorageDetailsProps) {
+export function StorageDetails({ location, entries, selected, focusRevision, metric, targetCompleteness, targetName, onOpenFolder, children }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
   const previousFocusRevision = useRef(focusRevision);
   useEffect(() => {
@@ -68,7 +70,10 @@ export function StorageDetails({ location, entries, selected, focusRevision, met
     <section className="atlas-readout" aria-label="Storage details" ref={panelRef} tabIndex={-1}>
       <header className="atlas-readout-heading">
         <p className="atlas-kicker">{heading}</p>
-        <h2>{node.name}</h2>
+        <div className="atlas-readout-title">
+          <h2>{node.name}</h2>
+          <FolderOpenControl node={node} onOpen={onOpenFolder} />
+        </div>
       </header>
       <dl className="atlas-details">
         <div className="atlas-detail-path">

@@ -208,6 +208,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           onForward: goForward,
           onUp: goUp,
           onBreadcrumb: state.navigateBreadcrumb,
+          onOpenFolder: state.openFolderExternally,
         }}
         map={{
           mode: mapMode,
@@ -324,6 +325,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                 details={location ? (
                   <StorageDetails
                     location={location}
+                    onOpenFolder={state.openFolderExternally}
                     entries={state.childrenPage?.children ?? []}
                     selected={selected}
                     focusRevision={state.duplicateJumpRevision}
@@ -356,6 +358,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                   <>
                     <DirectoryContents
                       onGoUp={goUp}
+                      onOpenFolder={state.openFolderExternally}
                       location={location}
                       page={state.childrenPage}
                       selection={selected}

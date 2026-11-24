@@ -38,6 +38,18 @@ export function PlusIcon(props: IconProps) {
   return <IconBase {...props}><path d="M12 5v14M5 12h14" /></IconBase>;
 }
 
+export function OpenInIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M13 4h7v7m0-7L10 14M10 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4" /></IconBase>;
+}
+
+export function FolderIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></IconBase>;
+}
+
+export function TerminalIcon(props: IconProps) {
+  return <IconBase {...props}><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3m6 0h3" /></IconBase>;
+}
+
 export function WorkspaceIcon(props: IconProps) {
   return <IconBase {...props}><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18M8 9v11" /></IconBase>;
 }

@@ -235,6 +235,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     get_storage_children: storage.children,
     get_storage_view_snapshot: storage.snapshot,
     get_storage_file_reveal: storage.reveal,
+    open_folder_in: (args) => storage.openFolderIn(record(args.request)),
     get_file_content_matches: storage.fileContentMatches,
     find_similar_folders: (args) => storage.similarFolders(record(args.request)),
     stage_path: storage.stage,

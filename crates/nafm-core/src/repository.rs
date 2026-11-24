@@ -861,6 +861,18 @@ impl Repository {
     .await?
   }
 
+  /// Resolve a physical atlas folder without aggregating the site's file metrics.
+  pub async fn storage_folder_path(&self, site_id: &str, node_id: &str) -> Result<PathBuf> {
+    let db_path = self.db_path.clone();
+    let site_id = site_id.to_owned();
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || storage_folder_path(&conn, &site_id, &node_id))
+    })
+    .await?
+  }
+
   pub async fn storage_location(
     &self,
     site_selector: &str,
@@ -4254,6 +4266,58 @@ fn storage_tree(
     max_children,
     root: finish_storage_node(root, 0, max_depth, max_children),
   })
+}
+
+fn storage_folder_path(conn: &Connection, site_id: &str, node_id: &str) -> Result<PathBuf> {
+  let missing = || NafmError::StorageNodeNotFound(node_id.to_owned());
+  let (root_id, requested) = if let Some(id) = node_id.strip_prefix("site_folder:") {
+    (id, None)
+  } else if let Some((id, path)) = node_id.strip_prefix("storage:").and_then(|id| id.split_once(':')) {
+    (id, Some(path))
+  } else {
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
+  };
+  let root = find_site_folder(conn, root_id)?
+    .filter(|folder| folder.site_id == site_id)
+    .ok_or_else(missing)?;
+  let Some(requested) = requested else {
+    return Ok(root.path);
+  };
+
+  // Nested directories have no records of their own. Seek the path index for one file
+  // below this directory, bounded by its separator and the following ASCII character.
+  let separator = if root.kind == SiteFolderKind::Smb {
+    '/'
+  } else {
+    std::path::MAIN_SEPARATOR
+  };
+  let first = format!("{requested}{separator}");
+  let end = format!("{requested}{}", char::from(separator as u8 + 1));
+  let descendant: String = conn
+    .query_row(
+      "select path from file_records where path >= ?1 and path < ?2
+     and likely(site_folder_id = ?3) and likely(site_id = ?4) limit 1",
+      params![first, end, root_id, site_id],
+      |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(missing)?;
+  let descendant = Path::new(&descendant);
+  if root.kind == SiteFolderKind::Local && !descendant.starts_with(&root.path) {
+    return Err(missing());
+  }
+  // Reconstruct the same folder identity emitted by the tree, using the stored file and root.
+  let segments = storage_relative_segments(&root, descendant)?;
+  if segments.iter().any(|part| part == "..") {
+    return Err(missing());
+  }
+  for depth in 1..segments.len() {
+    let path = storage_child_path(&root, &segments[..depth])?;
+    if path.as_os_str() == Path::new(requested).as_os_str() {
+      return Ok(path);
+    }
+  }
+  Err(missing())
 }
 
 fn storage_location(

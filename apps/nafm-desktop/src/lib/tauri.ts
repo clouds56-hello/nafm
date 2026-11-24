@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  FolderOpenRequest,
   FolderSimilarityPage,
   FolderSimilarityRequest,
   PathCompletion,
@@ -33,6 +34,11 @@ import type {
   StorageTree,
   StorageViewSnapshot,
 } from "./types";
+
+// A native launch returns null. The interactive mock returns a preview message.
+export function openFolderIn(request: FolderOpenRequest): Promise<string | null> {
+  return invoke("open_folder_in", { request });
+}
 
 export function findSimilarFolders(request: FolderSimilarityRequest): Promise<FolderSimilarityPage> {
   return invoke<FolderSimilarityPage>("find_similar_folders", { request });

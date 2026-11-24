@@ -471,6 +471,64 @@ async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
 }
 
 #[tokio::test]
+async fn storage_folder_path_accepts_only_real_directories_owned_by_the_requested_site_and_root() {
+  let fixture = Fixture::new().await;
+  let root = fs::canonicalize(fixture.mkdir("field")).unwrap();
+  let site = fixture.repo.create_site("field").await.unwrap();
+  let other_site = fixture.repo.create_site("other").await.unwrap();
+  fixture.add_site_folder(&site.id, &root, HiddenPolicy::Include).await;
+  let folder = fixture
+    .repo
+    .list_site_folders(Some(&site.id))
+    .await
+    .unwrap()
+    .pop()
+    .unwrap();
+  let root_id = format!("site_folder:{}", folder.id);
+  assert_eq!(
+    fixture.repo.storage_folder_path(&site.id, &root_id).await.unwrap(),
+    root
+  );
+  assert!(
+    fixture
+      .repo
+      .storage_folder_path(&other_site.id, &root_id)
+      .await
+      .is_err()
+  );
+
+  let nested = root.join("100%_maps").join("West");
+  fs::create_dir_all(&nested).unwrap();
+  fs::write(nested.join("survey.txt"), b"survey").unwrap();
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  let tree = fixture.repo.storage_tree(&site.id, 5, 12).await.unwrap();
+  let branch = &tree.root.children[0].children[0];
+  let west = &branch.children[0];
+  for folder in [branch, west] {
+    assert_eq!(
+      fixture.repo.storage_folder_path(&site.id, &folder.id).await.unwrap(),
+      *folder.path.as_ref().unwrap()
+    );
+    assert!(
+      fixture
+        .repo
+        .storage_folder_path(&other_site.id, &folder.id)
+        .await
+        .is_err()
+    );
+  }
+  for invalid in [
+    tree.root.id,
+    west.children[0].id.clone(),
+    format!("smaller_items:1:{root_id}"),
+    format!("storage:{}:{}", folder.id, root.join("100%_map").display()),
+    format!("storage:{}:{}", folder.id, root.join("100%_maps").join("..").display()),
+  ] {
+    assert!(fixture.repo.storage_folder_path(&site.id, &invalid).await.is_err());
+  }
+}
+
+#[tokio::test]
 async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
   let cache = tempfile::tempdir().unwrap();
   let credentials_root = tempfile::tempdir().unwrap();
@@ -531,6 +589,13 @@ async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
   assert_eq!(reveal.location.root.modified_unix_millis, None);
   assert_eq!(reveal.tree.coverage_target.as_ref().unwrap().id, target.id);
   assert_eq!(reveal.location.root.name, "Camera");
+  assert_eq!(
+    repo
+      .storage_folder_path(&network.id, &reveal.location.root.id)
+      .await
+      .unwrap(),
+    PathBuf::from("smb://nas.example.test/share/Media/Camera")
+  );
   assert_eq!(
     reveal.location.root.path,
     Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))

@@ -24,9 +24,17 @@
 
 .atlas-readout:focus-visible { outline-offset: -3px; }
 .atlas-readout-heading .atlas-kicker { margin-bottom: 3px; }
+.atlas-readout-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
 
 .atlas-readout-heading h2 {
-  margin: 0 0 8px;
+  min-width: 0;
+  margin: 0;
   font-size: 16px;
   font-weight: 620;
   line-height: 1.25;

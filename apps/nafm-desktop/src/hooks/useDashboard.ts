@@ -8,6 +8,7 @@ import {
   getStorageViewSnapshot,
   loadDashboard,
   onScanTaskEvent,
+  openFolderIn,
   previewCleanup,
   stagePath,
   startScan,
@@ -31,6 +32,7 @@ import type {
   DirectorySort,
   DuplicateFile,
   FileContentMatch,
+  FolderOpenDestination,
   HealthMetric,
   ScanCompletionView,
   ScanProgressView,
@@ -933,6 +935,22 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
   const activeSelectedNode = selectedNode ?? location?.root ?? null;
 
+  const openFolderExternally = useCallback(async (node: StorageNode, destination: FolderOpenDestination) => {
+    const workspace = workspaceNameRef.current;
+    const siteId = locationRef.current?.site_id;
+    if (!workspace || !siteId) return;
+    setNotice(null);
+    let message: string | null;
+    try {
+      message = await openFolderIn({ workspace_name: workspace, site_id: siteId, node_id: node.id, destination });
+    } catch (error) {
+      message = errorMessage(error);
+    }
+    if (message && workspace === workspaceNameRef.current && siteId === locationRef.current?.site_id) {
+      setNotice(message);
+    }
+  }, []);
+
   const selectNode = useCallback((node: StorageNode) => {
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
@@ -1352,6 +1370,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     error,
     notice,
     clearNotice: () => setNotice(null),
+    openFolderExternally,
     refresh,
     activeSite,
     activeTree,
@@ -1435,6 +1454,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     isSelectedStaged,
     jumpToContentMatch,
     loading,
+    openFolderExternally,
     setDirectorySort,
     location,
     notice,

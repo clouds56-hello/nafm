@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { formatCount } from "../lib/format";
-import type { DirectorySort, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
+import type { DirectorySort, FolderOpenDestination, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
 import { DirectorySortControl } from "./DirectorySortControl";
+import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
 import { useDirectoryViewport } from "./useDirectoryViewport";
 import "./directory.css";
@@ -25,6 +26,7 @@ interface DirectoryContentsProps {
   awaitingInventory: boolean;
   error: string | null;
   onSelect: (node: StorageNode) => void;
+  onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   onGoUp: () => void;
   onLoadRange: (start: number, end: number) => void;
   onRetry: () => void;
@@ -33,7 +35,7 @@ interface DirectoryContentsProps {
 export function DirectoryContents({
   location, page, selection, sort, onSort, metric, targetCompleteness,
   scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId,
-  active, loading, loadingMore, awaitingInventory, error, onSelect, onGoUp, onLoadRange, onRetry,
+  active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -99,7 +101,7 @@ export function DirectoryContents({
     if (!ready && total) return;
     const parentEntry = destination?.row
       ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(destination.row)}"]`) : null;
-    const row = parentEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${(pending?.index ?? first) + 1}"] button`);
+    const row = parentEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${(pending?.index ?? first) + 1}"] [data-entry-id]`);
     if (row || !total || error) {
       keyboardRow.current = null;
       keyboardFolder.current = null;
@@ -146,7 +148,7 @@ export function DirectoryContents({
     event.preventDefault();
     target = Math.min(total - 1, Math.max(0, target));
     if (target === index || loading) return;
-    const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] button`);
+    const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
     if (row) row.focus();
     else {
       keyboardRow.current = { key: contentsKey, index: target };
@@ -173,6 +175,7 @@ export function DirectoryContents({
           <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
           {total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
         </div>
+        <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
         {total > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
       </header>
 
@@ -189,19 +192,19 @@ export function DirectoryContents({
               const isFile = node.kind === "file";
               return (
                 <li key={node.id} style={style} role="row" aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
-                  <div role="gridcell">
+                  <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => setCursor(node.id)}>
                     <button
                       type="button"
                       className="atlas-directory-entry"
                       {...rowPreview.bind(node)}
                       data-entry-id={node.id}
                       tabIndex={tabStop === node.id ? 0 : -1}
-                      onFocus={() => setCursor(node.id)}
                       onKeyDown={(event) => moveRow(event, node, index)}
                       onClick={(event) => activate(node, event.detail === 0)}
                     >
                       <DirectoryEntryLabel node={node} awaitingInventory={awaitingInventory} showDate={sort.field === "date"} />
                     </button>
+                    <FolderOpenControl node={node} onOpen={onOpenFolder} tabIndex={tabStop === node.id ? 0 : -1} />
                   </div>
                 </li>
               );

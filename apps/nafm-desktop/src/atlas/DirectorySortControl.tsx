@@ -1,5 +1,6 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useState } from "react";
 import type { DirectorySort } from "../lib/types";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 
 const fieldLabels = { size: "Size", name: "Name", date: "Date modified" } satisfies Record<DirectorySort["field"], string>;
 const directionLabels = { asc: "Ascending", desc: "Descending" } satisfies Record<DirectorySort["direction"], string>;
@@ -31,9 +32,7 @@ export function DirectorySortControl({ sort, onChange }: {
   onChange: (sort: DirectorySort) => Promise<void>;
 }) {
   const id = useId();
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
+  const { open, trigger, panel, show, toggle, containerProps } = useAnchoredPopover("input:checked");
   const [pending, setPending] = useState<DirectorySort | null>(null);
   const selected = pending ?? sort;
 
@@ -46,67 +45,17 @@ export function DirectorySortControl({ sort, onChange }: {
     }
   }
 
-  useLayoutEffect(() => {
-    const button = trigger.current;
-    const popup = panel.current;
-    if (!open || !button || !popup) return;
-    popup.showPopover?.();
-    const position = () => {
-      const anchor = button.getBoundingClientRect();
-      const { width } = popup.getBoundingClientRect();
-      const gap = 6;
-      const edge = 8;
-      const below = window.innerHeight - anchor.bottom - gap - edge;
-      const above = anchor.top - gap - edge;
-      const openAbove = popup.scrollHeight + 2 > below && above > below;
-      popup.style.maxHeight = Math.max(0, openAbove ? above : below) + "px";
-      popup.style.top = (openAbove ? anchor.top - gap - popup.offsetHeight : anchor.bottom + gap) + "px";
-      popup.style.left = Math.max(edge, Math.min(anchor.right - width, window.innerWidth - edge - width)) + "px";
-    };
-    const dismissOutside = (event: Event) => {
-      if (event.target instanceof Node && !popup.contains(event.target) && !button.contains(event.target)) {
-        setOpen(false);
-      }
-    };
-    position();
-    popup.querySelector<HTMLInputElement>("input:checked")?.focus({ preventScroll: true });
-    window.addEventListener("resize", position);
-    document.addEventListener("scroll", position, true);
-    document.addEventListener("pointerdown", dismissOutside, true);
-    document.addEventListener("focusin", dismissOutside);
-    return () => {
-      window.removeEventListener("resize", position);
-      document.removeEventListener("scroll", position, true);
-      document.removeEventListener("pointerdown", dismissOutside, true);
-      document.removeEventListener("focusin", dismissOutside);
-    };
-  }, [open]);
-
   return (
-    <div onMouseDown={(event) => {
-      // WebKit can focus the enclosing scroll pane before a radio receives its click.
-      if (event.button === 0) {
-        event.preventDefault();
-        if (event.target instanceof Element) {
-          event.target.closest<HTMLElement>("button, input")?.focus({ preventScroll: true });
-        }
-      }
-    }} onKeyDown={(event) => {
-      if (!open || event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      trigger.current?.focus({ preventScroll: true });
-    }}>
+    <div {...containerProps}>
       <button
         ref={trigger} type="button" className="atlas-directory-sort"
         aria-label="Sort contents" aria-expanded={open} aria-controls={open ? id : undefined} aria-haspopup="dialog"
         title={fieldLabels[selected.field] + ", " + directionLabels[selected.direction].toLowerCase()}
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
         onKeyDown={(event) => {
           if (!open && event.key === "ArrowDown") {
             event.preventDefault();
-            setOpen(true);
+            show();
           }
         }}
       >
