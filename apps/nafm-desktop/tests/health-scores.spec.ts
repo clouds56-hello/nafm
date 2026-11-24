@@ -6,7 +6,7 @@ test("a rounded or estimated score cannot earn a perfect mark", () => {
   const perfect = healthPresentation(100, null, 1);
   expect(formatHealth(perfect.value)).toBe("100");
   expect(isPerfectHealth(perfect)).toBe(true);
-  expect(healthAriaDescription(perfect, "space")).toContain("exactly 100");
+  expect(healthAriaDescription(perfect, "space")).toBe("100 space health");
 
   for (const [value, label] of [[99.98, "99.98"], [99.9999, "<100"]] as const) {
     const near = healthPresentation(value, null, 1);
@@ -46,7 +46,7 @@ test("Contents previews, atlas readings and Details distinguish near-perfect fro
   await expect(tip).toContainText("99.98 space health");
   await expect(tip.locator(".atlas-score-check")).toHaveCount(0);
   await contents.getByRole("button", { name: /^Deliverables/ }).hover();
-  await expect(tip).toContainText("exactly 100 space health");
+  await expect(tip.getByText("100 space health", { exact: true })).toBeVisible();
   await expect(tip.locator(".atlas-score-check")).toBeVisible();
 
   await photoRow.click();

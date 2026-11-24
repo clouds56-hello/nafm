@@ -142,5 +142,5 @@ export function healthAriaDescription(
     const verified = formatCompleteness(presentation.completeness).replace(/^</, "less than ");
     return `estimated ${score} ${metricLabel} health, ${verified} verified`;
   }
-  return `${isPerfectHealth(presentation) ? "exactly " : ""}${score} ${metricLabel} health`;
+  return `${score} ${metricLabel} health`;
 }
