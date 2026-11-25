@@ -74,6 +74,82 @@ test("the toolbar reveals intermediate folders and a jump preserves Back history
   await expect(hierarchy).toBeHidden();
 });
 
+for (const origin of ["toolbar Up", "Atlas center Up", "folder hierarchy"] as const) {
+  test(`${origin} keeps the departed folder visible in Contents after changing sort`, async ({ page }) => {
+    await page.goto("/mock/?scenario=large");
+    const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+    const path = folderPath(page);
+    const referenceArc = map.getByRole("button", { name: /^Reference images,/ });
+    await referenceArc.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Reference images");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+    await sort.click();
+    await page.getByRole("radio", { name: "Name", exact: true }).click();
+    await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(contents.locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^Brand guidelines\.pdf/);
+
+    const up = { name: "Up to Photo Library", exact: true };
+    const hierarchy = page.getByRole("group", { name: "Folder hierarchy", exact: true });
+    const pathButton = path.getByRole("button", { name: "Show folder path", exact: true });
+    if (origin === "toolbar Up") {
+      await path.getByRole("button", up).press("Enter");
+    } else if (origin === "Atlas center Up") {
+      await map.getByRole("button", up).press("Enter");
+    } else {
+      await pathButton.press("Enter");
+      await hierarchy.getByRole("button", { name: "Photo Library", exact: true }).press("Enter");
+      await expect(hierarchy).toBeHidden();
+    }
+
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    const grid = contents.getByRole("grid");
+    await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+    const folder = grid.getByRole("button", { name: /^Reference images/ });
+    await expect(folder).toBeInViewport({ ratio: 0.99 });
+    await expect(grid.locator('[aria-rowindex="2763"]')).toContainText("Reference images");
+    const focusAfter = {
+      "toolbar Up": path.getByRole("button", { name: "Up to Studio archive", exact: true }),
+      "Atlas center Up": referenceArc,
+      "folder hierarchy": pathButton,
+    }[origin];
+    await expect(focusAfter).toBeFocused();
+  });
+}
+
+test("toolbar Up and Alt+Up keep keyboard focus in the path when they reach the root", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  const path = folderPath(page);
+  const heading = path.getByRole("heading", { name: "Studio archive", exact: true });
+  const pathButton = path.getByRole("button", { name: "Show folder path", exact: true });
+  const hierarchy = page.getByRole("group", { name: "Folder hierarchy", exact: true });
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const photos = map.getByRole("button", { name: /^Photo Library,/ });
+
+  await photos.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await path.getByRole("button", { name: "Up to Studio archive", exact: true }).press("Enter");
+  await expect(heading).toBeFocused();
+
+  await photos.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await pathButton.press("Alt+ArrowUp");
+  await expect(heading).toBeFocused();
+
+  await photos.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await pathButton.press("Enter");
+  await hierarchy.getByRole("button", { name: "Studio archive", exact: true }).press("Alt+ArrowUp");
+  await expect(hierarchy).toBeHidden();
+  await expect(heading).toBeFocused();
+
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(heading).toBeFocused();
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+});
+
 test.describe("minimum desktop toolbar", () => {
   test.use({ viewport: { width: 1080, height: 700 } });
 

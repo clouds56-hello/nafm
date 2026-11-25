@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, type RefObject } from "react";
 import type { StorageNode } from "../lib/types";
 import { CheckIcon, DriveIcon, FolderIcon, NetworkIcon } from "../management/Icons";
 import { useAnchoredPopover } from "./useAnchoredPopover";
@@ -8,12 +8,20 @@ interface FolderBreadcrumbsProps {
   breadcrumbs: readonly StorageNode[];
   siteName: string | null;
   onNavigate: (node: StorageNode) => void;
+  heading: RefObject<HTMLHeadingElement | null>;
+  onTriggerRemoved: (focused: HTMLElement) => void;
 }
 
-export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate }: FolderBreadcrumbsProps) {
+export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate, heading, onTriggerRemoved }: FolderBreadcrumbsProps) {
   const id = useId();
   const { open, trigger, panel, show, toggle, close, containerProps } = useAnchoredPopover("button", "follow", "start");
-  const heading = useRef<HTMLHeadingElement>(null);
+  const attachTrigger = useCallback((button: HTMLButtonElement | null) => {
+    trigger.current = button;
+    if (button) return () => {
+      trigger.current = null;
+      onTriggerRemoved(button);
+    };
+  }, [onTriggerRemoved, trigger]);
   const requestedFolder = useRef<string>(null);
   const current = breadcrumbs.at(-1);
   const previousFolder = useRef(current?.id);
@@ -31,7 +39,7 @@ export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate }: FolderB
     if (restoreFocus && document.activeElement === document.body) {
       (trigger.current ?? heading.current)?.focus({ preventScroll: true });
     }
-  }, [close, current?.id, open, panel, trigger]);
+  }, [close, current?.id, heading, open, panel, trigger]);
 
   function name(node: StorageNode) {
     return node.name || siteName || "Storage";
@@ -44,7 +52,7 @@ export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate }: FolderB
   }
 
   if (!current || !site) {
-    return <h1 className="atlas-toolbar-site-fallback">{siteName ?? "Explore your storage"}</h1>;
+    return <h1 className="atlas-toolbar-site-fallback" ref={heading} tabIndex={-1}>{siteName ?? "Explore your storage"}</h1>;
   }
 
   const activeName = (
@@ -69,7 +77,7 @@ export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate }: FolderB
         <h1 ref={heading} tabIndex={-1} aria-labelledby={`${id}-name`}>
           {hasAncestors ? (
             <button
-              className="atlas-path-trigger" ref={trigger} type="button"
+              className="atlas-path-trigger" ref={attachTrigger} type="button"
               aria-label="Show folder path" aria-describedby={`${id}-name`}
               aria-expanded={open} aria-controls={open ? id : undefined}
               onClick={toggle}
@@ -88,7 +96,10 @@ export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate }: FolderB
           ) : activeName}
         </h1>
         {open && hasAncestors && (
-          <div className="atlas-folder-hierarchy" id={id} ref={panel} role="group" aria-label="Folder hierarchy" popover="manual">
+          <div className="atlas-folder-hierarchy" id={id} ref={panel} role="group" aria-label="Folder hierarchy" popover="manual"
+            onKeyDown={(event) => {
+              if (!event.defaultPrevented && event.key === "ArrowUp" && (event.altKey || event.metaKey)) close(true);
+            }}>
             <ol>
               {breadcrumbs.map((node) => {
                 const isCurrent = node.id === current.id;

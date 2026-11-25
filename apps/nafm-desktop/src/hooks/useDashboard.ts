@@ -1251,12 +1251,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     );
   }, [loadFolderLocation]);
 
-  const goUp = useCallback((anchor?: DirectoryAnchorLoad) => {
-    const breadcrumbs = locationRef.current?.breadcrumbs ?? [];
-    const parent = breadcrumbs.at(-2);
-    if (parent) navigateBreadcrumb(parent, anchor);
-  }, [navigateBreadcrumb]);
-
   const loadChildrenRange = useCallback(async (start: number, end: number) => {
     const loaded = childrenPage;
     if (!loaded || loaded !== childrenPageRef.current || childrenLoadingRef.current) return;
@@ -1700,7 +1694,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     canGoUp: !childrenLoading && (location?.breadcrumbs.length ?? 0) > 1,
     goBack,
     goForward,
-    goUp,
     navigateBreadcrumb,
     retryChildren,
     loadChildrenRange,
@@ -1797,7 +1790,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     treeLoading,
     goBack,
     goForward,
-    goUp,
     navigateBreadcrumb,
     loadChildrenRange,
   ]);

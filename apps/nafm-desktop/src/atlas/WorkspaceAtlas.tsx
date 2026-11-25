@@ -118,7 +118,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
   const [folderSearches, setFolderSearches] = useState(() => new Map<string, string>());
   const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(null);
-  const [parentAnchor, setParentAnchor] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
+  const [ancestorAnchor, setAncestorAnchor] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
@@ -354,30 +354,37 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     />
   );
 
-  const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
-  function goUpInContents() {
-    const parent = location?.breadcrumbs.at(-2);
-    if (!location || !parent) return;
-    const child = location.root.id;
-    const scope = directoryScope(dashboard?.workspace_name, location.site_id, parent.id);
+  const { navigateBreadcrumb, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
+  const navigateAncestor = useCallback((ancestor: StorageNode) => {
+    const index = location?.breadcrumbs.findIndex((node) => node.id === ancestor.id) ?? -1;
+    const child = index < 0 ? undefined : location?.breadcrumbs[index + 1];
+    if (inspectorView !== "contents" || !location || !child) {
+      navigateBreadcrumb(ancestor);
+      return;
+    }
+    const scope = directoryScope(dashboard?.workspace_name, location.site_id, ancestor.id);
     const query = folderSearches.get(scope)?.trim() || null;
-    goUp({
-      request: { child_id: child, query },
+    navigateBreadcrumb(ancestor, {
+      request: { child_id: child.id, query },
       onArrival: (destination, page, filteredPage) => {
-        // A parent search that excludes this folder remains active at its saved position.
+        // An ancestor's search can intentionally exclude this branch.
         const visiblePage = query ? filteredPage : page;
-        const index = visiblePage?.children.findIndex((entry) => entry.id === child) ?? -1;
-        if (!visiblePage || index < 0) return;
+        const childIndex = visiblePage?.children.findIndex((entry) => entry.id === child.id) ?? -1;
+        if (!visiblePage || childIndex < 0) return;
         const targetId = destination.coverage_target?.id;
         if (query) search.prime({ scope, targetId, query, sort: page.sort }, visiblePage);
         const key = directoryKey(
           dashboard?.workspace_name, destination.site_id, targetId, destination.root.id,
           page.sort, query ? 0 : page.anchor_offset, query ?? undefined,
         );
-        setParentAnchor({ key, index: visiblePage.offset + index, onApplied: () => setParentAnchor(null) });
+        setAncestorAnchor({ key, index: visiblePage.offset + childIndex, onApplied: () => setAncestorAnchor(null) });
       },
     });
-  }
+  }, [dashboard?.workspace_name, folderSearches, inspectorView, location, navigateBreadcrumb, search.prime]);
+  const goUp = useCallback(() => {
+    const parent = location?.breadcrumbs.at(-2);
+    if (canGoUp && parent) navigateAncestor(parent);
+  }, [canGoUp, location, navigateAncestor]);
   const fileOpen = currentVisit?.view === "details";
   const canGoBack = fileOpen || state.canGoBack;
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
@@ -518,7 +525,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           onBack: goBack,
           onForward: goForward,
           onUp: goUp,
-          onBreadcrumb: state.navigateBreadcrumb,
+          onBreadcrumb: navigateAncestor,
           onOpenFolder: state.openFolderExternally,
         }}
         map={{
@@ -713,7 +720,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                 contents={(
                   <>
                     <DirectoryContents
-                      onGoUp={goUpInContents}
+                      onGoUp={goUp}
                       onOpenFolder={state.openFolderExternally}
                       location={location}
                       page={directoryPage}
@@ -730,7 +737,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       scrollPositions={contentsScroll.current}
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
-                      reveal={parentAnchor?.key === contentsKey ? parentAnchor : undefined}
+                      reveal={ancestorAnchor?.key === contentsKey ? ancestorAnchor : undefined}
                       returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
                       historyFocusOrigin={historyFocusOrigin}
                       onHistoryFocusHandled={finishHistoryFocus}

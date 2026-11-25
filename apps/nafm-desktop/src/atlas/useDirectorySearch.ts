@@ -65,6 +65,16 @@ export function useDirectorySearch({
     setRequested({ key, range: { offset, limit } });
   }, [delivered, key, page, range]);
 
+  const prime = useCallback((
+    destination: Pick<DirectorySearchOptions, "scope" | "targetId" | "query" | "sort">, page: StorageChildrenPage,
+  ) => {
+    const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort, contentRevision);
+    const range = { offset: page.offset, limit: page.limit };
+    setRequested({ key, range });
+    setResult({ key, range, page });
+    setFailure(null);
+  }, [contentRevision]);
+
   return {
     enabled,
     page,
@@ -73,12 +83,6 @@ export function useDirectorySearch({
     loadingMore: pending && Boolean(page),
     loadRange,
     retry: () => setRequested({ key, range: { ...range } }),
-    prime: (destination: Pick<DirectorySearchOptions, "scope" | "targetId" | "query" | "sort">, page: StorageChildrenPage) => {
-      const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort, contentRevision);
-      const range = { offset: page.offset, limit: page.limit };
-      setRequested({ key, range });
-      setResult({ key, range, page });
-      setFailure(null);
-    },
+    prime,
   };
 }

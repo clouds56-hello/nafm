@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useCallback, useRef, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
@@ -85,6 +85,18 @@ function ToolbarIcon({ children }: { children: ReactNode }) {
 function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">) {
   const current = navigation.breadcrumbs.at(-1);
   const parent = navigation.breadcrumbs.at(-2);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const restoreFocus = useCallback((control: HTMLElement) => {
+    if (document.activeElement !== control) return;
+    queueMicrotask(() => {
+      if (!control.isConnected && document.activeElement === document.body) {
+        heading.current?.focus({ preventScroll: true });
+      }
+    });
+  }, []);
+  const upButton = useCallback((button: HTMLButtonElement | null) => {
+    if (button) return () => restoreFocus(button);
+  }, [restoreFocus]);
 
   return (
     <nav className="atlas-toolbar-navigation" aria-label="Folder path">
@@ -101,7 +113,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
             <ToolbarIcon><path d="M5 10h10m-4-4 4 4-4 4" /></ToolbarIcon>
           </button>
           {parent && (
-            <button className="atlas-toolbar-button" type="button" title={`Up to ${parent.name}`} aria-label={`Up to ${parent.name}`}
+            <button ref={upButton} className="atlas-toolbar-button" type="button" title={`Up to ${parent.name}`} aria-label={`Up to ${parent.name}`}
               aria-disabled={!navigation.canUp} tabIndex={navigation.canUp ? 0 : -1}
               onClick={() => { if (navigation.canUp) navigation.onUp(); }}>
               <ToolbarIcon><path d="M10 15V5m-4 4 4-4 4 4" /></ToolbarIcon>
@@ -109,7 +121,8 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
           )}
         </div>
       )}
-      <FolderBreadcrumbs breadcrumbs={navigation.breadcrumbs} siteName={navigation.siteName} onNavigate={navigation.onBreadcrumb} />
+      <FolderBreadcrumbs breadcrumbs={navigation.breadcrumbs} siteName={navigation.siteName} onNavigate={navigation.onBreadcrumb}
+        heading={heading} onTriggerRemoved={restoreFocus} />
       {current && <FolderOpenControl node={current} onOpen={navigation.onOpenFolder} />}
     </nav>
   );
