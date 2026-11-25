@@ -755,6 +755,62 @@ test.describe("compact workspace finder", () => {
     });
   }
 
+  for (const focus of ["file row", "toolbar", "inspector"] as const) {
+    test(`delayed Show in Contents ${focus === "file row" ? "hands focus to the file row" : `preserves newer ${focus} focus`}`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 620 });
+      await page.goto("/mock/");
+      await expect(currentFolder(page)).toHaveText("Studio archive");
+      await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+      await page.keyboard.press("ControlOrMeta+f");
+      const dialog = finder(page);
+      await query(dialog).fill("trailer master");
+      await result(dialog, /^Trailer master\.mov/i).filter({ hasText: mirroredTrailer }).press("Enter");
+      await expect(dialog).toBeHidden();
+      await expect(details(page)).toContainText(mirroredTrailer);
+
+      const reveal = await page.evaluateHandle(() => {
+        const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+        };
+        const invoke = bridge.invoke.bind(bridge);
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const read = { pending: false, release };
+        bridge.invoke = async (command, args) => {
+          const response = await invoke(command, args);
+          if (command === "get_storage_node_reveal") {
+            read.pending = true;
+            await gate;
+          }
+          return response;
+        };
+        return read;
+      });
+      const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+      const close = page.getByRole("button", { name: "Close inspector", exact: true });
+      const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+      const file = contents.getByRole("grid").getByRole("button", { name: /^Trailer master\.mov/ });
+      const newerFocus = focus === "toolbar" ? actions : focus === "inspector" ? close : null;
+      try {
+        await details(page).getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+        await expect.poll(() => reveal.evaluate((read) => read.pending)).toBe(true);
+        await expect(details(page).getByRole("button", { name: /Show in Contents|Finding file/ })).toBeFocused();
+        if (newerFocus) {
+          await newerFocus.evaluate((element) => element.focus({ preventScroll: true }));
+          await expect(newerFocus).toBeFocused();
+        }
+      } finally {
+        await reveal.evaluate((read) => read.release());
+      }
+
+      await expect(contents).toBeVisible();
+      await expect(file).toBeInViewport();
+      await expect(newerFocus ?? file).toBeFocused();
+      await expect(currentFolder(page)).toHaveText("Campaign mirror");
+      await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+    });
+  }
+
   test("can open and dismiss Find files from Workspace actions without losing focus", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");

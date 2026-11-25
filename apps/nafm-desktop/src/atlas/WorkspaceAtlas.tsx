@@ -373,6 +373,15 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
   const currentVisit = visit?.fileId === selected?.id && (visit?.view === "details" || visit?.contentsKey === contentsKey)
     ? visit : null;
+  const revealedEntry = revealedRow?.key === contentsKey ? revealedRow : undefined;
+  const positionPage = currentVisit?.source === "contents" && currentVisit.view === "details"
+    && !state.selectedFileUnavailable && !state.childrenLoading && !(search.enabled && search.refreshing) ? directoryPage : null;
+  const positionIndex = positionPage?.children.findIndex((entry) => entry.id === currentVisit?.fileId) ?? -1;
+  const listPosition = positionPage && positionIndex >= 0 ? {
+    index: positionPage.offset + positionIndex,
+    total: positionPage.total_children,
+    filtered: search.enabled,
+  } : undefined;
   const fileStep = useContentsFileStep(
     currentVisit?.source === "contents" && currentVisit.view === "details" && findWorkspace && siteId && folder && inspection
       ? {
@@ -938,6 +947,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 origin={inspectorOrigin}
                 onViewChange={changeInspectorView}
                 onEnterContents={setContentsFocusOrigin}
+                contentsRevealOrigin={revealedEntry?.origin}
                 onBackToContents={goBack}
                 onClose={closeInspector}
                 details={location ? (
@@ -948,6 +958,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     selected={selected}
                     fileUnavailable={state.selectedFileUnavailable}
                     announceFileChange={Boolean(fileStep)}
+                    listPosition={listPosition}
                     focusRequested={analysisFocusRequested && inspectorView === "details"}
                     onFocusHandled={finishAnalysisFocus}
                     metric={metric}
@@ -1018,7 +1029,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       reveal={contentsReveal?.key === contentsKey ? contentsReveal : undefined}
                       refreshHandler={directoryRefresh}
                       returnEntryId={currentVisit?.source === "contents" && !state.selectedFileUnavailable ? currentVisit.fileId : null}
-                      revealedEntry={revealedRow?.key === contentsKey ? revealedRow : undefined}
+                      revealedEntry={revealedEntry}
                       resumeVisibleRow={Boolean(currentVisit && (currentVisit.source === "atlas" || state.selectedFileUnavailable))}
                       contentsFocusOrigin={contentsFocusOrigin}
                       onContentsFocusHandled={finishContentsFocus}

@@ -152,6 +152,7 @@ export function useDirectorySearch({
     // Keep the scroll track and window while waiting for coverage from the new target.
     total: page?.total_children ?? 0,
     page: changingTarget ? null : page,
+    refreshing,
     error,
     loading: pending && (changingTarget || !page),
     loadingMore: pending && !changingTarget && Boolean(page),

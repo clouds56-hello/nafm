@@ -106,6 +106,59 @@ test("all six orders apply to the whole virtual directory and preserve file retu
   await expect(direction.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
 });
 
+test("compact file Details follow the current row in descending Contents and its search matches", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+  const grid = contents.getByRole("grid", { name: "Photo Library entries" });
+  const thirdRow = grid.locator('[aria-rowindex="3"] [data-entry-id]');
+  const details = inspector.getByRole("region", { name: "Storage details" });
+  const next = inspector.getByRole("button", { name: "Next file", exact: true });
+  const previous = inspector.getByRole("button", { name: "Previous file", exact: true });
+  const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+
+  await sort.click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Descending", exact: true })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
+  await expect(thirdRow).toHaveAccessibleName(/^Proof 096\.jpg/);
+  await thirdRow.press("Enter");
+  await expect(details.getByText("Item 3 of 100", { exact: true })).toBeInViewport();
+  await expect(previous).toBeDisabled(); // The two preceding entries are folders.
+  await back.press("Enter");
+  await expect(thirdRow).toBeFocused();
+
+  const query = "  pRoOf  ";
+  await contents.getByRole("button", { name: "Search this folder" }).press("Enter");
+  const search = contents.getByLabel("Find in folder", { exact: true });
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(thirdRow).toHaveAccessibleName(/^Proof 094\.jpg/);
+  await thirdRow.press("Enter");
+  const title = details.locator('header[aria-live="polite"][aria-atomic="true"]');
+  await expect(title.getByText("Match 3 of 96", { exact: true })).toBeInViewport();
+  await expect(title.getByRole("heading", { name: "Proof 094.jpg" })).toBeVisible();
+  await next.press("Enter");
+  await expect(next).toBeFocused();
+  await expect(title.getByText("Match 4 of 96", { exact: true })).toBeInViewport();
+  await expect(title.getByRole("heading", { name: "Proof 093.jpg" })).toBeVisible();
+  await expect(details.getByText("Verification", { exact: true })).toBeInViewport({ ratio: 1 });
+  await previous.press("Enter");
+  await expect(previous).toBeFocused();
+  await expect(title.getByText("Match 3 of 96", { exact: true })).toBeInViewport();
+  await expect(title.getByRole("heading", { name: "Proof 094.jpg" })).toBeVisible();
+  await back.press("Enter");
+  await expect(thirdRow).toBeFocused();
+  await expect(search).toHaveValue(query);
+  await expect(sort).toHaveAttribute("title", "Name, descending");
+});
+
 test("keyboard selections in both groups survive an earlier sort finishing late", async ({ page }) => {
   await page.goto("/mock/");
   await page.getByRole("button", { name: "Contents & details" }).click();

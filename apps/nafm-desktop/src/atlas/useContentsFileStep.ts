@@ -8,11 +8,18 @@ interface FileStepContext {
   revision: number;
 }
 
-interface FileStepState {
+interface FileStepScope {
   owner: object;
   key: string;
+}
+
+interface PendingFileStep extends FileStepScope {
+  request: DirectoryAdjacentFileRequest;
+}
+
+interface FileStepFeedback extends FileStepScope {
+  revision: number;
   boundaries: Partial<Record<DirectoryFileDirection, true>>;
-  pending: DirectoryFileDirection | null;
   status: string;
 }
 
@@ -36,20 +43,69 @@ export function useContentsFileStep(
   blocked: boolean,
   onFound: (result: DirectoryAdjacentFile) => void,
 ) {
-  const [state, setState] = useState<FileStepState | null>(null);
-  const inFlight = useRef<AbortController | null>(null);
+  const [pending, setPending] = useState<PendingFileStep | null>(null);
+  const [feedback, setFeedback] = useState<FileStepFeedback | null>(null);
+  const publishResult = useRef(onFound);
   const owner = context?.owner;
-  const key = context ? JSON.stringify([context.request, context.revision]) : null;
+  const key = context ? JSON.stringify(context.request) : null;
+  const revision = context?.revision;
+  const activeStep = !blocked && pending && pending.owner === owner && pending.key === key ? pending : null;
+
   useLayoutEffect(() => {
-    setState(null);
-    return () => {
-      inFlight.current?.abort();
-      inFlight.current = null;
+    publishResult.current = onFound;
+  }, [onFound]);
+
+  useLayoutEffect(() => {
+    setFeedback(null);
+  }, [blocked, key, owner, revision]);
+
+  useLayoutEffect(() => {
+    if (!activeStep || revision === undefined) {
+      if (pending) setPending(null);
+      return;
+    }
+    // Re-read on the latest inventory while the original file review still owns the step.
+    const { owner, key, request } = activeStep;
+    const direction = request.direction;
+    const controller = new AbortController();
+
+    const report = (status: string, atBoundary = false) => {
+      setFeedback((previous) => {
+        const boundaries = previous?.owner === owner && previous.key === key && previous.revision === revision
+          ? previous.boundaries : {};
+        return {
+          owner, key, revision,
+          status, boundaries: atBoundary ? { ...boundaries, [direction]: true } : boundaries,
+        };
+      });
     };
-  }, [blocked, key, owner]);
+
+    async function read() {
+      try {
+        const result = await getAdjacentStorageFile(request, 64);
+        if (controller.signal.aborted) return;
+        if (result) {
+          publishResult.current(result);
+          setFeedback(null);
+        } else {
+          report(`No ${direction} file in this list.`, true);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        report(`Couldn’t find the ${direction} file. ${detail}`);
+      } finally {
+        if (!controller.signal.aborted) setPending(null);
+      }
+    }
+
+    void read();
+    return () => controller.abort();
+  }, [activeStep, pending, revision]);
 
   if (!context || !key) return undefined;
-  const saved = state?.owner === context.owner && state.key === key && !blocked ? state : null;
+  const saved = !blocked && feedback && feedback.owner === owner && feedback.key === key && feedback.revision === revision
+    ? feedback : null;
   const candidates = {
     previous: adjacentInPage(page, context.request.child_id, "previous"),
     next: adjacentInPage(page, context.request.child_id, "next"),
@@ -57,45 +113,23 @@ export function useContentsFileStep(
   const canStep = (direction: DirectoryFileDirection) =>
     !blocked && candidates[direction] !== null && !saved?.boundaries[direction];
 
-  async function step(direction: DirectoryFileDirection) {
-    if (!context || !key || !canStep(direction) || inFlight.current) return;
+  function step(direction: DirectoryFileDirection) {
+    if (!context || !key || !canStep(direction) || activeStep) return;
     const candidate = candidates[direction];
     if (candidate) {
-      setState(null);
+      setFeedback(null);
       onFound(candidate);
       return;
     }
-    const controller = new AbortController();
-    inFlight.current = controller;
-    const scoped = { owner: context.owner, key, boundaries: saved?.boundaries ?? {} };
-    setState({ ...scoped, pending: direction, status: `Finding the ${direction} file…` });
-    try {
-      const result = await getAdjacentStorageFile({ ...context.request, direction }, 64);
-      if (controller.signal.aborted) return;
-      if (result) {
-        setState(null);
-        onFound(result);
-      } else {
-        setState({
-          ...scoped, boundaries: { ...scoped.boundaries, [direction]: true },
-          pending: null, status: `No ${direction} file in this list.`,
-        });
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        const detail = error instanceof Error ? error.message : String(error);
-        setState({ ...scoped, pending: null, status: `Couldn’t find the ${direction} file. ${detail}` });
-      }
-    } finally {
-      if (inFlight.current === controller) inFlight.current = null;
-    }
+    setPending((scheduled) => scheduled ?? { owner: context.owner, key, request: { ...context.request, direction } });
   }
 
+  const pendingDirection = activeStep?.request.direction ?? null;
   return {
     previous: canStep("previous"),
     next: canStep("next"),
-    pending: saved?.pending ?? null,
-    status: saved?.status ?? "",
-    onStep: (direction: DirectoryFileDirection) => void step(direction),
+    pending: pendingDirection,
+    status: pendingDirection ? `Finding the ${pendingDirection} file…` : saved?.status ?? "",
+    onStep: step,
   };
 }

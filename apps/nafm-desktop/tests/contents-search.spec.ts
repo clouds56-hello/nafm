@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { DirectorySort, StorageChildrenPage } from "../src/lib/types";
+import type { DirectoryAdjacentFileRequest, DirectorySort, StorageChildrenPage } from "../src/lib/types";
 
 function currentFolder(page: Page) {
   return page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
@@ -338,6 +338,120 @@ for (const leaveEarly of [false, true]) {
     }
   });
 }
+
+test("a scan refresh revalidates a pending Next file at a filtered page boundary", async ({ page }) => {
+  const contents = await openPhotoLibrary(page, "large");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await sortByName(page, contents, "Ascending");
+  await searchButton(contents).press("Enter");
+  const query = "  pRoOf  ";
+  const search = searchInput(contents);
+  await search.fill(query);
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Proof 001\.jpg/);
+
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const gate = () => {
+      let release!: () => void;
+      const wait = new Promise<void>((resolve) => { release = resolve; });
+      return { wait, release };
+    };
+    const publish = gate();
+    const finish = gate();
+    const windows = gate();
+    const steps = [gate(), gate()];
+    const state = {
+      scanWaiting: false, published: false, requests: [] as DirectoryAdjacentFileRequest[],
+      replied: [] as number[], publish: publish.release,
+      releaseStep: (index: number) => steps[index].release(),
+      releaseAll: () => {
+        publish.release();
+        finish.release();
+        windows.release();
+        steps.forEach(({ release }) => release());
+      },
+    };
+    bridge.invoke = async (command, args) => {
+      if (command === "plugin:event|emit" && args.event === "task://scan/events") {
+        const event = args.payload as { site_id: string | null; kind: string; phase: string | null };
+        if (event.site_id === "field-drive") {
+          if (event.kind === "progress" && (event.phase === "hashing" || event.phase === "finalizing")) {
+            state.scanWaiting = true;
+            await publish.wait;
+            state.published = true;
+          } else if (event.kind === "completed") {
+            await finish.wait;
+          }
+        }
+      }
+      if (command === "get_storage_children" && args.query === "pRoOf" && !state.published) {
+        const response = await invoke(command, args);
+        await windows.wait;
+        return response;
+      }
+      if (command === "get_adjacent_storage_file") {
+        const index = state.requests.push(args.request as DirectoryAdjacentFileRequest) - 1;
+        const response = await invoke(command, args);
+        await steps[index]?.wait;
+        state.replied.push(index);
+        return response;
+      }
+      return invoke(command, args);
+    };
+    return state;
+  });
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const detailsName = (name: string) => inspector.getByRole("heading", { name, exact: true });
+  const next = inspector.getByRole("button", { name: "Next file", exact: true });
+  const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+  const pending = inspector.getByText("Finding the next file…", { exact: true });
+  const startingFile = entry(contents, /^Proof 064\.jpg/);
+  try {
+    await contents.evaluate((pane) => {
+      const grid = pane.querySelector('[role="grid"]')!;
+      const rowHeight = Number.parseFloat(getComputedStyle(grid).getPropertyValue("--directory-row-height"));
+      pane.scrollTop = 57 * rowHeight;
+    });
+    await expect(startingFile).toBeInViewport();
+    await startingFile.press("Enter");
+    await expect(detailsName("Proof 064.jpg")).toBeVisible();
+    await sites.getByRole("button", { name: "Scan Field drive", exact: true }).click();
+    await next.press("Enter");
+    await expect(pending).toBeVisible();
+    await expect.poll(() => reads.evaluate(({ requests }) => requests.length)).toBe(1);
+    await expect.poll(() => reads.evaluate(({ scanWaiting }) => scanWaiting)).toBe(true);
+    await reads.evaluate(({ publish }) => publish());
+    await expect.poll(() => reads.evaluate(({ requests }) => requests.length)).toBe(2);
+    const requests = await reads.evaluate(({ requests }) => requests);
+    expect(requests).toEqual([
+      expect.objectContaining({ query: "pRoOf", sort: { field: "name", direction: "asc" }, direction: "next" }),
+      requests[0],
+    ]);
+    await expect(next).toBeFocused();
+    await back.focus();
+    await reads.evaluate(({ releaseStep }) => releaseStep(0));
+    await expect.poll(() => reads.evaluate(({ replied }) => replied)).toEqual([0]);
+    await expect(detailsName("Proof 064.jpg")).toBeVisible();
+    await expect(next).toHaveAttribute("aria-busy", "true");
+
+    await reads.evaluate(({ releaseStep }) => releaseStep(1));
+    await expect(detailsName("Proof 065.jpg")).toBeVisible();
+    await expect(back).toBeFocused();
+    await back.press("Enter");
+    const returned = entry(contents, /^Proof 065\.jpg/);
+    await expect(returned).toBeFocused();
+    await expect(returned).toBeInViewport({ ratio: 0.98 });
+    await expect(search).toHaveValue(query);
+  } finally {
+    await reads.evaluate(({ releaseAll }) => releaseAll());
+  }
+});
 
 test("unfiltered file review uses the next window without adding a folder visit", async ({ page }) => {
   await page.goto("/mock/");

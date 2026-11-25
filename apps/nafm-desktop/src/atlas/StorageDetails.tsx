@@ -14,6 +14,7 @@ interface StorageDetailsProps {
   selected: StorageNode | null;
   fileUnavailable: boolean;
   announceFileChange?: boolean;
+  listPosition?: { index: number; total: number; filtered: boolean };
   focusRequested: boolean;
   onFocusHandled: () => void;
   metric: HealthMetric | null;
@@ -53,7 +54,7 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  location, entries, selected, fileUnavailable, announceFileChange, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
+  location, entries, selected, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
   returnAction, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
@@ -87,16 +88,18 @@ export function StorageDetails({
   const verification = verificationStatus(node);
   const space = nodeHealthPresentation(node, "space_health");
   const coverage = nodeHealthPresentation(node, "coverage_health", targetCompleteness);
-  const heading = node.kind === "file" ? "Selected file"
+  const heading = listPosition
+    ? `${listPosition.filtered ? "Match" : "Item"} ${formatCount(listPosition.index + 1)} of ${formatCount(listPosition.total)}`
+    : node.kind === "file" ? "Selected file"
     : node.kind === "smaller_items" ? "Grouped entries"
     : node.kind === "site" ? "Current source" : "Current folder";
 
   return (
     <section className="atlas-readout" aria-label="Storage details" ref={panelRef} tabIndex={-1}>
-      <header className="atlas-readout-heading">
+      <header className="atlas-readout-heading" aria-live={announceFileChange ? "polite" : undefined} aria-atomic={announceFileChange || undefined}>
         <p className="atlas-kicker">{heading}</p>
         <div className="atlas-readout-title">
-          <h2 aria-live={announceFileChange ? "polite" : undefined}>{node.name}</h2>
+          <h2>{node.name}</h2>
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
         </div>
       </header>
@@ -116,7 +119,10 @@ export function StorageDetails({
               className="atlas-text-button atlas-detail-action" type="button"
               ref={removableAction}
               aria-disabled={revealing || undefined} aria-busy={revealing || undefined}
-              onClick={onShowInContents}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                onShowInContents();
+              }}
             >
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M1.5 5.5v-2a1 1 0 0 1 1-1h3.7l1.7 2h5.6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM5 9h6m-2-2 2 2-2 2" />

@@ -28,6 +28,7 @@ interface AtlasInspectorProps {
   origin: RefObject<SVGGElement | null>;
   onViewChange: (view: InspectorView) => void;
   onEnterContents: (tab: HTMLButtonElement) => void;
+  contentsRevealOrigin?: Element | null;
   onBackToContents: () => void;
   onClose: () => void;
   contents: ReactNode;
@@ -41,7 +42,7 @@ const tabs = [
 
 export function AtlasInspector({
   view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, folderName, detailsKey, origin,
-  onViewChange, onEnterContents, onBackToContents, onClose, contents, details,
+  onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
   const drawer = useRef<HTMLElement>(null);
@@ -86,8 +87,11 @@ export function AtlasInspector({
     const inspectionHistory = previous.screen && screen && !inspectingFile && previous.inspection !== inspection;
     const restoringFile = screen === "file" && previous.inspection !== inspection && !openedHere;
     const leavingFile = previous.screen === "file" && screen === "contents" && previous.inspection !== inspection;
+    const movedDuringReveal = screen === "contents" && contentsRevealOrigin && active && active !== document.body
+      && active !== contentsRevealOrigin && !detailsPane.current?.contains(active);
     if ((previous.screen === screen && !changedFile)
       || inspectionHistory
+      || movedDuringReveal
       || (focusedOutside && (previous.siteId !== siteId || restoringFile || leavingFile))) return;
     if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
@@ -102,7 +106,7 @@ export function AtlasInspector({
       }
       origin.current = null;
     }
-  }, [screen, siteId, inspection, openedFile, detailsKey, origin, canStepFiles, onEnterContents]);
+  }, [screen, siteId, inspection, openedFile, detailsKey, origin, canStepFiles, onEnterContents, contentsRevealOrigin]);
 
   if (!view) {
     return (
