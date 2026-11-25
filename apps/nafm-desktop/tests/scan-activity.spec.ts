@@ -22,12 +22,12 @@ async function openProjects(page: Page) {
   await expect(currentFolder(page)).toHaveText("Projects");
 }
 
-async function openMock(page: Page, scenario = "") {
+async function openMock(page: Page, scenario = "", initialSite = studio) {
   // Advance background scans explicitly so they cannot finish during assertions about active requests.
   await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
   await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
   await page.goto(scenario ? `/mock/?scenario=${scenario}` : "/mock/");
-  await expect(currentFolder(page)).toHaveText(studio);
+  await expect(currentFolder(page)).toHaveText(initialSite);
 }
 
 async function addSurveySite(page: Page) {
@@ -169,6 +169,34 @@ for (const { surface, hashing, status, action } of [
   });
 }
 
+for (const moveFocus of [false, true]) {
+  test(`the first map arrives after verification and ${moveFocus ? "leaves focus outside the map" : "hands focus to its first folder"}`, async ({ page }) => {
+    await openMock(page, "first-inventory", "Survey archive");
+    const figure = page.getByRole("figure");
+    await figure.getByRole("button", { name: "Scan this site" }).press("Enter");
+    const stop = figure.getByRole("button", { name: "Stop scan", exact: true });
+    await expect(stop).toBeFocused();
+
+    await page.clock.runFor(2_850);
+    const loading = figure.getByRole("status").filter({ hasText: "Loading map" });
+    await expect(loading).toBeVisible();
+    await expect(figure.getByText("Verifying files", { exact: true })).toBeVisible();
+    await expect(figure.getByText(/^\d+ \/ \d+ files$/)).toBeVisible();
+    await expect(stop).toBeEnabled();
+    const folder = figure.getByRole("button", { name: /^Survey archive, Local volume,/ });
+    await expect(folder).toHaveCount(0);
+
+    await page.clock.runFor(2_900);
+    await expect(stop).toHaveCount(0);
+    await expect(loading).toBeFocused();
+    if (moveFocus) await activityTrigger(page).focus();
+    await page.clock.runFor(2_000);
+    await expect(page.getByRole("status").filter({ hasText: "Map ready to browse." })).toHaveCount(1);
+    await expect(folder).toBeVisible();
+    await expect(moveFocus ? activityTrigger(page) : folder).toBeFocused();
+  });
+}
+
 test("stopping the first verification keeps its inventory browsable", async ({ page }) => {
   await openMock(page);
   await addSurveySite(page);
@@ -176,6 +204,7 @@ test("stopping the first verification keeps its inventory browsable", async ({ p
   await figure.getByRole("button", { name: "Scan this site", exact: true }).press("Enter");
   await expect(figure.getByText("Finding files", { exact: true })).toBeVisible();
   await page.clock.runFor(2_800);
+  await expect(page.getByRole("status").filter({ hasText: "Map ready to browse." })).toHaveCount(1);
   await figure.getByRole("button", { name: /^Drone imagery,/ }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Drone imagery");
 

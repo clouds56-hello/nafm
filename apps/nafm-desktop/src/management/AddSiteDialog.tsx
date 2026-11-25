@@ -17,6 +17,7 @@ export function AddSiteDialog({ workspaceName, remotePathMappings, blocked, onMu
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -85,13 +86,19 @@ export function AddSiteDialog({ workspaceName, remotePathMappings, blocked, onMu
           <Field label="Site name">
             <input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" disabled={disabled} />
           </Field>
-          <SiteRootFields root={root} disabled={disabled} onBusyChange={setChoosingOrConnecting} onMutation={(result) => onMutation(result)} />
+          <SiteRootFields
+            root={root}
+            disabled={disabled}
+            onBusyChange={setChoosingOrConnecting}
+            onMutation={(result) => onMutation(result)}
+            onConnectionReady={() => (name.trim() ? addRef : nameRef).current?.focus()}
+          />
           {blocked && <p className="management-form-warning" role="status">Finish active scans to add a site.</p>}
           {error && <p ref={errorRef} className="management-form-error" role="alert" tabIndex={-1}>{error}</p>}
         </div>
         <footer className="add-site-actions">
           <button type="button" className="ghost-button" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="submit" className="primary-button" disabled={!ready}>{saving ? "Adding…" : "Add site"}</button>
+          <button ref={addRef} type="submit" className="primary-button" disabled={!ready}>{saving ? "Adding…" : "Add site"}</button>
         </footer>
       </form>
     </dialog>

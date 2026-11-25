@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { parseSmbLocation, smbRootContains } from "../lib/smb";
 import { connectSmb, matchSmbConnection } from "../lib/tauri";
 import type { HiddenPolicy, ManagementMutationResult, RemotePathMapping, SavedConnection, SiteKind } from "../lib/types";
@@ -16,44 +16,54 @@ function smbLocation(path: string) {
 
 export function useSiteRoot(mappings: RemotePathMapping[]) {
   const [kind, setKind] = useState<SiteKind>("local");
-  const [path, setPath] = useState("");
+  const [localPath, setLocalPath] = useState("");
+  const [smbPath, setSmbPath] = useState("");
+  const path = kind === "local" ? localPath : smbPath;
   const [hiddenPolicy, setHiddenPolicy] = useState<HiddenPolicy>("include");
   const [match, setMatch] = useState<{ url: string; connection: SavedConnection | null } | null>(null);
-  const request = useRef(0);
   const location = path.trim();
+  const smbPrefix = /^smb:\/\//i.test(location);
   const smb = kind === "smb" ? smbLocation(location) : null;
   const remoteMappingAvailable = smb !== null && mappings.some((mapping) => smbRootContains(mapping.smb_root, smb));
   const needsMatch = smb !== null && !remoteMappingAvailable;
   const savedConnection = needsMatch && match?.url === location ? match.connection : null;
   const checkingConnection = needsMatch && match?.url !== location;
 
-  const checkConnection = useCallback(async (url: string) => {
-    const id = ++request.current;
-    const connection = await matchSmbConnection(url).catch(() => null);
-    if (id === request.current) setMatch({ url, connection });
-    return connection;
-  }, []);
-
   useEffect(() => {
     setMatch(null);
     if (!needsMatch) return;
-    const timer = window.setTimeout(() => void checkConnection(location), 140);
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      const connection = await matchSmbConnection(location).catch(() => null);
+      if (active) setMatch({ url: location, connection });
+    }, 140);
     return () => {
       window.clearTimeout(timer);
-      request.current++;
+      active = false;
     };
-  }, [needsMatch, location, checkConnection]);
+  }, [needsMatch, location]);
 
-  const pathHint = kind === "local" && location.includes("://")
-    ? "Choose SMB share for a network URL."
-    : kind === "smb" && location && !smb
-      ? "Enter an SMB URL in the form smb://server/share."
-      : null;
+  function chooseKind(next: SiteKind) {
+    if (next === "smb" && kind === "local" && smbPrefix) {
+      setSmbPath(location);
+      setLocalPath("");
+    }
+    setKind(next);
+  }
+
+  let pathHint: string | null = null;
+  if (kind === "local" && location.includes("://")) {
+    pathHint = smbPrefix ? "Choose SMB share for a network URL." : "Enter a folder path or choose SMB share for an smb:// address.";
+  } else if (kind === "smb" && location && !smb) {
+    pathHint = "Enter an SMB URL in the form smb://server/share.";
+  }
 
   return {
-    kind, path, hiddenPolicy, setPath, setHiddenPolicy,
-    setKind: (next: SiteKind) => { setKind(next); setPath(""); },
-    validSmbUrl: smb !== null, remoteMappingAvailable, savedConnection, checkingConnection, checkConnection, pathHint,
+    kind, path, hiddenPolicy, setPath: kind === "local" ? setLocalPath : setSmbPath, setHiddenPolicy,
+    setKind: chooseKind, validSmbUrl: smb !== null, remoteMappingAvailable, savedConnection, checkingConnection, pathHint,
+    rememberConnection: (username: string) => {
+      if (smb) setMatch({ url: location, connection: { url: smb.normalized_url, username } });
+    },
     ready: Boolean(location && !pathHint && (kind === "local" || remoteMappingAvailable || savedConnection)),
   };
 }
@@ -63,8 +73,10 @@ interface SmbConnectionFieldsProps {
   saved: SavedConnection | null;
   checking: boolean;
   disabled: boolean;
-  onMutation: (result: ManagementMutationResult) => void;
-  onConnected: (url: string) => Promise<SavedConnection | null>;
+  username: string;
+  onUsernameChange: (username: string | null) => void;
+  onConnected: (result: ManagementMutationResult, username: string) => void;
+  onConnectionReady: () => void;
   onBusyChange: (busy: boolean) => void;
 }
 
@@ -73,22 +85,31 @@ function SmbConnectionFields({
   saved,
   checking,
   disabled,
-  onMutation,
+  username,
+  onUsernameChange,
   onConnected,
+  onConnectionReady,
   onBusyChange,
 }: SmbConnectionFieldsProps) {
   const [editing, setEditing] = useState(false);
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setEditing(false);
-    setUsername(saved?.username ?? "");
-    setPassword("");
-    setError(null);
-  }, [saved?.url, saved?.username, url]);
+  const errorId = useId();
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const focusAfterSubmit = useRef(false);
+
+  useLayoutEffect(() => {
+    if (editing) passwordRef.current?.focus();
+  }, [editing]);
+
+  useLayoutEffect(() => {
+    if (!focusAfterSubmit.current || disabled || busy) return;
+    focusAfterSubmit.current = false;
+    if (error) passwordRef.current?.focus();
+    else onConnectionReady();
+  }, [busy, disabled, error, editing, onConnectionReady]);
 
   async function submit() {
     if (disabled || busy || !url.trim() || !username.trim() || !password) return;
@@ -99,11 +120,11 @@ function SmbConnectionFields({
       const next = await connectSmb(url.trim(), username.trim(), password);
       setPassword("");
       setEditing(false);
-      onMutation(next);
-      await onConnected(url.trim());
+      onConnected(next, username.trim());
     } catch (connectionError) {
       setError(errorMessage(connectionError));
     } finally {
+      focusAfterSubmit.current = true;
       setBusy(false);
       onBusyChange(false);
     }
@@ -131,6 +152,7 @@ function SmbConnectionFields({
   return (
     <div
       className="inline-connection-form"
+      onChange={() => setError(null)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" || !(event.target instanceof HTMLInputElement)) return;
         event.preventDefault();
@@ -143,15 +165,21 @@ function SmbConnectionFields({
       </div>
       <div className="management-form-grid two-columns">
         <Field label="Username">
-          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={disabled || busy} />
+          <input value={username} onChange={(event) => onUsernameChange(event.target.value)} autoComplete="username" disabled={disabled || busy} />
         </Field>
         <Field label="Password">
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" disabled={disabled || busy} />
+          <input ref={passwordRef} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" aria-describedby={error ? errorId : undefined} disabled={disabled || busy} />
         </Field>
       </div>
-      {error && <p className="management-form-error" role="alert">{error}</p>}
+      {error && <p id={errorId} className="management-form-error" role="alert">{error}</p>}
       <div className="management-form-actions compact-actions">
-        {saved && <button className="ghost-button" type="button" onClick={() => setEditing(false)} disabled={disabled || busy}>Keep saved connection</button>}
+        {saved && <button className="ghost-button" type="button" onClick={() => {
+          setPassword("");
+          setError(null);
+          onUsernameChange(null);
+          focusAfterSubmit.current = true;
+          setEditing(false);
+        }} disabled={disabled || busy}>Keep saved connection</button>}
         <button
           className="secondary-button"
           type="button"
@@ -170,13 +198,16 @@ interface SiteRootFieldsProps {
   disabled: boolean;
   onBusyChange: (busy: boolean) => void;
   onMutation: (result: ManagementMutationResult) => void;
+  onConnectionReady: () => void;
 }
 
-export function SiteRootFields({ root, disabled, onBusyChange, onMutation }: SiteRootFieldsProps) {
+export function SiteRootFields({ root, disabled, onBusyChange, onMutation, onConnectionReady }: SiteRootFieldsProps) {
   const folderInputId = useId();
   const hintId = useId();
   const [checkedPath, setCheckedPath] = useState("");
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const [userDraft, setUserDraft] = useState<{ url: string; username: string } | null>(null);
+  const url = root.path.trim();
   const pathHint = checkedPath === root.path ? root.pathHint : null;
   const locationInput = {
     value: root.path,
@@ -235,12 +266,19 @@ export function SiteRootFields({ root, disabled, onBusyChange, onMutation }: Sit
             </div>
           ) : root.validSmbUrl ? (
             <SmbConnectionFields
-              url={root.path}
+              key={url}
+              url={url}
+              username={userDraft?.url === url ? userDraft.username : root.savedConnection?.username ?? ""}
+              onUsernameChange={(username) => setUserDraft(username === null ? null : { url, username })}
               saved={root.savedConnection}
               checking={root.checkingConnection}
               disabled={disabled}
-              onMutation={onMutation}
-              onConnected={root.checkConnection}
+              onConnected={(result, username) => {
+                root.rememberConnection(username);
+                setUserDraft(null);
+                onMutation(result);
+              }}
+              onConnectionReady={onConnectionReady}
               onBusyChange={onBusyChange}
             />
           ) : null}

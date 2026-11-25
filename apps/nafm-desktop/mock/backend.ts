@@ -101,6 +101,8 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   let nextRequest = 1;
   const management = createManagementApi(scenario, () => scans.size > 0);
   const storage = createStorageApi(management.current);
+  const slowInventorySite = scenario === "first-inventory" ? management.current().sites.keys().next().value : undefined;
+  let inventoryVisibleAt: number | undefined;
   let interruptWorkspaceSwitch = scenario === "workspace-recovery";
   const interruptedReads = new Map<string, "interrupt" | "recover">(scenario === "recovery" ? [
     ["site_folder:studio-archive:0", "interrupt"],
@@ -270,6 +272,12 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     get_storage_children: storage.children,
     async get_storage_view_snapshot(args) {
       const snapshot = storage.snapshot(args);
+      if (snapshot.location.site_id === slowInventorySite && snapshot.tree.root.file_count > 0) {
+        // Hold the first published rows through verification and the scan's completion.
+        inventoryVisibleAt ??= Date.now() + 4_000;
+        const remaining = inventoryVisibleAt - Date.now();
+        if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+      }
       const folderId = snapshot.location.root.id;
       const read = interruptedReads.get(folderId);
       if (!read) return snapshot;

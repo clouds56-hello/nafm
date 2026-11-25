@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefCallback, type RefObject } from "react";
 import { formatBytes, formatCount, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, healthAriaDescription, isPerfectHealth, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
@@ -41,27 +41,35 @@ export function RadialAtlas(props: RadialAtlasProps) {
   const plot = useRef<HTMLElement>(null);
   const lastControl = useRef<Element | null>(null);
   const [tabStops, setTabStops] = useState(() => new Map<string, string>());
-
   const previousRoot = useRef(props.root.id);
   const awaitingInventory = Boolean(props.firstScan);
+  const waitingAfterScan = props.firstScan?.inventoryLoading && props.firstScan.requestId === undefined;
+  const trackScanFocus = useCallback((control: HTMLElement | null) => {
+    if (!control) return;
+    return () => {
+      if (control === document.activeElement) lastControl.current = control;
+      else if (lastControl.current === control) lastControl.current = null;
+    };
+  }, []);
 
   useLayoutEffect(() => {
-    // The old arc was unmounted. On return, resume at the folder we just left.
     if (lastControl.current && !lastControl.current.isConnected && document.activeElement === document.body) {
+      const waiting = waitingAfterScan ? plot.current?.querySelector<HTMLElement>(".radial-atlas__scan-status") : null;
       const returning = plot.current?.querySelector<SVGGElement>(`[data-node-id="${CSS.escape(previousRoot.current)}"]`);
       const tabStop = plot.current?.querySelector<SVGGElement>('.radial-atlas__sector[tabindex="0"]');
       const up = plot.current?.querySelector<HTMLButtonElement>(".radial-atlas__up:enabled");
-      (returning ?? tabStop ?? up ?? plot.current)?.focus({ preventScroll: true });
+      (waiting ?? returning ?? tabStop ?? up ?? plot.current)?.focus({ preventScroll: true });
     }
     previousRoot.current = props.root.id;
     lastControl.current = null;
-  }, [props.root.id, awaitingInventory]);
+  }, [props.root.id, awaitingInventory, waitingAfterScan]);
 
   return (
     <RadialPlot
       key={props.root.id}
       {...props}
       plotRef={plot}
+      trackScanFocus={trackScanFocus}
       rememberedSectorId={tabStops.get(props.root.id)}
       onSectorFocus={(id) => setTabStops((saved) => (
         saved.get(props.root.id) === id ? saved : new Map(saved).set(props.root.id, id)
@@ -73,6 +81,7 @@ export function RadialAtlas(props: RadialAtlasProps) {
 
 interface RadialPlotProps extends RadialAtlasProps {
   plotRef: RefObject<HTMLElement | null>;
+  trackScanFocus: RefCallback<HTMLElement>;
   rememberedSectorId?: string;
   onSectorFocus: (id: string) => void;
   onNavigateWithFocus: (control: Element | null) => void;
@@ -80,7 +89,7 @@ interface RadialPlotProps extends RadialAtlasProps {
 
 function RadialPlot({
   root, parentName, canGoUp, onGoUp, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef,
-  rememberedSectorId, onSectorFocus, onNavigateWithFocus,
+  rememberedSectorId, onSectorFocus, onNavigateWithFocus, trackScanFocus,
 }: RadialPlotProps) {
   const descriptionId = useId();
   const gradientId = useId();
@@ -89,6 +98,8 @@ function RadialPlot({
   const pointing = useRef<string | null>(null);
   const up = useRef<HTMLButtonElement>(null);
   const awaitingInventory = Boolean(firstScan);
+  const wasAwaitingInventory = useRef(awaitingInventory);
+  const [announcement, setAnnouncement] = useState<string | null>(awaitingInventory ? "" : null);
   const sectors = useMemo(() => awaitingInventory
     ? []
     : branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2), [root, awaitingInventory]);
@@ -113,6 +124,14 @@ function RadialPlot({
   const unit = formattedSize.slice(unitStart + 1);
   const scoreText = rootScore && formatHealthScore(rootScore);
   const hasCompactEvidence = root.file_count > 0 && metric === "coverage_health" && rootScore?.state === "partial";
+
+  useEffect(() => {
+    if (awaitingInventory) setAnnouncement("");
+    else if (wasAwaitingInventory.current) {
+      setAnnouncement(root.file_count ? "Map ready to browse." : "Inventory ready. No files found.");
+    }
+    wasAwaitingInventory.current = awaitingInventory;
+  }, [awaitingInventory, root.file_count]);
 
   useLayoutEffect(() => {
     if (touchPreviewId) touchPreviewSlot.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -216,6 +235,7 @@ function RadialPlot({
 
   return (
     <>
+      {announcement !== null && <span className="radial-atlas__sr-only" role="status">{announcement}</span>}
       <div className="radial-atlas-stage">
         <figure
           ref={plotRef}
@@ -227,7 +247,7 @@ function RadialPlot({
           onPointerDownCapture={() => onNavigateWithFocus(null)}
         >
           <figcaption id={descriptionId} className="radial-atlas__sr-only">
-            {labelFor(root)}. {awaitingInventory ? "Awaiting first inventory." : (
+            {labelFor(root)}. {awaitingInventory ? "Waiting for the first map." : (
               <>{formatBytes(root.total_bytes)}, {formatCount(root.file_count)} {root.file_count === 1 ? "file" : "files"}.
                 {rootScore && ` ${healthAriaDescription(rootScore, metric === "coverage_health" ? "coverage" : "space", root.file_count > 0)}.`}
               </>
@@ -325,7 +345,7 @@ function RadialPlot({
             })}
           </svg>
           <div className="radial-atlas__reading">
-            {firstScan ? <FirstScanCenter name={labelFor(root)} scan={firstScan} /> : (
+            {firstScan ? <FirstScanCenter name={labelFor(root)} scan={firstScan} trackFocus={trackScanFocus} /> : (
               <>
                 <span aria-hidden="true" className="radial-atlas__kind" data-metric={metric ?? undefined} style={{ color: rootScore?.color }}>
                   {rootScore ? metricLabel : kindLabel(root)}

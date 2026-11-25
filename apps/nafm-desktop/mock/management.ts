@@ -20,11 +20,12 @@ function successfulCheck(stage: string, message: string): SetupCheck {
 }
 
 export function createManagementApi(scenario: PreviewScenario, scanning: () => boolean) {
-  let active = makeWorkspace(PREVIEW_WORKSPACE, scenario);
+  const startsEmpty = scenario === "empty" || scenario === "first-inventory";
+  let active = makeWorkspace(PREVIEW_WORKSPACE, startsEmpty ? "empty" : scenario);
   const archive = makeWorkspace("Field notes", "empty");
   const workspaces = new Map([[active.name, active], [archive.name, archive]]);
   const connections = new Map<string, SavedConnection>();
-  if (scenario !== "empty") {
+  if (!startsEmpty) {
     connections.set(DEMO_SHARE, { url: DEMO_SHARE, username: "sample-reader" });
     active.machines.set("sample-studio-agent", {
       id: "sample-studio-agent", name: "Studio server", ssh_target: "studio.example.test",
@@ -248,6 +249,10 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
     const prefix = typeof args.path === "string" ? args.path : "";
     const paths = ["/srv/media/", "/srv/media/Studio/", "/srv/media/Studio/Projects/", "/srv/media/Archive/", "/mnt/team/"];
     return { paths: paths.filter((path) => path.startsWith(prefix) && path !== prefix), truncated: false };
+  }
+
+  if (scenario === "first-inventory") {
+    createSite({ workspaceName: PREVIEW_WORKSPACE, name: "Survey archive", folderPath: "/demo/Survey archive" });
   }
 
   return {

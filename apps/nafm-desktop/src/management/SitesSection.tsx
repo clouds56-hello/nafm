@@ -1,4 +1,4 @@
-import { type FormEvent, type MouseEvent, useEffect, useState } from "react";
+import { type FormEvent, type MouseEvent, useEffect, useRef, useState } from "react";
 import { addSiteFolder, removeSite, removeSiteFolder, renameSite } from "../lib/tauri";
 import type { ManagedSite, ManagementMutationResult, ManagementSnapshot, RemotePathMapping } from "../lib/types";
 import { formatBytes, formatCount, formatRelativeTime } from "../lib/format";
@@ -18,6 +18,7 @@ function AddRootForm({ site, workspaceName, remotePathMappings, busy, setBusy, o
   onCancel: () => void;
 }) {
   const root = useSiteRoot(remotePathMappings);
+  const addRef = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
@@ -43,9 +44,15 @@ function AddRootForm({ site, workspaceName, remotePathMappings, busy, setBusy, o
   return (
     <form className="management-form-card nested-form" onSubmit={submit}>
       <header><div><span className="eyebrow">NEW ROOT</span><h3>Add to {site.name}</h3></div><button className="icon-button" type="button" onClick={onCancel} disabled={busy} aria-label="Close add root form"><CloseIcon /></button></header>
-      <SiteRootFields root={root} disabled={busy} onBusyChange={setBusy} onMutation={(result) => onMutation(result, false)} />
+      <SiteRootFields
+        root={root}
+        disabled={busy}
+        onBusyChange={setBusy}
+        onMutation={(result) => onMutation(result, false)}
+        onConnectionReady={() => addRef.current?.focus()}
+      />
       {error && <p className="management-form-error" role="alert">{error}</p>}
-      <button className="primary-button full-width" type="submit" disabled={busy || !root.ready}><PlusIcon />{busy ? "Adding…" : "Add root"}</button>
+      <button ref={addRef} className="primary-button full-width" type="submit" disabled={busy || !root.ready}><PlusIcon />{busy ? "Adding…" : "Add root"}</button>
     </form>
   );
 }

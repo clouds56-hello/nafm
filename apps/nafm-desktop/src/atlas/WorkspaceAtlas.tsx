@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { ContentActions, type ComparisonKind } from "./analysis/ContentActions";
 import { FileCopiesDialog } from "./analysis/FileCopiesDialog";
 import { ReviewDrawer, type ReviewPosition } from "./analysis/ReviewDrawer";
@@ -28,6 +28,7 @@ import type {
   DirectoryRefresh, DirectoryRefreshTarget, DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage,
   HealthMetric, StorageNode,
 } from "../lib/types";
+import { PlusIcon } from "../management/Icons";
 import { resolveAddedSite, type AddSiteOrigin, type SiteAddition } from "../management/siteAddition";
 
 interface ContentsVisit {
@@ -112,8 +113,15 @@ function fileParent(root: StorageNode, fileId: string): StorageNode | null {
   return null;
 }
 
-function EmptyOrbit({ label }: { label: string }) {
-  return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
+function EmptyOrbit({ label, action }: { label: string; action?: ReactNode }) {
+  return (
+    <div className="atlas-empty-orbit">
+      <div className="atlas-empty-orbit__center" data-action={Boolean(action) || undefined}>
+        <span role="status">{label}</span>
+        {action}
+      </div>
+    </div>
+  );
 }
 
 function HealthScale() {
@@ -267,14 +275,16 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     });
   }
   const requestId = site ? state.scanRequestBySite.get(site.id) : undefined;
+  const scanProgress = site ? state.progressBySite.get(site.id) : undefined;
   const siteRoot = state.activeTree?.root;
-  const awaitingInventory = site && !siteHasInventory(site);
-  // The dashboard can publish counts before the first navigable tree reaches the view.
-  const awaitingTree = Boolean(site && site.total_files > 0 && siteRoot?.file_count === 0);
-  const firstScan = site && siteRoot?.children.length && (awaitingInventory || awaitingTree)
+  // Either the scan or the dashboard can publish counts before the navigable tree arrives.
+  const publishedFiles = scanProgress && scanProgress.request_id === requestId
+    && (scanProgress.phase === "hashing" || scanProgress.phase === "finalizing") && (scanProgress.total_files ?? 0) > 0;
+  const awaitingTree = Boolean(site && (site.total_files > 0 || publishedFiles) && siteRoot?.file_count === 0);
+  const firstScan = site && siteRoot?.children.length && siteRoot.file_count === 0 && (!siteHasInventory(site) || awaitingTree)
     ? {
       requestId,
-      progress: state.progressBySite.get(site.id),
+      progress: scanProgress,
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       scanAll: requestId !== undefined && state.scanAllRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(site.id),
@@ -805,8 +815,20 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 onSelect={activateNode}
               />
             ) : (
-              <EmptyOrbit label={state.loading || state.treeLoading ? "Reading inventory"
-                : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"} />
+              <EmptyOrbit
+                label={state.loading || state.treeLoading ? "Reading inventory"
+                  : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"}
+                action={dashboard && !site && !state.error && !state.treeError && !recoveryOnMap ? (
+                  <button
+                    ref={emptyLauncherRef}
+                    className="atlas-empty-orbit__add"
+                    type="button"
+                    aria-haspopup="dialog"
+                    disabled={!canAddSite}
+                    onClick={addSiteLauncher("atlas")}
+                  ><PlusIcon />Add site</button>
+                ) : undefined}
+              />
             )}
             {folder && state.locationProgress && (
               <span className="atlas-location-progress" role={openingSiteInPanel || coverageFooterVisible ? undefined : "status"}>
@@ -821,19 +843,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 <span>{state.treeError ?? state.error}</span>
                 <button className="atlas-text-button" type="button" onClick={() => void (state.treeError ? state.retryTree() : state.refresh())}>Try again</button>
               </div>
-            ) : recoveryOnMap ? recovery : dashboard && !site ? (
-              <div className="atlas-map-empty-help">
-                <span>Add a folder or network share to map its files.</span>
-                <button
-                  ref={emptyLauncherRef}
-                  className="atlas-text-button"
-                  type="button"
-                  aria-haspopup="dialog"
-                  disabled={!canAddSite}
-                  onClick={addSiteLauncher("atlas")}
-                >Add site</button>
-              </div>
-            ) : sourceVerification && site && folder ? (
+            ) : recoveryOnMap ? recovery : sourceVerification && site && folder ? (
               <CoverageFooter
                 source={site} target={target} targets={targetOptions} coverage={folderCoverage}
                 hasFolderContent={folder.file_count > 0}

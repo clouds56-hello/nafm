@@ -145,6 +145,99 @@ test("a delayed site refresh leaves focus in Contents when browsing resumes", as
   await expect(pane.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
 });
 
+test("correcting a first site's location preserves the draft through a connection retry", async ({ page }) => {
+  await page.goto("/mock/?scenario=empty");
+  await page.getByRole("button", { name: "Add site", exact: true }).click();
+  const dialog = addDialog(page);
+  const local = dialog.getByRole("radio", { name: "Local folder" });
+  const smb = dialog.getByRole("radio", { name: "SMB share" });
+  const folder = dialog.getByLabel("Folder path");
+  const url = dialog.getByLabel("SMB URL");
+  const name = dialog.getByLabel("Site name");
+  const username = dialog.getByLabel("Username", { exact: true });
+  const password = dialog.getByLabel("Password", { exact: true });
+  const add = dialog.getByRole("button", { name: "Add site", exact: true });
+  const share = "smb://archive.example.test/Field";
+
+  await folder.fill(share);
+  await folder.press("Tab");
+  await expect(folder).toHaveAttribute("aria-invalid", "true");
+  await smb.check();
+  await expect(url).toHaveValue(share);
+  await username.fill("sample-reader");
+  await password.fill("temporary draft");
+  await local.check();
+  await dialog.getByRole("button", { name: "Browse…" }).click();
+  const chosen = await folder.inputValue();
+  expect(chosen).not.toBe("");
+  await smb.check();
+  await expect(username).toHaveValue("sample-reader");
+  await expect(password).toHaveValue("");
+  await local.check();
+  await expect(folder).toHaveValue(chosen);
+  await smb.check();
+  await expect(url).toHaveValue(share);
+
+  await page.evaluate(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let rejectNext = true;
+    bridge.invoke = async (command, ...args) => {
+      if (command === "connect_smb" && rejectNext) {
+        rejectNext = false;
+        throw new Error("The share rejected these credentials.");
+      }
+      return invoke(command, ...args);
+    };
+  });
+  await password.fill("test input");
+  await password.press("Enter");
+  await expect(dialog.getByRole("alert")).toHaveText("The share rejected these credentials.");
+  await expect(password).toBeFocused();
+  await expect(username).toHaveValue("sample-reader");
+  await expect(add).toBeDisabled();
+  await password.fill("updated test input");
+  await password.press("Enter");
+  await expect(name).toBeFocused();
+  await name.fill("Field archive");
+
+  // Reopening the type passively matches the saved connection. The URL keeps keyboard focus.
+  await local.check();
+  await smb.check();
+  await url.focus();
+  await expect(dialog.getByText("Saved connection available", { exact: true })).toBeVisible();
+  await expect(url).toBeFocused();
+  await dialog.getByRole("button", { name: "Reconnect" }).click();
+  await expect(password).toBeFocused();
+  await password.fill("renewed test input");
+  await password.press("Enter");
+  await expect(add).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: "Scan this site", exact: true })).toBeFocused();
+});
+
+test("Settings returns to Add root after explicitly connecting an SMB folder", async ({ page }) => {
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Manage Studio archive", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await settings.getByRole("button", { name: "Add root", exact: true }).click();
+  const share = "smb://archive.example.test/Field";
+  await settings.getByLabel("Folder path").fill(share);
+  await settings.getByRole("radio", { name: "SMB share" }).check();
+  await expect(settings.getByLabel("SMB URL")).toHaveValue(share);
+  await settings.getByLabel("Username", { exact: true }).fill("sample-reader");
+  const password = settings.getByLabel("Password", { exact: true });
+  await password.fill("sample input");
+  await password.press("Enter");
+  await expect(settings.getByRole("button", { name: "Add root", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(settings.getByText(share, { exact: true })).toBeVisible();
+});
+
 test("the source library stays open while a site is cancelled or created", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 640 });
   await page.goto("/mock/");
@@ -211,6 +304,7 @@ test("an empty atlas opens Add site within a short viewport", async ({ page }) =
   await page.setViewportSize({ width: 640, height: 320 });
   await page.goto("/mock/?scenario=empty");
   const launch = page.getByRole("button", { name: "Add site", exact: true });
+  await expect(launch).toBeInViewport({ ratio: 0.99 });
   await launch.click();
   const dialog = addDialog(page);
   await dialog.getByRole("radio", { name: "SMB share" }).press("Space");
@@ -261,4 +355,29 @@ test("the first scan can be started, stopped and restarted from the atlas", asyn
   await folder.press("Enter");
   await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]'))
     .toHaveText("Drone imagery");
+});
+
+test.describe("first site on a short touch display", () => {
+  test.use({ hasTouch: true, viewport: { width: 640, height: 320 } });
+
+  test("tapping Scan leaves the new inventory ready to browse with the keyboard", async ({ page }) => {
+    await page.goto("/mock/?scenario=empty");
+    await page.getByRole("button", { name: "Add site", exact: true }).tap();
+    const dialog = addDialog(page);
+    await dialog.getByRole("textbox", { name: "Site name" }).fill("Field survey");
+    await dialog.getByRole("button", { name: "Browse…" }).tap();
+    await dialog.getByRole("button", { name: "Add site", exact: true }).press("Enter");
+
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const scan = map.getByRole("button", { name: "Scan this site", exact: true });
+    await expect(scan).toBeFocused();
+    await expect(scan).toBeInViewport({ ratio: 1 });
+    await scan.tap();
+
+    const root = map.getByRole("button", { name: /^Sample Folder,/ });
+    await expect(root).toBeFocused({ timeout: 15_000 });
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]'))
+      .toHaveText("Sample Folder");
+  });
 });
