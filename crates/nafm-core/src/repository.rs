@@ -958,10 +958,31 @@ impl Repository {
     limit: u64,
     sort: DirectorySort,
   ) -> Result<StorageChildrenPage> {
+    self
+      .storage_children_filtered(site_selector, target_site_selector, node_id, offset, limit, sort, None)
+      .await
+  }
+
+  /// Page the immediate entries whose names contain the query, using the requested directory order.
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_children_filtered(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+    sort: DirectorySort,
+    query: Option<&str>,
+  ) -> Result<StorageChildrenPage> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
+    let query = query
+      .map(str::trim)
+      .filter(|query| !query.is_empty())
+      .map(str::to_lowercase);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
@@ -970,7 +991,7 @@ impl Repository {
           .as_deref()
           .map(|id| require_site(&conn, id))
           .transpose()?;
-        storage_children_page(&conn, site, target, &node_id, offset, limit, sort)
+        storage_children_page(&conn, site, target, &node_id, offset, limit, sort, query.as_deref())
       })
     })
     .await?
@@ -4431,7 +4452,7 @@ fn storage_view_snapshot(
     .collect();
   let location_root = finish_storage_node((*selected).clone(), 0, max_depth, max_children);
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
-  let child_builders = ordered_directory_entries(selected, sort);
+  let child_builders = ordered_directory_entries(selected, sort, None);
   let total_children = child_builders.len() as u64;
   let page_offset = if total_children == 0 {
     0
@@ -4499,7 +4520,7 @@ fn storage_node_reveal(
   let parent = parent_path
     .last()
     .expect("a selected storage file should have a parent");
-  let child_builders = ordered_directory_entries(parent, sort);
+  let child_builders = ordered_directory_entries(parent, sort, None);
   let selected_index = child_builders
     .iter()
     .position(|child| child.id == selected.id)
@@ -4618,6 +4639,7 @@ fn build_storage_tree_root(
   Ok(root)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn storage_children_page(
   conn: &Connection,
   site: Site,
@@ -4626,6 +4648,7 @@ fn storage_children_page(
   offset: u64,
   limit: u64,
   sort: DirectorySort,
+  query: Option<&str>,
 ) -> Result<StorageChildrenPage> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
@@ -4656,7 +4679,7 @@ fn storage_children_page(
 
   let parent_builder =
     find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
-  let child_builders = ordered_directory_entries(parent_builder, sort);
+  let child_builders = ordered_directory_entries(parent_builder, sort, query);
   let total_children = child_builders.len() as u64;
   let children = child_builders
     .into_iter()
@@ -4731,9 +4754,17 @@ impl SortDirection {
   }
 }
 
-fn ordered_directory_entries(parent: &StorageNodeBuilder, sort: DirectorySort) -> Vec<&StorageNodeBuilder> {
+fn ordered_directory_entries<'a>(
+  parent: &'a StorageNodeBuilder,
+  sort: DirectorySort,
+  query: Option<&str>,
+) -> Vec<&'a StorageNodeBuilder> {
   use std::cmp::{Ordering, Reverse};
-  let mut entries = parent.children.values().collect::<Vec<_>>();
+  let mut entries = parent
+    .children
+    .values()
+    .filter(|node| query.is_none_or(|query| node.name.to_lowercase().contains(query)))
+    .collect::<Vec<_>>();
   match sort.field {
     DirectorySortField::Size => entries.sort_by(|left, right| entry_size_order(left, right, sort.direction)),
     DirectorySortField::Name => match sort.direction {

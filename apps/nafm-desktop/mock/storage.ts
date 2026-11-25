@@ -58,8 +58,9 @@ function directorySort(value: unknown): DirectorySort {
   return { field, direction };
 }
 
-function orderedChildren(node: StorageNode, sort = DEFAULT_DIRECTORY_SORT) {
-  return [...node.children].sort((a, b) => {
+function orderedChildren(node: StorageNode, sort = DEFAULT_DIRECTORY_SORT, query = "") {
+  const entries = query ? node.children.filter((child) => child.name.toLowerCase().includes(query)) : [...node.children];
+  return entries.sort((a, b) => {
     let order: number;
     if (sort.field === "date") {
       const missing = Number(a.modified_unix_millis === null) - Number(b.modified_unix_millis === null);
@@ -192,11 +193,11 @@ function makeLocation(model: ReturnType<typeof projectSite>, args: CommandArgs):
   };
 }
 
-function makeChildren(model: ReturnType<typeof projectSite>, args: CommandArgs): StorageChildrenPage {
+function makeChildren(model: ReturnType<typeof projectSite>, args: CommandArgs, query = ""): StorageChildrenPage {
   const { node } = nodePath(model.root, args);
   const { offset, limit } = paging(args);
-  const children = orderedChildren(node, directorySort(args.sort));
-  const start = pageOffset(children.length, offset, limit);
+  const children = orderedChildren(node, directorySort(args.sort), query);
+  const start = query ? offset : pageOffset(children.length, offset, limit);
   return {
     site: siteRecord(model.site), coverage_target: model.coverageTarget, parent: model.project(node, []),
     children: children.slice(start, start + limit).map((child) => model.project(child, [])),
@@ -258,6 +259,12 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   function snapshot(args: CommandArgs) {
     checkWorkspace(current(), args.expectedWorkspace);
     return makeSnapshot(model(args), args);
+  }
+
+  function children(args: CommandArgs) {
+    const { query } = args;
+    if (query != null && typeof query !== "string") throw new Error("Invalid directory search.");
+    return makeChildren(model(args), args, query?.trim().toLowerCase());
   }
 
   function openFolderIn(request: CommandArgs) {
@@ -461,7 +468,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   return {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
-    children: (args: CommandArgs) => makeChildren(model(args), args),
-    snapshot, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
+    children, snapshot, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
   };
 }

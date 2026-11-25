@@ -288,6 +288,7 @@ pub async fn get_storage_location(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_storage_children(
   state: State<'_, AppState>,
   site_id: String,
@@ -296,17 +297,19 @@ pub async fn get_storage_children(
   offset: u64,
   limit: u64,
   sort: Option<DirectorySort>,
+  query: Option<String>,
 ) -> Result<StorageChildrenPage, String> {
   state
     .repository()
     .await
-    .storage_children_sorted(
+    .storage_children_filtered(
       &site_id,
       target_site_id.as_deref(),
       &node_id,
       offset,
       limit,
       sort.unwrap_or_default(),
+      query.as_deref(),
     )
     .await
     .map_err(|error| error.to_string())

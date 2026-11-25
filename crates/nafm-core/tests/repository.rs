@@ -2310,6 +2310,69 @@ async fn directory_sort_orders_the_whole_folder_before_slicing_and_revealing() {
 }
 
 #[tokio::test]
+async fn directory_search_counts_and_pages_matches_beyond_the_bounded_map() {
+  use nafm_core::{DirectorySortField, SortDirection};
+
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("search-media");
+  for index in 0..16 {
+    fs::write(media.join(format!("Clip {index:02}.mov")), [0_u8; 32]).unwrap();
+  }
+  fs::write(media.join("Café Report.pdf"), b"report").unwrap();
+  fs::write(media.join("Report Z.txt"), b"note").unwrap();
+  let reports = media.join("Reports");
+  fs::create_dir(&reports).unwrap();
+  fs::write(reports.join("Nested report.txt"), b"nested").unwrap();
+  let site = fixture.repo.create_site("search-source").await.unwrap();
+  fixture.add_site_folder(&site.id, &media, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+
+  let tree = fixture.repo.storage_tree(&site.id, 3, 2).await.unwrap();
+  let folder = child_named(&tree.root, "search-media");
+  assert_eq!(folder.children[1].kind, StorageNodeKind::SmallerItems);
+  let sort = DirectorySort {
+    field: DirectorySortField::Name,
+    direction: SortDirection::Desc,
+  };
+
+  let first = fixture
+    .repo
+    .storage_children_filtered(&site.id, None, &folder.id, 0, 2, sort, Some("  rEpOrT "))
+    .await
+    .unwrap();
+  assert_eq!(first.parent.id, folder.id);
+  assert_eq!(first.total_children, 3);
+  assert_eq!(first.children[0].name, "Reports");
+  assert_eq!(first.children[0].kind, StorageNodeKind::Directory);
+  assert_eq!(first.children[1].name, "Report Z.txt");
+
+  let second = fixture
+    .repo
+    .storage_children_filtered(&site.id, None, &folder.id, 2, 2, sort, Some("report"))
+    .await
+    .unwrap();
+  assert_eq!(second.total_children, first.total_children);
+  assert_eq!(second.offset, 2);
+  assert_eq!(second.children.len(), 1);
+  assert_eq!(second.children[0].name, "Café Report.pdf");
+
+  let nested = fixture
+    .repo
+    .storage_children_filtered(&site.id, None, &folder.id, 0, 2, sort, Some("nested"))
+    .await
+    .unwrap();
+  assert_eq!(nested.total_children, 0);
+  assert!(nested.children.is_empty());
+
+  let unfiltered = fixture
+    .repo
+    .storage_children_filtered(&site.id, None, &folder.id, 0, 2, sort, Some("  "))
+    .await
+    .unwrap();
+  assert_eq!(unfiltered.total_children, 19);
+}
+
+#[tokio::test]
 async fn storage_view_snapshot_matches_deep_views_and_clamps_the_page_inside_the_snapshot() {
   let fixture = Fixture::new().await;
   let media = fixture.mkdir("snapshot-media");

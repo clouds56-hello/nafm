@@ -11,13 +11,12 @@ function currentFolder(page: Page) {
 
 async function scrollProjectsToEnd(page: Page) {
   const contents = page.getByRole("tabpanel", { name: "Contents" });
-  await expect(async () => {
-    await contents.hover();
-    await page.mouse.wheel(0, await contents.evaluate((pane) => pane.scrollHeight));
-    await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport({ timeout: 500 });
-    await expect.poll(() => contents.evaluate((pane) => pane.scrollHeight - pane.clientHeight - pane.scrollTop), { timeout: 500 })
-      .toBeLessThanOrEqual(1);
-  }).toPass({ timeout: 7000 });
+  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "19");
+  // Set the starting scroll position directly so a hover card cannot intercept the wheel.
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollHeight - pane.clientHeight - pane.scrollTop))
+    .toBeLessThanOrEqual(1);
   const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
   expect(scrollTop).toBeGreaterThan(0);
   return scrollTop;

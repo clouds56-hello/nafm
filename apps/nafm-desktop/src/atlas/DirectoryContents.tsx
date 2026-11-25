@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { formatCount } from "../lib/format";
 import type { DirectorySort, FolderOpenDestination, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
+import { CloseIcon } from "../management/Icons";
 import { DirectorySortControl } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
@@ -10,6 +11,9 @@ import "./directory.css";
 interface DirectoryContentsProps {
   location: StorageLocation | null;
   page: StorageChildrenPage | null;
+  directoryTotal: number;
+  searchText: string | null;
+  onSearchChange: (text: string | null) => void;
   selection: StorageNode | null;
   sort: DirectorySort;
   onSort: (sort: DirectorySort) => Promise<void>;
@@ -33,11 +37,16 @@ interface DirectoryContentsProps {
 }
 
 export function DirectoryContents({
-  location, page, selection, sort, onSort, metric, targetCompleteness,
+  location, page, directoryTotal, searchText, onSearchChange, selection, sort, onSort, metric, targetCompleteness,
   scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
+  const searchTrigger = useRef<HTMLButtonElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchFocus = useRef<"input" | "trigger" | null>(null);
+  const searchOpen = searchText !== null;
+  const filtering = Boolean(searchText?.trim());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const keyboardFolder = useRef<{ folder: string; row?: string } | null>(null);
@@ -51,6 +60,12 @@ export function DirectoryContents({
   const rowPreview = useDirectoryPreview({
     root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
   });
+
+  useLayoutEffect(() => {
+    if (!active || searchFocus.current !== (searchOpen ? "input" : "trigger")) return;
+    searchFocus.current = null;
+    (searchOpen ? searchInput.current : searchTrigger.current)?.focus({ preventScroll: true });
+  }, [searchOpen, active]);
 
   useEffect(() => {
     if (!active || !ready || loading || !page || end <= start) return;
@@ -125,6 +140,11 @@ export function DirectoryContents({
     onSelect(node);
   }
 
+  function closeSearch() {
+    searchFocus.current = "trigger";
+    onSearchChange(null);
+  }
+
   function goUp(keyboard: boolean) {
     if (!parent || loading) return;
     keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId } : null;
@@ -158,7 +178,12 @@ export function DirectoryContents({
   }
 
   return (
-    <section className="atlas-directory" aria-labelledby={labelId}>
+    <section className="atlas-directory" aria-labelledby={labelId} onKeyDown={(event) => {
+      if (!searchOpen || event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    }}>
       <header className="atlas-directory-header">
         {parent && (
           <button
@@ -173,10 +198,45 @@ export function DirectoryContents({
         )}
         <div className="atlas-directory-heading">
           <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
-          {total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
+          {filtering && !loading && !error && (
+            <span className="atlas-directory-total" role="status">{formatCount(total)} {total === 1 ? "match" : "matches"}</span>
+          )}
+          {!filtering && total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
         </div>
         <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
-        {total > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
+        {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
+        {directoryTotal > 0 && !searchOpen && !awaitingInventory && (
+          <button
+            type="button" className="atlas-directory-search-toggle" ref={searchTrigger}
+            aria-label="Search this folder" title="Search this folder"
+            onClick={() => {
+              searchFocus.current = "input";
+              onSearchChange("");
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
+              <circle cx="6.75" cy="6.75" r="4.25" /><path d="m10 10 3.5 3.5" />
+            </svg>
+          </button>
+        )}
+        {searchOpen && (
+          <div className="atlas-directory-search-row">
+            <input
+              type="search" ref={searchInput} aria-label="Find in folder" placeholder="Find by name"
+              autoComplete="off" spellCheck={false} value={searchText}
+              onChange={(event) => onSearchChange(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowDown" || event.altKey || event.ctrlKey || event.metaKey || loading || error) return;
+                const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+                if (row) {
+                  event.preventDefault();
+                  row.focus();
+                }
+              }}
+            />
+            <button type="button" onClick={closeSearch} aria-label="Close search" title="Close search"><CloseIcon /></button>
+          </div>
+        )}
       </header>
 
       <div role="region" aria-label="Directory entries" aria-busy={loading || loadingMore || undefined}>
@@ -212,7 +272,9 @@ export function DirectoryContents({
           </ul>
         ) : !error && (
           <p className="atlas-directory-status" role="status">
-            {loading ? "Reading directory…" : awaitingInventory ? "Waiting for the first inventory." : "This directory is empty."}
+            {filtering
+              ? loading ? "Searching folder…" : "No matching files or folders."
+              : loading ? "Reading directory…" : awaitingInventory ? "Waiting for the first inventory." : "This directory is empty."}
           </p>
         )}
         {error && (

@@ -9,6 +9,7 @@ import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
 import { StorageDetails } from "./StorageDetails";
 import { useDashboard } from "../hooks/useDashboard";
+import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
@@ -56,6 +57,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const pendingReveal = useRef<AbortController | null>(null);
   const [revealingFileId, setRevealingFileId] = useState<string | null>(null);
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string } | null>(null);
+  const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
@@ -84,6 +86,23 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     : undefined;
 
   const folder = location?.root;
+  const searchScope = JSON.stringify([dashboard?.workspace_name, location?.site_id, folder?.id]);
+  const searchText = folderSearch?.scope === searchScope ? folderSearch.text : null;
+  const searchQuery = searchText?.trim() ?? "";
+  const search = useDirectorySearch({
+    scope: searchScope,
+    siteId: location?.site_id,
+    targetId: target?.id,
+    folderId: folder?.id,
+    query: searchQuery,
+    sort: state.directorySort,
+    contentRevision: state.contentRevision,
+  });
+  const directoryPage = search.enabled ? search.page : state.childrenPage;
+
+  useEffect(() => {
+    if (folderSearch && folderSearch.scope !== searchScope) setFolderSearch(null);
+  }, [folderSearch, searchScope]);
   const requestId = site ? state.scanRequestBySite.get(site.id) : undefined;
   const siteRoot = state.activeTree?.root;
   const awaitingInventory = site && site.hash_status === "unscanned" && !site.latest_inventory_at
@@ -105,7 +124,13 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
-  const contentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
+  const baseContentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
+  const contentsKey = search.enabled ? JSON.stringify([baseContentsKey, searchQuery]) : baseContentsKey;
+  function changeSearch(text: string | null) {
+    const query = text?.trim();
+    if (query && query !== searchQuery) contentsScroll.current.delete(JSON.stringify([baseContentsKey, query]));
+    setFolderSearch(text === null ? null : { scope: searchScope, text });
+  }
   useLayoutEffect(() => () => pendingReveal.current?.abort(), [inspectorView, siteId, selected?.id]);
   useEffect(() => {
     if (revealedRow && revealedRow.key !== contentsKey) setRevealedRow(null);
@@ -208,6 +233,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       );
       // A previous visit to this directory may have scrolled away from the file.
       contentsScroll.current.set(key, destination.anchor_offset);
+      setFolderSearch(null);
       inspectorOrigin.current = null;
       openInspector("contents");
       setRevealedRow({ key, id: file.id });
@@ -383,7 +409,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                   <StorageDetails
                     location={location}
                     onOpenFolder={state.openFolderExternally}
-                    entries={state.childrenPage?.children ?? []}
+                    entries={directoryPage?.children ?? []}
                     selected={selected}
                     focusRevision={state.duplicateJumpRevision}
                     metric={metric}
@@ -422,7 +448,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                       onGoUp={goUp}
                       onOpenFolder={state.openFolderExternally}
                       location={location}
-                      page={state.childrenPage}
+                      page={directoryPage}
+                      directoryTotal={state.childrenPage?.total_children ?? 0}
+                      searchText={searchText}
+                      onSearchChange={changeSearch}
                       selection={selected}
                       sort={state.directorySort}
                       onSort={changeDirectorySort}
@@ -431,16 +460,16 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                       scrollPane={contentsPane}
                       scrollPositions={contentsScroll.current}
                       contentsKey={contentsKey}
-                      anchorIndex={state.contentsAnchorOffset}
+                      anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
                       active={inspectorView === "contents"}
-                      loading={state.childrenLoading}
-                      loadingMore={state.loadingMoreChildren}
-                      error={state.childrenError}
+                      loading={state.childrenLoading || search.loading}
+                      loadingMore={search.enabled ? search.loadingMore : state.loadingMoreChildren}
+                      error={search.enabled ? search.error : state.childrenError}
                       awaitingInventory={Boolean(firstScan)}
                       onSelect={activateNode}
-                      onLoadRange={state.loadChildrenRange}
-                      onRetry={state.retryChildren}
+                      onLoadRange={search.enabled ? search.loadRange : state.loadChildrenRange}
+                      onRetry={search.enabled ? search.retry : state.retryChildren}
                     />
                     {!location && (
                       <p className="atlas-inspector-status" role="status">
