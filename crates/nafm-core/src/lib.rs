@@ -19,8 +19,8 @@ pub use model::{
   HiddenPolicy, IndexedFileMatch, IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping,
   ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus,
   SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal,
-  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage, StorageDirectoryFilter,
+  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 pub use onboarding::{CheckStatus, MappingPreview, PathCompletion, PreflightReport, SetupCheck};
 pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};

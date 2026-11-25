@@ -32,6 +32,19 @@ async function openPhotoLibrary(page: Page) {
   return contents;
 }
 
+async function showFoundProofInContents(page: Page) {
+  await page.getByRole("button", { name: "Find files", exact: true }).press("Enter");
+  const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+  await finder.getByRole("searchbox", { name: "File name", exact: true }).fill("Proof 096");
+  await finder.getByRole("button", { name: /^Proof 096\.jpg/ }).press("Enter");
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(finder).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(inspector.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+}
+
 test("Contents finds distant entries and returns from Details to the same filtered row", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
   const grid = contents.getByRole("grid");
@@ -90,6 +103,88 @@ test("Contents finds distant entries and returns from Details to the same filter
   await expect(searchButton(contents)).toBeFocused();
   await expect(grid).toHaveAttribute("aria-rowcount", "100");
   await expect(first).toHaveAccessibleName(/^Studio portraits/);
+});
+
+test("Show in Contents keeps the folder search and reveals a late match", async ({ page }) => {
+  const contents = await openPhotoLibrary(page);
+  const search = searchInput(contents);
+  const grid = contents.getByRole("grid");
+  const proof = entry(contents, /^Proof 096\.jpg/);
+  const query = "  pRoOf  ";
+
+  await searchButton(contents).click();
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(proof).toHaveCount(0);
+
+  await showFoundProofInContents(page);
+  await expect(search).toHaveValue(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(proof).toBeInViewport({ ratio: 0.99 });
+  await expect(proof).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(entry(contents, /^Proof 095\.jpg/)).toBeFocused();
+});
+
+test("Show in Contents can restore an excluding search and keeps the Finder jump in history", async ({ page }) => {
+  const contents = await openPhotoLibrary(page);
+  const search = searchInput(contents);
+  const grid = contents.getByRole("grid");
+  const proof = entry(contents, /^Proof 096\.jpg/);
+  const query = "  prOoF 01  ";
+  const path = page.getByRole("navigation", { name: "Folder path" });
+
+  await searchButton(contents).click();
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "10");
+  await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+
+  await showFoundProofInContents(page);
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
+  await expect(proof).toBeInViewport({ ratio: 0.99 });
+  await expect(proof).toBeFocused();
+  await expect(search).toBeHidden();
+  const paused = contents.getByRole("status").filter({ hasText: "Search paused" });
+  await expect(paused).toBeVisible();
+  await contents.getByRole("button", { name: "Restore search", exact: true }).press("Enter");
+  await expect(paused).toBeHidden();
+  await expect(search).toHaveValue(query);
+  await expect(search).toBeFocused();
+  await expect(grid).toHaveAttribute("aria-rowcount", "10");
+  await expect(proof).toHaveCount(0);
+
+  await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+});
+
+test("a file arc reveals in the matching search saved in its containing folder", async ({ page }) => {
+  await page.goto("/mock/");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  for (const folder of ["Projects", "Brand campaign"]) {
+    await map.getByRole("button", { name: new RegExp(`^${folder},`) }).press("Enter");
+    await expect(currentFolder(page)).toHaveText(folder);
+  }
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const search = searchInput(contents);
+  const trailer = entry(contents, /^Trailer master\.mov/);
+  await searchButton(contents).press("Enter");
+  await search.fill("Trailer master");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+
+  await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await map.getByRole("button", { name: /^Trailer master\.mov,/ })
+    .and(page.locator('[data-node-id*="/Brand campaign/"]')).press("Enter");
+  await page.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(search).toHaveValue("Trailer master");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  await expect(trailer).toBeFocused();
 });
 
 test("Contents restores each folder's search and the selected row across history", async ({ page }) => {

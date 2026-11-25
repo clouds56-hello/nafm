@@ -47,6 +47,7 @@ import type {
   SiteOverview,
   StorageNode,
   StorageChildrenPage,
+  StorageDirectoryFilter,
   StorageLocation,
   StorageTree,
   StorageViewSnapshot,
@@ -112,10 +113,11 @@ interface LocationLoadOptions {
 }
 
 type FileRevealDestination =
-  | { kind: "node"; siteId: string; id: string; shouldApply?: () => boolean }
+  | { kind: "node"; siteId: string; id: string; filter?: StorageDirectoryFilter; shouldApply?: () => boolean }
   | { kind: "match"; siteId: string; id: string; signal: AbortSignal; finderPosition?: FinderPosition };
 
-type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">;
+type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">
+  & { filtered_page?: StorageChildrenPage | null };
 type FileRevealResult = { location: FileRevealLocation; error: null } | { location: null; error: string };
 
 function errorMessage(error: unknown): string {
@@ -1325,7 +1327,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         : validTarget(currentDashboard.sites, destination.siteId, preferredTarget);
       const reveal = destination.kind === "node"
         ? await getStorageNodeReveal(
-          requestedWorkspace, destination.siteId, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort,
+          requestedWorkspace, destination.siteId, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort, destination.filter,
         )
         : await getStorageFileReveal(requestedWorkspace, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
       if (!canApply()) return cancelled;
@@ -1374,7 +1376,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         setBackHistory(backHistoryRef.current);
         setForwardHistory([]);
       }
-      return { location: destinationEntry, error: null };
+      return { location: { ...destinationEntry, filtered_page: reveal.filtered_page }, error: null };
     } catch (revealError) {
       if (!canApply()) return cancelled;
       const message = errorMessage(revealError);
@@ -1416,10 +1418,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     return null;
   }, [loadFolderLocation]);
 
-  const revealSelectedFileInContents = useCallback(async (fileId: string, shouldApply?: () => boolean) => {
+  const revealSelectedFileInContents = useCallback(async (fileId: string, filter?: StorageDirectoryFilter, shouldApply?: () => boolean) => {
     const siteId = selectedSiteRef.current;
     if (!siteId || selectionRef.current?.node.kind !== "file" || childrenLoadingRef.current) return null;
-    const result = await revealFile({ kind: "node", siteId, id: fileId, shouldApply });
+    const result = await revealFile({ kind: "node", siteId, id: fileId, filter, shouldApply });
     return result.location;
   }, [revealFile]);
 

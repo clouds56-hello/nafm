@@ -93,12 +93,26 @@
 .atlas-directory-search-row input::-webkit-search-cancel-button { appearance: none; }
 .atlas-directory-search-row button svg { width: 15px; height: 15px; }
 
-.atlas-inspector-pane:has(.atlas-directory-search-row) { scroll-padding-block-start: 92px; }
+.atlas-directory-search-pause {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--atlas-muted);
+  font-size: 12px;
+}
+
+.atlas-directory-search-pause button { padding-inline: 4px; }
+
+.atlas-inspector-pane:has(.atlas-directory-search-row, .atlas-directory-search-pause) { scroll-padding-block-start: 92px; }
 
 @media (pointer: coarse) {
   .atlas-directory-search-toggle,
   .atlas-directory-search-row button { width: 40px; height: 40px; }
   .atlas-directory-search-row input { min-height: 40px; }
+  .atlas-directory-search-pause button { min-height: 40px; }
 }
 
 .atlas-directory-sort {

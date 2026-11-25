@@ -58,9 +58,18 @@ function directoryScope(workspace: string | undefined, site: string | undefined,
 
 function directoryKey(
   workspace: string | undefined, site: string | undefined, target: string | null | undefined, folder: string | undefined,
-  sort: DirectorySort, anchor: number,
+  sort: DirectorySort, anchor: number, query?: string,
 ) {
-  return JSON.stringify([workspace, site, target, folder, sort.field, sort.direction, anchor]);
+  return JSON.stringify([workspace, site, target, folder, sort.field, sort.direction, anchor, query]);
+}
+
+function fileParent(root: StorageNode, fileId: string): StorageNode | null {
+  for (const child of root.children) {
+    if (child.id === fileId) return root;
+    const parent = fileParent(child, fileId);
+    if (parent) return parent;
+  }
+  return null;
 }
 
 function EmptyOrbit({ label }: { label: string }) {
@@ -103,6 +112,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
   const [folderSearches, setFolderSearches] = useState(() => new Map<string, string>());
+  const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
@@ -144,7 +154,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
 
   const folder = location?.root;
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
-  const searchText = folderSearches.get(searchScope) ?? null;
+  const searchPaused = pausedSearchScope === searchScope;
+  const searchText = searchPaused ? null : folderSearches.get(searchScope) ?? null;
   const searchQuery = searchText?.trim() ?? "";
   const search = useDirectorySearch({
     scope: searchScope,
@@ -156,6 +167,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
     contentRevision: state.contentRevision,
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
+
+  useEffect(() => {
+    if (pausedSearchScope && pausedSearchScope !== searchScope) setPausedSearchScope(null);
+  }, [pausedSearchScope, searchScope]);
 
   function saveFolderSearch(scope: string, text: string | null) {
     setFolderSearches((saved) => {
@@ -219,7 +234,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
   function searchContentsKey(sort: DirectorySort, query: string) {
-    return JSON.stringify([contentsKeyFor(sort, 0), query]);
+    return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, 0, query);
   }
   const contentsKey = search.enabled ? searchContentsKey(state.directorySort, searchQuery)
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
@@ -376,20 +391,30 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, openFileFinder]);
 
   async function showFileInContents(file: StorageNode) {
-    if (pendingReveal.current && !pendingReveal.current.signal.aborted) return;
+    if (!folder || (pendingReveal.current && !pendingReveal.current.signal.aborted)) return;
     const attempt = new AbortController();
     pendingReveal.current = attempt;
     setRevealingFileId(file.id);
     try {
-      const destination = await state.revealSelectedFileInContents(file.id, () => !attempt.signal.aborted);
+      const parent = fileParent(folder, file.id) ?? folder;
+      const query = folderSearches.get(directoryScope(dashboard?.workspace_name, siteId, parent.id))?.trim();
+      const filter = query ? { folder_id: parent.id, query } : undefined;
+      const destination = await state.revealSelectedFileInContents(file.id, filter, () => !attempt.signal.aborted);
       if (!destination || attempt.signal.aborted) return;
+      const scope = directoryScope(dashboard?.workspace_name, destination.site_id, destination.node_id);
+      const filtered = destination.filtered_page;
+      const index = filtered?.children.findIndex((child) => child.id === file.id) ?? -1;
+      const match = query && filtered && index >= 0 ? { query, page: filtered, row: filtered.offset + index } : null;
+      if (match) {
+        search.prime({ scope, targetId: destination.target_site_id ?? undefined, query: match.query, sort: destination.sort }, match.page);
+      }
+      setPausedSearchScope(!match && folderSearches.get(scope)?.trim() ? scope : null);
       const key = directoryKey(
         dashboard?.workspace_name, destination.site_id, destination.target_site_id, destination.node_id,
-        destination.sort, destination.anchor_offset,
+        destination.sort, match ? 0 : destination.anchor_offset, match?.query,
       );
-      // A previous visit to this directory may have scrolled away from the file.
-      contentsScroll.current.set(key, destination.anchor_offset);
-      saveFolderSearch(directoryScope(dashboard?.workspace_name, destination.site_id, destination.node_id), null);
+      // A previous visit to this list may have scrolled away from the file.
+      contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
       inspectorOrigin.current = null;
       openInspector("contents");
       setRevealedRow({ key, id: file.id });
@@ -644,6 +669,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                       directoryTotal={state.childrenPage?.total_children ?? 0}
                       searchText={searchText}
                       onSearchChange={changeSearch}
+                      onRestoreSearch={searchPaused ? () => setPausedSearchScope(null) : undefined}
                       selection={selected}
                       sort={state.directorySort}
                       onSort={changeDirectorySort}

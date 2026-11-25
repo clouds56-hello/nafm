@@ -272,7 +272,13 @@ export interface StorageFileReveal {
   tree: StorageTree;
   location: StorageLocation;
   page: StorageChildrenPage;
+  filtered_page?: StorageChildrenPage | null;
   selected_file: StorageNode;
+}
+
+export interface StorageDirectoryFilter {
+  folder_id: string;
+  query: string;
 }
 
 export type FileContentMatchStatus = "ready" | "not_hashed" | "needs_verification";

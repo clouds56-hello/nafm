@@ -15,11 +15,15 @@ interface DirectorySearchOptions {
   contentRevision: number;
 }
 
+function directorySearchKey(scope: string, targetId: string | undefined, query: string, sort: DirectorySort, revision: number) {
+  return JSON.stringify([scope, targetId, query, sort.field, sort.direction, revision]);
+}
+
 export function useDirectorySearch({
   scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision,
 }: DirectorySearchOptions) {
   const enabled = Boolean(query && siteId && folderId);
-  const key = JSON.stringify([scope, targetId, query, field, direction, contentRevision]);
+  const key = directorySearchKey(scope, targetId, query, { field, direction }, contentRevision);
   const [requested, setRequested] = useState<{ key: string; range: SearchRange } | null>(null);
   const [result, setResult] = useState<{ key: string; range: SearchRange; page: StorageChildrenPage } | null>(null);
   const [failure, setFailure] = useState<{ key: string; range: SearchRange; message: string } | null>(null);
@@ -69,5 +73,12 @@ export function useDirectorySearch({
     loadingMore: pending && Boolean(page),
     loadRange,
     retry: () => setRequested({ key, range: { ...range } }),
+    prime: (destination: Pick<DirectorySearchOptions, "scope" | "targetId" | "query" | "sort">, page: StorageChildrenPage) => {
+      const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort, contentRevision);
+      const range = { offset: page.offset, limit: page.limit };
+      setRequested({ key, range });
+      setResult({ key, range, page });
+      setFailure(null);
+    },
   };
 }

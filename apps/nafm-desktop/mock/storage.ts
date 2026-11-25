@@ -1,6 +1,6 @@
 import type {
   CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
-  SiteKind, SiteOverview, StageAddReport, StageRemoveReport, StageWarning, StorageChildrenPage,
+  SiteKind, SiteOverview, StageAddReport, StageRemoveReport, StageWarning, StorageChildrenPage, StorageDirectoryFilter,
   StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
 import { DEFAULT_DIRECTORY_SORT } from "../src/lib/types";
@@ -199,10 +199,20 @@ function makeChildren(model: ReturnType<typeof projectSite>, args: CommandArgs, 
   const { offset, limit } = paging(args);
   const children = orderedChildren(node, directorySort(args.sort), query);
   const start = query ? offset : pageOffset(children.length, offset, limit);
+  return projectChildrenPage(model, node, children, start, limit);
+}
+
+function projectChildrenPage(
+  model: ReturnType<typeof projectSite>,
+  parent: StorageNode,
+  children: StorageNode[],
+  offset: number,
+  limit: number,
+): StorageChildrenPage {
   return {
-    site: siteRecord(model.site), coverage_target: model.coverageTarget, parent: model.project(node, []),
-    children: children.slice(start, start + limit).map((child) => model.project(child, [])),
-    total_children: children.length, offset: start, limit,
+    site: siteRecord(model.site), coverage_target: model.coverageTarget, parent: model.project(parent, []),
+    children: children.slice(offset, offset + limit).map((child) => model.project(child, [])),
+    total_children: children.length, offset, limit,
   };
 }
 
@@ -210,17 +220,31 @@ function makeSnapshot(model: ReturnType<typeof projectSite>, args: CommandArgs):
   return { tree: makeTree(model, args), location: makeLocation(model, args), page: makeChildren(model, args) };
 }
 
-function makeReveal(model: ReturnType<typeof projectSite>, args: CommandArgs): StorageFileReveal {
+function makeReveal(
+  model: ReturnType<typeof projectSite>,
+  args: CommandArgs,
+  filter?: StorageDirectoryFilter,
+): StorageFileReveal {
   const id = stringArg(args.nodeId, "storage node ID");
   const path = findPath(model.root, id);
   const parent = path?.at(-2);
   const node = path?.at(-1);
   if (!parent || node?.kind !== "file") throw new Error("The file is no longer available at this source.");
   const { limit } = paging({ ...args, offset: 0 });
-  const index = orderedChildren(parent, directorySort(args.sort)).findIndex((child) => child.id === id);
-  return {
+  const sort = directorySort(args.sort);
+  const index = orderedChildren(parent, sort).findIndex((child) => child.id === id);
+  const reveal = {
     ...makeSnapshot(model, { ...args, nodeId: parent.id, offset: Math.floor(index / limit) * limit }),
     selected_file: model.project(node, []),
+  };
+  const query = filter?.query.trim().toLowerCase();
+  if (!query || filter?.folder_id !== parent.id) return reveal;
+  const matches = orderedChildren(parent, sort, query);
+  const filteredIndex = matches.findIndex((child) => child.id === id);
+  if (filteredIndex < 0) return reveal;
+  return {
+    ...reveal,
+    filtered_page: projectChildrenPage(model, parent, matches, Math.floor(filteredIndex / limit) * limit, limit),
   };
 }
 
@@ -314,7 +338,10 @@ export function createStorageApi(current: () => PreviewWorkspace) {
 
   function revealNode(args: CommandArgs): StorageFileReveal {
     checkWorkspace(current(), args.expectedWorkspace);
-    return makeReveal(model(args), args);
+    if (args.filter == null) return makeReveal(model(args), args);
+    const { folder_id, query } = record(args.filter);
+    if (typeof folder_id !== "string" || typeof query !== "string") throw new Error("Invalid directory search.");
+    return makeReveal(model(args), args, { folder_id, query });
   }
 
   function fileContentMatches(args: CommandArgs): FileContentMatchesPage {

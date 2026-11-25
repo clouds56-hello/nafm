@@ -220,10 +220,18 @@ pub struct StorageViewSnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageDirectoryFilter {
+  pub folder_id: String,
+  pub query: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageFileReveal {
   pub tree: StorageTree,
   pub location: StorageLocation,
   pub page: StorageChildrenPage,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub filtered_page: Option<StorageChildrenPage>,
   pub selected_file: StorageNode,
 }
 

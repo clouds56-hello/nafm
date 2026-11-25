@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, FileContentMatchStatus,
-  HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent, SiteFolderKind, SiteHashStatus,
-  StageWarningReason, StorageNodeKind,
+  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, DirectorySortField,
+  FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent,
+  SiteFolderKind, SiteHashStatus, SortDirection, StageWarningReason, StorageDirectoryFilter, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -570,6 +570,68 @@ async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
   assert_eq!(from_atlas.location.root.id, reveal.location.root.id);
   assert_eq!(from_atlas.page.offset, reveal.page.offset);
   assert_eq!(from_atlas.tree.coverage_target.unwrap().id, target.id);
+  assert!(from_atlas.filtered_page.is_none());
+
+  let sort = DirectorySort {
+    field: DirectorySortField::Name,
+    direction: SortDirection::Asc,
+  };
+  let filter = StorageDirectoryFilter {
+    folder_id: reveal.location.root.id.clone(),
+    query: "  L  ".into(),
+  };
+  let filtered_reveal = fixture
+    .repo
+    .storage_node_reveal_with_filter(
+      &source.id,
+      Some(&target.id),
+      &reveal.selected_file.id,
+      2,
+      2,
+      2,
+      sort,
+      Some(&filter),
+    )
+    .await
+    .unwrap();
+  assert_eq!(
+    (filtered_reveal.page.offset, filtered_reveal.page.total_children),
+    (4, 7)
+  );
+  let page = filtered_reveal.filtered_page.unwrap();
+  assert_eq!((page.offset, page.limit, page.total_children), (2, 2, 5));
+  assert_eq!(page.parent.id, filter.folder_id);
+  assert_eq!(page.coverage_target.unwrap().id, target.id);
+  assert_eq!(page.children[0].name, "last.bin");
+  assert_eq!(page.children[1].id, reveal.selected_file.id);
+
+  for (folder_id, query) in [
+    (filter.folder_id.as_str(), "large"),
+    (reveal.location.breadcrumbs[0].id.as_str(), "selected"),
+    (filter.folder_id.as_str(), " \t "),
+  ] {
+    let reveal = fixture
+      .repo
+      .storage_node_reveal_with_filter(
+        &source.id,
+        Some(&target.id),
+        &reveal.selected_file.id,
+        2,
+        2,
+        2,
+        sort,
+        Some(&StorageDirectoryFilter {
+          folder_id: folder_id.to_owned(),
+          query: query.to_owned(),
+        }),
+      )
+      .await
+      .unwrap();
+    assert!(reveal.filtered_page.is_none());
+    assert_eq!((reveal.page.offset, reveal.page.total_children), (4, 7));
+    assert_eq!(reveal.page.children[0].id, reveal.selected_file.id);
+  }
+
   let wrong_site = fixture
     .repo
     .storage_node_reveal(

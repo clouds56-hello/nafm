@@ -14,6 +14,7 @@ interface DirectoryContentsProps {
   directoryTotal: number;
   searchText: string | null;
   onSearchChange: (text: string | null) => void;
+  onRestoreSearch?: () => void;
   selection: StorageNode | null;
   sort: DirectorySort;
   onSort: (sort: DirectorySort) => Promise<void>;
@@ -39,7 +40,7 @@ interface DirectoryContentsProps {
 }
 
 export function DirectoryContents({
-  location, page, directoryTotal, searchText, onSearchChange, selection, sort, onSort, metric, targetCompleteness,
+  location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
   scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId, historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
@@ -226,7 +227,7 @@ export function DirectoryContents({
         </div>
         <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
         {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
-        {directoryTotal > 0 && !searchOpen && !awaitingInventory && (
+        {directoryTotal > 0 && !searchOpen && !onRestoreSearch && !awaitingInventory && (
           <button
             type="button" className="atlas-directory-search-toggle" ref={searchTrigger}
             aria-label="Search this folder" title="Search this folder"
@@ -237,6 +238,15 @@ export function DirectoryContents({
           >
             <SearchIcon width="16" height="16" />
           </button>
+        )}
+        {onRestoreSearch && (
+          <div className="atlas-directory-search-pause">
+            <span role="status">Search paused</span>
+            <button type="button" className="atlas-text-button" onClick={() => {
+              searchFocus.current = "input";
+              onRestoreSearch();
+            }}>Restore search</button>
+          </div>
         )}
         {searchOpen && (
           <div className="atlas-directory-search-row">

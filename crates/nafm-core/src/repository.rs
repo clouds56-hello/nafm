@@ -20,7 +20,8 @@ use crate::model::{
   RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder,
   SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport,
   StageRemoveReport, StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
+  StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -980,10 +981,7 @@ impl Repository {
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
-    let query = query
-      .map(str::trim)
-      .filter(|query| !query.is_empty())
-      .map(str::to_lowercase);
+    let query = query.and_then(normalize_directory_query);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
@@ -1140,6 +1138,7 @@ impl Repository {
           max_children,
           page_limit,
           sort,
+          None,
         )
         .map_err(|error| match error {
           NafmError::StorageNodeNotFound(_) | NafmError::StorageNodeNotNavigable(_) => {
@@ -1163,10 +1162,37 @@ impl Repository {
     page_limit: u64,
     sort: DirectorySort,
   ) -> Result<StorageFileReveal> {
+    self
+      .storage_node_reveal_with_filter(
+        site_selector,
+        target_site_selector,
+        node_id,
+        max_depth,
+        max_children,
+        page_limit,
+        sort,
+        None,
+      )
+      .await
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_node_reveal_with_filter(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+    sort: DirectorySort,
+    filter: Option<&StorageDirectoryFilter>,
+  ) -> Result<StorageFileReveal> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
+    let filter = filter.cloned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
@@ -1184,6 +1210,7 @@ impl Repository {
           max_children,
           page_limit,
           sort,
+          filter.as_ref(),
         )
       })
     })
@@ -4518,6 +4545,7 @@ fn storage_node_reveal(
   max_children: u32,
   page_limit: u64,
   sort: DirectorySort,
+  filter: Option<&StorageDirectoryFilter>,
 ) -> Result<StorageFileReveal> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let missing = || NafmError::StorageNodeNotFound(node_id.to_owned());
@@ -4531,20 +4559,41 @@ fn storage_node_reveal(
   let parent = parent_path
     .last()
     .expect("a selected storage file should have a parent");
-  let child_builders = ordered_directory_entries(parent, sort, None);
-  let selected_index = child_builders
-    .iter()
-    .position(|child| child.id == selected.id)
-    .ok_or_else(missing)?;
+
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
-  let offset = selected_index as u64 / page_limit * page_limit;
-  let selected_file = storage_node_without_children(selected);
-  let page_children = child_builders
-    .into_iter()
-    .skip(offset as usize)
-    .take(page_limit as usize)
-    .map(storage_node_without_children)
-    .collect();
+  let page_for = |entries: &[&StorageNodeBuilder]| {
+    let index = entries.iter().position(|child| child.id == selected.id)?;
+    let offset = index as u64 / page_limit * page_limit;
+    Some(StorageChildrenPage {
+      site: site.clone(),
+      coverage_target: coverage_target.clone(),
+      parent: storage_node_without_children(parent),
+      children: entries
+        .iter()
+        .copied()
+        .skip(offset as usize)
+        .take(page_limit as usize)
+        .map(storage_node_without_children)
+        .collect(),
+      total_children: entries.len() as u64,
+      offset,
+      limit: page_limit,
+    })
+  };
+  let child_builders = ordered_directory_entries(parent, sort, None);
+  let page = page_for(&child_builders).ok_or_else(missing)?;
+  // Filter a subsequence of the existing order so both pages use the same tie breakers.
+  let filtered_page = filter
+    .filter(|filter| filter.folder_id == parent.id)
+    .and_then(|filter| normalize_directory_query(&filter.query))
+    .filter(|query| directory_entry_matches(selected, query))
+    .and_then(|query| {
+      let matched = child_builders
+        .into_iter()
+        .filter(|node| directory_entry_matches(node, &query))
+        .collect::<Vec<_>>();
+      page_for(&matched)
+    });
 
   Ok(StorageFileReveal {
     tree: StorageTree {
@@ -4555,8 +4604,8 @@ fn storage_node_reveal(
       root: finish_storage_node(root.clone(), 0, max_depth, max_children),
     },
     location: StorageLocation {
-      site: site.clone(),
-      coverage_target: coverage_target.clone(),
+      site,
+      coverage_target,
       max_depth,
       max_children,
       breadcrumbs: parent_path
@@ -4565,16 +4614,9 @@ fn storage_node_reveal(
         .collect(),
       root: finish_storage_node((*parent).clone(), 0, max_depth, max_children),
     },
-    page: StorageChildrenPage {
-      site,
-      coverage_target,
-      parent: storage_node_without_children(parent),
-      children: page_children,
-      total_children: parent.children.len() as u64,
-      offset,
-      limit: page_limit,
-    },
-    selected_file,
+    page,
+    filtered_page,
+    selected_file: storage_node_without_children(selected),
   })
 }
 
@@ -4765,6 +4807,15 @@ impl SortDirection {
   }
 }
 
+fn normalize_directory_query(query: &str) -> Option<String> {
+  let query = query.trim();
+  (!query.is_empty()).then(|| query.to_lowercase())
+}
+
+fn directory_entry_matches(node: &StorageNodeBuilder, query: &str) -> bool {
+  node.name.to_lowercase().contains(query)
+}
+
 fn ordered_directory_entries<'a>(
   parent: &'a StorageNodeBuilder,
   sort: DirectorySort,
@@ -4774,7 +4825,7 @@ fn ordered_directory_entries<'a>(
   let mut entries = parent
     .children
     .values()
-    .filter(|node| query.is_none_or(|query| node.name.to_lowercase().contains(query)))
+    .filter(|node| query.is_none_or(|query| directory_entry_matches(node, query)))
     .collect::<Vec<_>>();
   match sort.field {
     DirectorySortField::Size => entries.sort_by(|left, right| entry_size_order(left, right, sort.direction)),

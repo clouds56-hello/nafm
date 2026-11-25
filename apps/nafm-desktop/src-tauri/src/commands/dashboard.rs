@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use nafm_core::{
   DirectorySort, FileContentMatchesPage, IndexedFileSearchPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus,
-  StageCommitDryRun, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageTree,
-  StorageViewSnapshot,
+  StageCommitDryRun, StorageChildrenPage, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode,
+  StorageTree, StorageViewSnapshot,
 };
 use serde::Serialize;
 use tauri::State;
@@ -165,6 +165,8 @@ pub struct StorageFileRevealResponse {
   tree: StorageTreeResponse,
   location: StorageLocationResponse,
   page: StorageChildrenPage,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  filtered_page: Option<StorageChildrenPage>,
   selected_file: StorageNode,
 }
 
@@ -174,12 +176,14 @@ impl From<StorageFileReveal> for StorageFileRevealResponse {
       tree,
       location,
       page,
+      filtered_page,
       selected_file,
     } = reveal;
     Self {
       tree: StorageTreeResponse::from(tree),
       location: StorageLocationResponse::from(location),
       page,
+      filtered_page,
       selected_file,
     }
   }
@@ -421,11 +425,12 @@ pub async fn get_storage_node_reveal(
   max_children: u32,
   limit: u64,
   sort: Option<DirectorySort>,
+  filter: Option<StorageDirectoryFilter>,
 ) -> Result<StorageFileRevealResponse, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .storage_node_reveal(
+    .storage_node_reveal_with_filter(
       &site_id,
       target_site_id.as_deref(),
       &node_id,
@@ -433,6 +438,7 @@ pub async fn get_storage_node_reveal(
       max_children,
       limit,
       sort.unwrap_or_default(),
+      filter.as_ref(),
     )
     .await
     .map(StorageFileRevealResponse::from)
@@ -640,6 +646,7 @@ mod tests {
         offset: 0,
         limit: 6,
       },
+      filtered_page: None,
       selected_file,
     };
 
@@ -656,6 +663,11 @@ mod tests {
     assert_eq!(snapshot_json["page"]["children"][0]["id"], "selected-file");
     assert_eq!(snapshot_json["page"]["children"][0]["modified_unix_millis"], 1000);
 
+    let mut filtered_reveal = reveal.clone();
+    filtered_reveal.filtered_page = Some(reveal.page.clone());
+    let filtered_json = serde_json::to_value(StorageFileRevealResponse::from(filtered_reveal)).unwrap();
+    assert_eq!(filtered_json["filtered_page"]["children"][0]["id"], "selected-file");
+
     let json = serde_json::to_value(StorageFileRevealResponse::from(reveal)).unwrap();
     assert_eq!(json["tree"]["site_id"], "source-site");
     assert!(json["tree"].get("site").is_none());
@@ -666,6 +678,7 @@ mod tests {
     assert!(json["location"].get("max_depth").is_none());
     assert!(json["location"].get("max_children").is_none());
     assert_eq!(json["page"]["limit"], 6);
+    assert!(json.get("filtered_page").is_none());
     assert_eq!(json["selected_file"]["id"], "selected-file");
     assert_eq!(json["selected_file"]["verified_bytes"], 6);
     assert_eq!(json["selected_file"]["estimated_space_health"], 62.5);

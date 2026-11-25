@@ -30,6 +30,7 @@ import type {
   StageAddReport,
   StageRemoveReport,
   StorageChildrenPage,
+  StorageDirectoryFilter,
   StorageFileReveal,
   StorageLocation,
   StorageTree,
@@ -296,9 +297,10 @@ export function getStorageNodeReveal(
   maxChildren: number,
   limit: number,
   sort?: DirectorySort,
+  filter?: StorageDirectoryFilter,
 ): Promise<StorageFileReveal> {
   return invoke<StorageFileReveal>("get_storage_node_reveal", {
-    expectedWorkspace, siteId, nodeId, targetSiteId, maxDepth, maxChildren, limit, sort,
+    expectedWorkspace, siteId, nodeId, targetSiteId, maxDepth, maxChildren, limit, sort, filter,
   });
 }
 
