@@ -280,6 +280,28 @@ export interface StorageDirectoryAnchor {
   query: string | null;
 }
 
+export interface DirectoryRefresh {
+  page: StorageChildrenPage;
+  previousIndex: number;
+  index: number;
+  previousTotal: number;
+  missingEntry: boolean;
+}
+
+export interface DirectoryRefreshPosition {
+  siteId: string;
+  targetSiteId: string | null;
+  nodeId: string;
+  childId: string;
+  index: number;
+  total: number;
+}
+
+export interface DirectoryRefreshTarget {
+  getUnfilteredPosition: () => DirectoryRefreshPosition | null;
+  receive: (update: DirectoryRefresh) => boolean | void;
+}
+
 export interface StorageDirectoryFilter {
   folder_id: string;
   query: string;

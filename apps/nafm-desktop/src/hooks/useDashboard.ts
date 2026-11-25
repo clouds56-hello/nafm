@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { siteAnalysisReady } from "../lib/analysis";
 import { readAtlasBrowsing, rememberAtlasFolder } from "../lib/atlasBrowsing";
 import { formatCount } from "../lib/format";
@@ -35,6 +35,7 @@ import type {
   CleanupPreview,
   CancelScanMode,
   Dashboard,
+  DirectoryRefreshTarget,
   DirectorySort,
   DuplicateFile,
   FileContentMatch,
@@ -122,7 +123,7 @@ interface LocationLoadOptions {
 
 interface DirectoryAnchorLoad {
   request: StorageDirectoryAnchor;
-  onArrival: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => void;
+  onArrival: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
 }
 
 type FileRevealDestination =
@@ -205,7 +206,12 @@ function validTarget(
   return sites.find((site) => site.id !== sourceSiteId)?.id ?? null;
 }
 
-export function useDashboard(expectedWorkspace: string | null, siteListRevision: number, browsingScope: string) {
+export function useDashboard(
+  expectedWorkspace: string | null,
+  siteListRevision: number,
+  browsingScope: string,
+  directoryRefresh: RefObject<DirectoryRefreshTarget | null>,
+) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -437,7 +443,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const read = (destination: NavigationEntry) => getStorageViewSnapshot(
       workspace, destination.site_id, destination.target_site_id, destination.node_id,
       destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH), destination.sort,
-      anchor?.request,
+      destination.node_id === entry.node_id ? anchor?.request : undefined,
     );
 
     try {
@@ -456,10 +462,11 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       if (!isCurrent()) return "superseded";
 
       const { location: nextLocation, tree } = snapshot;
+      const sameFolder = nextLocation.root.id === entry.node_id;
       const page: DirectoryWindow = {
         ...snapshot.page,
         sort: entry.sort,
-        anchor_offset: nextLocation.root.id === entry.node_id && entry.anchor_offset < snapshot.page.total_children
+        anchor_offset: sameFolder && ((silent && anchor) || entry.anchor_offset < snapshot.page.total_children)
           ? entry.anchor_offset : snapshot.page.offset,
       };
       const preserved = historyAction === "preserve" ? selectionRef.current : null;
@@ -469,7 +476,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
 
-      anchor?.onArrival(nextLocation, page, snapshot.filtered_page);
+      if (sameFolder && anchor?.onArrival(nextLocation, page, snapshot.filtered_page) === false) return "superseded";
       if (previousEntry && previousEntry.site_id !== entry.site_id) {
         lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
       }
@@ -568,9 +575,33 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       ? { ...current, target_site_id: targetSiteId }
       : rememberedSiteEntry(browsingScope, foreground ? workspace : null, siteId, targetSiteId,
         readSiteDirectorySort(workspace, siteId));
-    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground });
+    const positionForFolder = (target: DirectoryRefreshTarget | null) => {
+      const position = target?.getUnfilteredPosition();
+      return position?.siteId === entry.site_id && position.targetSiteId === entry.target_site_id
+        && position.nodeId === entry.node_id ? position : null;
+    };
+    const position = !foreground && preserve ? positionForFolder(directoryRefresh.current) : null;
+    const anchor: DirectoryAnchorLoad | undefined = position ? {
+      request: { child_id: position.childId, query: null },
+      onArrival: (_location, page) => {
+        const target = directoryRefresh.current;
+        const latest = positionForFolder(target);
+        if (!latest) return;
+        // A movement inside the loaded window does not start a new directory read.
+        if (latest.childId !== position.childId || latest.index !== position.index) return false;
+        const match = page.children.findIndex((entry) => entry.id === position.childId);
+        return target?.receive({
+          page,
+          previousIndex: position.index,
+          index: match < 0 ? Math.min(position.index, Math.max(0, page.total_children - 1)) : page.offset + match,
+          previousTotal: position.total,
+          missingEntry: match < 0,
+        });
+      },
+    } : undefined;
+    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor });
     return result === "loaded";
-  }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
+  }, [browsingScope, currentNavigationEntry, directoryRefresh, loadFolderLocation]);
 
   const acceptDashboard = useCallback((next: Dashboard) => {
     const workspaceChanged = dashboardRef.current !== null

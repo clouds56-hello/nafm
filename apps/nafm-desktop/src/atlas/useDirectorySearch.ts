@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getStorageChildren } from "../lib/tauri";
-import type { DirectorySort, StorageChildrenPage } from "../lib/types";
+import type { DirectoryRefresh, DirectorySort, StorageChildrenPage } from "../lib/types";
 
 const firstWindow = { offset: 0, limit: 64 };
 type SearchRange = typeof firstWindow;
@@ -11,14 +11,6 @@ interface DirectoryRequest {
   preferredIndex?: number;
 }
 
-export interface DirectorySearchRefresh {
-  previousIndex: number;
-  index: number;
-  previousTotal: number;
-  total: number;
-  missingEntry: boolean;
-}
-
 interface DirectorySearchOptions {
   scope: string;
   siteId?: string;
@@ -27,7 +19,7 @@ interface DirectorySearchOptions {
   query: string;
   sort: DirectorySort;
   contentRevision: number;
-  onRefresh?: (update: DirectorySearchRefresh) => boolean | void;
+  onRefresh?: (update: DirectoryRefresh) => boolean | void;
 }
 
 function directorySearchKey(scope: string, targetId: string | undefined, query: string, sort: DirectorySort) {
@@ -89,7 +81,7 @@ export function useDirectorySearch({
           const match = anchor ? next.children.findIndex((node) => node.id === anchor) : -1;
           const index = match >= 0 ? next.offset + match : Math.min(refreshIndex, Math.max(0, next.total_children - 1));
           if (latest.current.onRefresh?.({
-            previousIndex: refreshIndex, index, previousTotal: page.total_children, total: next.total_children,
+            page: next, previousIndex: refreshIndex, index, previousTotal: page.total_children,
             missingEntry: Boolean(anchor && match < 0),
           }) === false) return;
           nextRange = { offset: next.offset, limit: next.limit };

@@ -7,7 +7,7 @@ const OVERSCAN = 4;
 interface ViewportOptions {
   contentsKey: string;
   anchorIndex: number;
-  reveal?: { index: number; onApplied: () => void };
+  reveal?: { index: number; position?: number | "end"; onApplied: () => void };
   total: number;
   active: boolean;
   rowHeightProperty?: string;
@@ -56,13 +56,15 @@ export function useDirectoryViewport({
       const oldHeight = rowHeight;
       const oldScale = scale.current;
       rowHeight = Number.parseFloat(getComputedStyle(list).getPropertyValue(rowHeightProperty));
+      // Wait for the new track before consuming a reveal that may be clamped by the previous list's height.
+      if (pendingReveal && Math.abs(list.offsetHeight - Math.min(MAX_TRACK_HEIGHT, total * rowHeight)) > 1) return;
       const visibleRows = (pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight;
       capacity = Math.max(1, Math.ceil(visibleRows));
       const oldRange = physicalRange;
       physicalRange = Math.max(0, pane.scrollHeight - pane.clientHeight);
       const excess = Math.max(0, total * rowHeight - MAX_TRACK_HEIGHT);
       scale.current = physicalRange ? 1 + excess / physicalRange : 1;
-      let position = scrollPositions.get(contentsKey) ?? anchorIndex;
+      let position = pendingReveal?.position ?? scrollPositions.get(contentsKey) ?? anchorIndex;
       if (pendingReveal) {
         const savedTop = position === "end" ? physicalRange * scale.current / rowHeight : position;
         if (pendingReveal.index < savedTop || pendingReveal.index + 1 > savedTop + visibleRows) {
@@ -80,6 +82,7 @@ export function useDirectoryViewport({
     measure();
     const resize = new ResizeObserver(measure);
     resize.observe(pane);
+    if (pendingReveal) resize.observe(list);
     if (header) resize.observe(header);
     pane.addEventListener("scroll", readPosition, { passive: true });
     return () => {

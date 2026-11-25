@@ -363,6 +363,112 @@ test("Arrow Down resumes keyboard browsing at the first visible row after a scro
   await expect(row(firstVisible + 1)).toBeInViewport();
 });
 
+async function prepareContentsRescan(page: Page) {
+  await page.goto("/mock/?scenario=large");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  await sort.click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(grid).toHaveAttribute("aria-rowcount", "6");
+  const photos = grid.getByRole("button", { name: /^Photo Library/ });
+  await expect(grid.locator('[aria-rowindex="3"] [data-entry-id]')).toHaveAccessibleName(/^Photo Library/);
+  await photos.focus();
+  await expect(photos).toBeFocused();
+  const photoId = (await photos.getAttribute("data-entry-id"))!;
+
+  const scan = await page.evaluateHandle(async (photoId) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    // Update the preview index independently of the UI, then publish it through a normal scan.
+    for (let index = 1; index <= 48; index += 1) {
+      await bridge.invoke("add_site_folder", {
+        workspaceName: "Studio workspace", siteId: "studio-archive",
+        path: "/demo/A import " + String(index).padStart(2, "0"),
+      });
+    }
+    const directory = await bridge.invoke("get_storage_children", {
+      siteId: "studio-archive", nodeId: "site:studio-archive", targetSiteId: "field-drive",
+      offset: 0, limit: 64, sort: { field: "name", direction: "asc" },
+    }) as StorageChildrenPage;
+    return {
+      rank: directory.children.findIndex((entry) => entry.id === photoId) + 1,
+      start: () => bridge.invoke("start_scan", {
+        expectedWorkspace: "Studio workspace", selector: { site_id: "studio-archive" },
+      }),
+    };
+  }, photoId);
+  expect(await scan.evaluate((state) => state.rank)).toBe(51);
+  return { grid, sort, photos, photoId, scan };
+}
+
+test.describe("Contents during a rescan", () => {
+  test.use({ viewport: { width: 1280, height: 800 }, reducedMotion: "reduce" });
+
+  test("a rescan follows a focused folder that moves beyond the current Contents viewport", async ({ page }) => {
+    const { grid, sort, photos, photoId, scan } = await prepareContentsRescan(page);
+    await scan.evaluate((state) => state.start());
+
+    await expect(grid).toHaveAttribute("aria-rowcount", "54", { timeout: 12_000 });
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await expect(sort).toHaveAttribute("title", "Name, ascending");
+    await expect(photos).toBeFocused();
+    await expect(photos).toBeInViewport({ ratio: 0.99 });
+    await expect(grid.locator('[aria-rowindex="51"] [data-entry-id]')).toHaveAttribute("data-entry-id", photoId);
+    await page.keyboard.press("ArrowDown");
+    await expect(grid.getByRole("button", { name: /^Projects/ })).toBeFocused();
+  });
+
+  test("a pending rescan snapshot follows the newer Contents focus", async ({ page }) => {
+    const { grid, photos, photoId, scan } = await prepareContentsRescan(page);
+    const projects = grid.getByRole("button", { name: /^Projects/ });
+    const projectsId = (await projects.getAttribute("data-entry-id"))!;
+    const snapshot = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (command: string, args: { nodeId?: string; anchor?: { child_id: string } }) => Promise<unknown>;
+        };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = { pending: false, anchor: null as string | null, release };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (!read.pending && command === "get_storage_view_snapshot" && args.nodeId === "site:studio-archive") {
+          read.pending = true;
+          read.anchor = args.anchor?.child_id ?? null;
+          await gate;
+        }
+        return response;
+      };
+      return read;
+    });
+
+    try {
+      await scan.evaluate((state) => state.start());
+      await expect.poll(() => snapshot.evaluate((read) => read.pending), { timeout: 12_000 }).toBe(true);
+      expect(await snapshot.evaluate((read) => read.anchor)).toBe(photoId);
+      await expect(grid).toHaveAttribute("aria-rowcount", "6");
+      await expect(photos).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(projects).toBeFocused();
+    } finally {
+      await snapshot.evaluate((read) => read.release());
+    }
+
+    await expect(grid).toHaveAttribute("aria-rowcount", "54", { timeout: 12_000 });
+    await expect(projects).toBeFocused();
+    await expect(projects).toBeInViewport({ ratio: 0.99 });
+    await expect(grid.locator('[aria-rowindex="52"] [data-entry-id]')).toHaveAttribute("data-entry-id", projectsId);
+  });
+});
+
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {
   let releaseFirst!: () => void;
   const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });

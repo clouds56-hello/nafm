@@ -1,11 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { formatCount } from "../lib/format";
-import type { DirectorySort, FolderOpenDestination, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
+import type {
+  DirectoryRefresh, DirectoryRefreshPosition, DirectoryRefreshTarget, DirectorySort, FolderOpenDestination, HealthMetric,
+  StorageChildrenPage, StorageLocation, StorageNode,
+} from "../lib/types";
 import { CloseIcon, SearchIcon } from "../management/Icons";
 import { DirectorySortControl } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
-import type { DirectorySearchRefresh } from "./useDirectorySearch";
 import { useDirectoryViewport } from "./useDirectoryViewport";
 import "./directory.css";
 
@@ -26,7 +28,7 @@ interface DirectoryContentsProps {
   contentsKey: string;
   anchorIndex: number;
   reveal?: { index: number; onApplied: () => void };
-  refreshHandler?: RefObject<((update: DirectorySearchRefresh) => boolean | void) | null>;
+  refreshHandler?: RefObject<DirectoryRefreshTarget | null>;
   returnEntryId: string | null;
   resumeVisibleRow: boolean;
   historyFocusOrigin: HTMLElement | null;
@@ -65,16 +67,22 @@ export function DirectoryContents({
   const [cursors, setCursors] = useState(() => new Map<string, string>());
   const cursor = cursors.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
-  const keyboardRow = useRef<{ key: string; index: number; preventScroll?: boolean } | null>(null);
+  const keyboardRow = useRef<{
+    key: string; index: number; refreshPage?: StorageChildrenPage; preventScroll?: boolean;
+  } | null>(null);
   const returningEntry = useRef<{ id: string | null } | null>(null);
-  const [refreshReveal, setRefreshReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
+  const [refreshReveal, setRefreshReveal] = useState<{
+    key: string; page: StorageChildrenPage; index: number; position: number | "end"; onApplied: () => void;
+  } | null>(null);
   const [missingRefreshKey, setMissingRefreshKey] = useState<string | null>(null);
   const directoryId = location?.root.id;
   const total = page?.total_children ?? 0;
   const offset = page?.offset ?? 0;
+  const committedReveal = refreshReveal?.key === contentsKey && refreshReveal.page === page ? refreshReveal : undefined;
+  const placingRefresh = Boolean(committedReveal);
   const viewport = useDirectoryViewport({
     contentsKey, anchorIndex, total, active, scrollPane, scrollPositions,
-    reveal: reveal ?? (refreshReveal?.key === contentsKey ? refreshReveal : undefined),
+    reveal: reveal ?? committedReveal,
   });
   const { listRef, first, start, end, ready } = viewport;
   const rowPreview = useDirectoryPreview({
@@ -88,14 +96,10 @@ export function DirectoryContents({
   }, [searchOpen, active]);
 
   useEffect(() => {
-    if (!active || !ready || loading || !page || end <= start) return;
+    if (!active || !ready || loading || placingRefresh || !page || end <= start) return;
     const request = () => {
-      const list = listRef.current;
-      const focus = document.activeElement;
-      const row = focus?.closest<HTMLElement>("[data-virtual-row]");
-      const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : first;
-      const pending = keyboardRow.current;
-      const preferred = focus === list && pending?.key === contentsKey ? pending.index : focusedIndex;
+      const { pending, focusedIndex } = readResultFocus();
+      const preferred = pending?.index ?? focusedIndex ?? first;
       onLoadRange(start, end, preferred >= start && preferred < end ? preferred : first);
     };
     if (end <= offset || start >= offset + page.children.length) {
@@ -104,12 +108,13 @@ export function DirectoryContents({
       return () => window.clearTimeout(timer);
     }
     request();
-  }, [active, ready, loading, first, start, end, page, offset, cursor, contentsKey, listRef, onLoadRange]);
+  }, [active, ready, loading, placingRefresh, first, start, end, page, offset, cursor, contentsKey, listRef, onLoadRange]);
 
   useLayoutEffect(() => {
-    if (!refreshHandler || !active || !filtering) return;
-    refreshHandler.current = receiveRefresh;
-    return () => { if (refreshHandler.current === receiveRefresh) refreshHandler.current = null; };
+    if (!refreshHandler || !active) return;
+    const target = { getUnfilteredPosition, receive: receiveRefresh };
+    refreshHandler.current = target;
+    return () => { if (refreshHandler.current === target) refreshHandler.current = null; };
   });
 
   useEffect(() => {
@@ -161,6 +166,10 @@ export function DirectoryContents({
       keyboardRow.current = null;
       return;
     }
+    if (pending?.refreshPage) {
+      if (pending.refreshPage !== page) return;
+      pending.refreshPage = undefined;
+    }
     if (!ready && total) return;
     const parentEntry = destination?.row
       ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(destination.row)}"]`) : null;
@@ -198,13 +207,41 @@ export function DirectoryContents({
     ?? loaded.find((node) => node.id === selection?.id)?.id
     ?? visible.find((row) => row.index >= first && row.node)?.node?.id ?? loaded[0]?.id;
 
-  function receiveRefresh({ previousIndex, index, previousTotal, total, missingEntry }: DirectorySearchRefresh) {
-    if (reveal || loading || keyboardFolder.current) return;
+  function readResultFocus() {
     const list = listRef.current;
     const focus = document.activeElement;
     const row = focus?.closest<HTMLElement>("[data-virtual-row]");
     const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : null;
-    const pending = focus === list && keyboardRow.current?.key === contentsKey ? keyboardRow.current : null;
+    const onList = list !== null && focus === list;
+    const pending = onList && keyboardRow.current?.key === contentsKey ? keyboardRow.current : null;
+    return { list, onList, focusedIndex, pending };
+  }
+
+  function getUnfilteredPosition(): DirectoryRefreshPosition | null {
+    if (filtering || loading || !ready || reveal || historyFocusOrigin || keyboardFolder.current || returningEntry.current
+      || !location || !page || page.parent.id !== location.root.id) return null;
+    const { pending, focusedIndex } = readResultFocus();
+    if (pending?.refreshPage && pending.refreshPage !== page) return null;
+    const keyboardIndex = pending?.index ?? focusedIndex;
+    const firstLoaded = Math.max(first, offset);
+    if (keyboardIndex === null && firstLoaded >= first + viewport.capacity) return null;
+    const index = keyboardIndex ?? firstLoaded;
+    const entry = page.children[index - offset];
+    if (!entry) return null;
+    return {
+      siteId: location.site_id,
+      targetSiteId: location.coverage_target?.id ?? null,
+      nodeId: location.root.id,
+      childId: entry.id,
+      index,
+      total,
+    };
+  }
+
+  function receiveRefresh({ previousIndex, index, previousTotal, page: nextPage, missingEntry }: DirectoryRefresh) {
+    if (reveal || loading || keyboardFolder.current) return;
+    const total = nextPage.total_children;
+    const { list, onList, focusedIndex, pending } = readResultFocus();
     const newerIndex = pending?.index ?? focusedIndex;
     if (newerIndex !== null && newerIndex !== previousIndex) {
       const insideWindow = newerIndex >= start && newerIndex < end;
@@ -215,21 +252,25 @@ export function DirectoryContents({
     setMissingRefreshKey(missingEntry && ownsFocusedRow ? contentsKey : null);
     if (!total) {
       keyboardRow.current = null;
-      if (ownsFocusedRow || focus === list) searchInput.current?.focus({ preventScroll: true });
+      if (ownsFocusedRow || onList) {
+        (filtering ? searchInput.current : headingRef.current)?.focus({ preventScroll: true });
+      }
       return;
     }
     if (ownsFocusedRow && (index !== previousIndex || missingEntry)) {
       list?.focus({ preventScroll: true });
-      keyboardRow.current = { key: contentsKey, index, preventScroll: true };
+      keyboardRow.current = { key: contentsKey, index, refreshPage: nextPage, preventScroll: true };
     } else if (pending) {
-      keyboardRow.current = { key: contentsKey, index, preventScroll: true };
+      keyboardRow.current = { key: contentsKey, index, refreshPage: nextPage, preventScroll: true };
     }
     if (index !== previousIndex || total !== previousTotal) {
       const saved = scrollPositions.get(contentsKey) ?? first;
       const keepEnd = saved === "end" && total - index <= previousTotal - previousIndex;
-      const next = keepEnd ? "end" : Math.max(0, (saved === "end" ? first : saved) + index - previousIndex);
-      scrollPositions.set(contentsKey, next);
-      setRefreshReveal({ key: contentsKey, index, onApplied: () => setRefreshReveal(null) });
+      const position = keepEnd ? "end" : Math.max(0, (saved === "end" ? first : saved) + index - previousIndex);
+      setRefreshReveal({
+        key: contentsKey, page: nextPage, index, position,
+        onApplied: () => setRefreshReveal((current) => current?.page === nextPage ? null : current),
+      });
     }
   }
 
@@ -323,7 +364,11 @@ export function DirectoryContents({
               {missingRefreshKey === contentsKey ? "Previous match unavailable" : `${formatCount(total)} ${total === 1 ? "match" : "matches"}`}
             </span>
           )}
-          {!filtering && total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
+          {!filtering && (total > 0 || missingRefreshKey === contentsKey) && (
+            <span className="atlas-directory-total" role={missingRefreshKey === contentsKey ? "status" : undefined}>
+              {missingRefreshKey === contentsKey ? "Previous entry unavailable" : `${formatCount(total)} ${total === 1 ? "entry" : "entries"}`}
+            </span>
+          )}
         </div>
         <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
         {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}

@@ -18,13 +18,16 @@ import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { useDashboard } from "../hooks/useDashboard";
-import { useDirectorySearch, type DirectorySearchRefresh } from "./useDirectorySearch";
+import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import { siteHasInventory } from "../lib/scanView";
-import type { DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage, HealthMetric, StorageNode } from "../lib/types";
+import type {
+  DirectoryRefresh, DirectoryRefreshTarget, DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage,
+  HealthMetric, StorageNode,
+} from "../lib/types";
 import { resolveAddedSite, type AddSiteOrigin, type SiteAddition } from "../management/siteAddition";
 
 interface ContentsVisit {
@@ -109,8 +112,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const lastOpened = useRef<"sites" | "inspector">("inspector");
   const mapRegion = useRef<HTMLElement>(null);
   const contentsPane = useRef<HTMLDivElement>(null);
-  const directorySearchRefresh = useRef<((update: DirectorySearchRefresh) => boolean | void) | null>(null);
-  const onSearchRefresh = useCallback((update: DirectorySearchRefresh) => directorySearchRefresh.current?.(update), []);
+  const directoryRefresh = useRef<DirectoryRefreshTarget | null>(null);
+  const onSearchRefresh = useCallback((update: DirectoryRefresh) => directoryRefresh.current?.receive(update), []);
   const contentsScroll = useRef(new Map<string, number | "end">());
   const focusFirstSite = useRef(false);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
@@ -128,7 +131,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
-  const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope);
+  const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope, directoryRefresh);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
@@ -748,7 +751,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       reveal={ancestorAnchor?.key === contentsKey ? ancestorAnchor : undefined}
-                      refreshHandler={search.enabled ? directorySearchRefresh : undefined}
+                      refreshHandler={directoryRefresh}
                       returnEntryId={currentVisit?.source === "contents"
                         ? currentVisit.fileId : revealedRow?.key === contentsKey ? revealedRow.id : null}
                       resumeVisibleRow={currentVisit?.source === "atlas"}
