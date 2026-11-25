@@ -80,9 +80,10 @@ type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
 
 type FileRevealDestination =
   | { kind: "node"; siteId: string; id: string; shouldApply?: () => boolean }
-  | { kind: "match"; siteId: string; id: string };
+  | { kind: "match"; siteId: string; id: string; signal: AbortSignal };
 
 type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">;
+type FileRevealResult = { location: FileRevealLocation; error: null } | { location: null; error: string };
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1140,25 +1141,44 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (failed) void loadChildrenRange(failed.start, failed.end);
   }, [loadChildrenRange]);
 
-  const revealFile = useCallback(async (destination: FileRevealDestination): Promise<FileRevealLocation | null> => {
+  const revealFile = useCallback(async (destination: FileRevealDestination): Promise<FileRevealResult> => {
     const requestedWorkspace = workspaceNameRef.current;
     const currentSiteId = selectedSiteRef.current;
     const currentDashboard = dashboardRef.current;
-    if (!requestedWorkspace || !currentSiteId || !currentDashboard || navigationInProgressRef.current) return null;
+    if (navigationInProgressRef.current || childrenLoadingRef.current) {
+      return { location: null, error: "Wait for the current folder to finish loading, then try again." };
+    }
+    if (!requestedWorkspace || !currentSiteId || !currentDashboard) {
+      return { location: null, error: "The workspace is unavailable." };
+    }
 
     const currentTarget = targetSiteRef.current;
     const previousEntry = currentNavigationEntry();
-    const matchesSelection = () => destination.kind === "match"
-      || (selectedSiteRef.current === destination.siteId && selectedNodeRef.current?.id === destination.id
+    const isRequested = () => destination.kind === "match"
+      ? !destination.signal.aborted
+      : (selectedSiteRef.current === destination.siteId && selectedNodeRef.current?.id === destination.id
         && (destination.shouldApply?.() ?? true));
-    if (!matchesSelection()) return null;
+    const cancelled = { location: null, error: "File navigation was cancelled." } as const;
+    if (!isRequested()) return cancelled;
 
     const requestId = ++locationRequestRef.current;
     const operationId = ++navigationOperationRef.current;
     const canApply = () => locationRequestRef.current === requestId
       && navigationOperationRef.current === operationId
       && workspaceNameRef.current === requestedWorkspace
-      && matchesSelection();
+      && isRequested();
+    const finish = () => {
+      if (navigationOperationRef.current === operationId) {
+        navigationInProgressRef.current = false;
+      }
+      if (locationRequestRef.current === requestId) {
+        childrenLoadingRef.current = false;
+        setChildrenLoading(false);
+      }
+    };
+    // IPC may still finish after closing the dialog. Release navigation immediately and discard its reply.
+    const signal = destination.kind === "match" ? destination.signal : undefined;
+    signal?.addEventListener("abort", finish, { once: true });
     childrenRequestRef.current += 1;
     pendingRangeRef.current = null;
     childrenRetryRef.current = null;
@@ -1167,7 +1187,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setChildrenLoading(true);
     childrenLoadingRef.current = true;
     setChildrenError(null);
-    setNotice(null);
+    if (destination.kind === "node") setNotice(null);
 
     try {
       const savedSort = readSiteDirectorySort(requestedWorkspace, destination.siteId);
@@ -1181,11 +1201,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
           requestedWorkspace, destination.siteId, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort,
         )
         : await getStorageFileReveal(requestedWorkspace, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
-      if (!canApply()) return null;
+      if (!canApply()) return cancelled;
 
-      const selectedIndex = destination.kind === "node"
-        ? reveal.page.children.findIndex((child) => child.id === destination.id)
-        : 0;
+      const selectedIndex = reveal.page.children.findIndex((child) => child.id === reveal.selected_file.id);
       if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
       const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
       const destinationEntry: NavigationEntry = {
@@ -1229,29 +1247,28 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         setBackHistory(backHistoryRef.current);
         setForwardHistory([]);
       }
-      return destinationEntry;
+      return { location: destinationEntry, error: null };
     } catch (revealError) {
-      if (canApply()) setNotice(errorMessage(revealError));
-      return null;
+      if (!canApply()) return cancelled;
+      const message = errorMessage(revealError);
+      if (destination.kind === "node") setNotice(message);
+      return { location: null, error: message };
     } finally {
-      if (navigationOperationRef.current === operationId) {
-        navigationInProgressRef.current = false;
-      }
-      if (locationRequestRef.current === requestId) {
-        childrenLoadingRef.current = false;
-        setChildrenLoading(false);
-      }
+      signal?.removeEventListener("abort", finish);
+      finish();
     }
   }, [currentNavigationEntry]);
 
-  const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
-    await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id });
+  const jumpToContentMatch = useCallback(async (match: FileContentMatch, signal: AbortSignal): Promise<string | null> => {
+    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal });
+    return result.error;
   }, [revealFile]);
 
   const revealSelectedFileInContents = useCallback(async (fileId: string, shouldApply?: () => boolean) => {
     const siteId = selectedSiteRef.current;
     if (!siteId || selectedNodeRef.current?.kind !== "file" || childrenLoadingRef.current) return null;
-    return revealFile({ kind: "node", siteId, id: fileId, shouldApply });
+    const result = await revealFile({ kind: "node", siteId, id: fileId, shouldApply });
+    return result.location;
   }, [revealFile]);
 
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {

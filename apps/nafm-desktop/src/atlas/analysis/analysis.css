@@ -163,30 +163,23 @@
   color: var(--atlas-ink);
 }
 
-.atlas-analysis-dialog button.atlas-analysis-row[aria-pressed="true"],
-.atlas-analysis-file[aria-current] { background: #23263d; }
+.atlas-analysis-dialog button.atlas-analysis-row[aria-pressed="true"] { background: #23263d; }
 
 .atlas-analysis-location,
-.atlas-analysis-score,
-.atlas-analysis-copy-site {
+.atlas-analysis-score {
   display: grid;
   min-width: 0;
   gap: 3px;
 }
 
 .atlas-analysis-location { flex: 1; }
-.atlas-analysis-location strong,
-.atlas-analysis-copy-site strong { color: var(--atlas-ink); font-size: 13px; font-weight: 570; overflow-wrap: anywhere; }
+.atlas-analysis-location strong { color: var(--atlas-ink); font-size: 13px; font-weight: 570; overflow-wrap: anywhere; }
 .atlas-analysis-location small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .atlas-analysis-location small,
 .atlas-analysis-score small,
-.atlas-analysis-copy-site small,
-.atlas-analysis-file-size,
-.atlas-analysis-current { color: var(--atlas-muted); font: 11px/1.4 var(--atlas-mono); }
+.atlas-analysis-file-size { color: var(--atlas-muted); font: 11px/1.4 var(--atlas-mono); }
 .atlas-analysis-score { flex: none; text-align: end; }
 .atlas-analysis-score strong { color: var(--atlas-accent); font: 15px/1.2 var(--atlas-mono); }
-.atlas-analysis-copy-site { flex: 0 1 108px; }
-.atlas-analysis-current,
 .atlas-analysis-file-size { flex: none; }
 .atlas-analysis-file button { flex: none; }
 
@@ -226,5 +219,4 @@
   .atlas-analysis-heading,
   .atlas-analysis-footer,
   .atlas-analysis-body { padding-inline: 12px; }
-  .atlas-analysis-copy-site { flex-basis: 68px; }
 }

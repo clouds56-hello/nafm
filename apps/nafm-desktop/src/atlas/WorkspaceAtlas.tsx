@@ -13,7 +13,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
-import type { DirectorySort, HealthMetric, StorageNode } from "../lib/types";
+import type { DirectorySort, FileContentMatch, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -219,6 +219,18 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     }
   }
 
+  async function showCopyInAtlas(match: FileContentMatch, signal: AbortSignal) {
+    const error = await state.jumpToContentMatch(match, signal);
+    if (error === null) {
+      inspectorOrigin.current = null;
+      lastOpened.current = "inspector";
+      setRevealedRow(null);
+      setInspectorBySite((saved) => new Map(saved).set(match.site_id, "details"));
+      setInspectorOpen(true);
+    }
+    return error;
+  }
+
   function changeMode(mode: MapMode) {
     setMapMode(mode);
     state.setHealthMetric(mode === "coverage_health" ? "coverage_health" : "space_health");
@@ -385,6 +397,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                       <ContentActions
                         workspaceName={dashboard.workspace_name}
                         siteId={site.id}
+                        siteName={site.name}
                         contentRevision={state.contentRevision}
                         node={selectedNode}
                         metric={state.healthMetric}
@@ -393,7 +406,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                        onJumpDuplicate={(match) => void state.jumpToContentMatch(match)}
+                        onJumpDuplicate={showCopyInAtlas}
                       />
                     )}
                   </StorageDetails>

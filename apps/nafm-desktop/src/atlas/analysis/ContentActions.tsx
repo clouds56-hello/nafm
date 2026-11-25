@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
-import { fileName, formatBytes, formatCount, formatHealth } from "../../lib/format";
-import { findSimilarFolders, getFileContentMatches } from "../../lib/tauri";
+import { formatBytes, formatCount, formatHealth } from "../../lib/format";
+import { findSimilarFolders } from "../../lib/tauri";
 import type {
   FileContentMatch,
   FolderSimilarityMatch,
@@ -8,7 +8,8 @@ import type {
   StorageNode,
 } from "../../lib/types";
 import { AnalysisDialog } from "./AnalysisDialog";
-import { AnalysisError, AnalysisPageControls } from "./AnalysisPageControls";
+import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
+import { FileCopiesDialog } from "./FileCopiesDialog";
 import { useAnalysisPage } from "./useAnalysisPage";
 
 const MATCH_PAGE_SIZE = 10;
@@ -16,6 +17,7 @@ const MATCH_PAGE_SIZE = 10;
 interface ContentActionsProps {
   workspaceName: string;
   siteId: string;
+  siteName: string;
   contentRevision: number;
   node: StorageNode;
   metric: HealthMetric;
@@ -24,7 +26,7 @@ interface ContentActionsProps {
   sourceAnalysisReady?: boolean;
   onStage: () => void;
   onUnstage: () => void;
-  onJumpDuplicate: (match: FileContentMatch) => void;
+  onJumpDuplicate: (match: FileContentMatch, signal: AbortSignal) => Promise<string | null>;
 }
 
 type AnalysisKind = "copies" | "similarity";
@@ -36,6 +38,7 @@ export function ContentActions(props: ContentActionsProps) {
 function ContentActionsView({
   workspaceName,
   siteId,
+  siteName,
   contentRevision,
   node,
   metric,
@@ -91,18 +94,14 @@ function ContentActionsView({
         </AnalysisDialog>
       )}
       {view === "copies" && canCheckCopies && (
-        <AnalysisDialog title="Exact copies" subtitle={path} onClose={() => setView(null)}>
-          <FileCopies
-            key={contentRevision}
-            workspaceName={workspaceName}
-            siteId={siteId}
-            path={path}
-            onJump={(match) => {
-              setView(null);
-              onJumpDuplicate(match);
-            }}
-          />
-        </AnalysisDialog>
+        <FileCopiesDialog
+          key={contentRevision}
+          workspaceName={workspaceName}
+          siteId={siteId}
+          source={{ name: node.name, site: siteName, path, size: node.total_bytes }}
+          onJump={onJumpDuplicate}
+          onClose={() => setView(null)}
+        />
       )}
     </>
   );
@@ -189,61 +188,6 @@ function ComparisonDetails({ match }: { match: FolderSimilarityMatch }) {
         <div><dt>Match extra copies</dt><dd>{formatCount(match.folder.extra_copy_count)}</dd></div>
       </dl>
       {match.partial && <p role="status" className="atlas-analysis-warning">Results cover the verified portions of these folders.</p>}
-    </section>
-  );
-}
-
-function VerificationNote({ pending, incomplete }: { pending: number; incomplete: number }) {
-  if (!pending && !incomplete) return null;
-  const notes = [
-    pending > 0 && `${formatCount(pending)} pending ${pending === 1 ? "hash" : "hashes"}`,
-    incomplete > 0 && `${formatCount(incomplete)} ${incomplete === 1 ? "site" : "sites"} with an incomplete inventory`,
-  ].filter(Boolean);
-  return <p className="atlas-analysis-warning" role="status">Results may be incomplete · {notes.join(" · ")}</p>;
-}
-
-interface FileCopiesProps {
-  workspaceName: string;
-  siteId: string;
-  path: string;
-  onJump: (match: FileContentMatch) => void;
-}
-
-function FileCopies({ workspaceName, siteId, path, onJump }: FileCopiesProps) {
-  const load = useCallback(
-    (offset: number) => getFileContentMatches(siteId, path, offset, MATCH_PAGE_SIZE, workspaceName),
-    [workspaceName, siteId, path],
-  );
-  const { page, loading, error, goTo, retry } = useAnalysisPage(load);
-  return (
-    <section className="atlas-analysis-results" aria-busy={loading}>
-      {loading && !page && <p role="status">Finding exact copies…</p>}
-      {error && <AnalysisError error={error} retry={retry} />}
-      {page && (
-        <>
-          {page.status === "not_hashed" && <p role="status">Scan this site to hash the file and find copies.</p>}
-          {page.status === "needs_verification" && <p role="status">This file needs verification before all copies can be shown.</p>}
-          <VerificationNote pending={page.workspace_pending_hash_count} incomplete={page.workspace_incomplete_site_count} />
-          {page.matches.length > 0 ? (
-            <ul className="atlas-analysis-list">
-              {page.matches.map((match) => (
-                <li key={match.file_id} aria-current={match.is_current ? "location" : undefined} className="atlas-analysis-file">
-                  <span className="atlas-analysis-location">
-                    <strong>{fileName(match.path)}</strong><small title={match.path}>{match.path}</small>
-                  </span>
-                  <span className="atlas-analysis-copy-site"><strong>{match.site_name}</strong><small>{formatBytes(match.size_bytes)}</small></span>
-                  {match.is_current ? (
-                    <span className="atlas-analysis-current">Current</span>
-                  ) : (
-                    <button type="button" onClick={() => onJump(match)} aria-label={`Show ${fileName(match.path)} in ${match.site_name} site`}>Show <span aria-hidden="true">↗</span></button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          ) : page.status === "ready" && <p role="status">No indexed copies are available.</p>}
-          <AnalysisPageControls page={page} loading={loading} goTo={goTo} />
-        </>
-      )}
     </section>
   );
 }
