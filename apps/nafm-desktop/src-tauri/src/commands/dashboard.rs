@@ -389,6 +389,36 @@ pub async fn get_storage_file_reveal(
     .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn get_storage_node_reveal(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  site_id: String,
+  node_id: String,
+  target_site_id: Option<String>,
+  max_depth: u32,
+  max_children: u32,
+  limit: u64,
+  sort: Option<DirectorySort>,
+) -> Result<StorageFileRevealResponse, String> {
+  state
+    .repository_for(&expected_workspace)
+    .await?
+    .storage_node_reveal(
+      &site_id,
+      target_site_id.as_deref(),
+      &node_id,
+      max_depth,
+      max_children,
+      limit,
+      sort.unwrap_or_default(),
+    )
+    .await
+    .map(StorageFileRevealResponse::from)
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
   use chrono::Utc;

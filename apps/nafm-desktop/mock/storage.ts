@@ -8,6 +8,7 @@ import { buildFolder, INVENTORY_DATE } from "./fixtures";
 import { checkWorkspace, compareText, getSite, getTree, numberArg, record, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
 
 interface IndexedFile extends DuplicateFile {
+  node_id: string;
   content: string;
   kind: SiteKind;
   verified: boolean;
@@ -23,7 +24,7 @@ function indexedFiles(workspace: PreviewWorkspace) {
   function visit(node: StorageNode, site: SiteOverview, root: StorageNode) {
     if (node.kind === "file" && node.path) {
       files.push({
-        file_id: node.id, path: node.path, site_id: site.id, site_folder_id: root.id,
+        file_id: `tracked:${node.id}`, node_id: node.id, path: node.path, site_id: site.id, site_folder_id: root.id,
         size_bytes: node.total_bytes, modified_unix_nanos: (node.modified_unix_millis ?? 0) * 1_000_000, content: contentKey(node),
         kind: root.kind === "smb_root" ? "smb" : "local", verified: node.verified_file_count > 0,
       });
@@ -93,13 +94,13 @@ function projectSite(workspace: PreviewWorkspace, siteId: string, targetId: stri
   const files = allFiles.filter((file) => file.site_id === siteId).sort((a, b) => compareText(a.path, b.path));
   const groups = byContent(files);
   const targetKeys = new Set(allFiles.filter((file) => file.verified && file.site_id === targetId).map((file) => file.content));
-  const fileById = new Map(files.map((file) => [file.file_id, file]));
+  const fileByNode = new Map(files.map((file) => [file.node_id, file]));
   const coverageTarget = target ? siteRecord(target) : null;
 
   function project(node: StorageNode, visibleChildren: StorageNode[]): StorageNode {
     const selectedFiles: IndexedFile[] = [];
     function collect(current: StorageNode) {
-      const file = fileById.get(current.id);
+      const file = fileByNode.get(current.id);
       if (file) selectedFiles.push(file);
       current.children.forEach(collect);
     }
@@ -207,6 +208,20 @@ function makeSnapshot(model: ReturnType<typeof projectSite>, args: CommandArgs):
   return { tree: makeTree(model, args), location: makeLocation(model, args), page: makeChildren(model, args) };
 }
 
+function makeReveal(model: ReturnType<typeof projectSite>, args: CommandArgs): StorageFileReveal {
+  const id = stringArg(args.nodeId, "storage node ID");
+  const path = findPath(model.root, id);
+  const parent = path?.at(-2);
+  const node = path?.at(-1);
+  if (!parent || node?.kind !== "file") throw new Error("The file is no longer available at this source.");
+  const { limit } = paging({ ...args, offset: 0 });
+  const index = orderedChildren(parent, directorySort(args.sort)).findIndex((child) => child.id === id);
+  return {
+    ...makeSnapshot(model, { ...args, nodeId: parent.id, offset: Math.floor(index / limit) * limit }),
+    selected_file: model.project(node, []),
+  };
+}
+
 function matchesPath(filePath: string, target: string) {
   const file = filePath.replace(/\\/g, "/");
   const directory = target.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -265,17 +280,12 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     const id = stringArg(args.fileId, "file ID");
     const file = indexedFiles(workspace).find((entry) => entry.file_id === id);
     if (!file) throw new Error("The preview file is no longer tracked.");
-    const source = model({ ...args, siteId: file.site_id });
-    const path = findPath(source.root, id);
-    const parent = path?.at(-2);
-    const node = path?.at(-1);
-    if (!parent || !node) throw new Error("The file directory was not found.");
-    const { limit } = paging({ ...args, offset: 0 });
-    const index = orderedChildren(parent, directorySort(args.sort)).findIndex((child) => child.id === id);
-    return {
-      ...makeSnapshot(source, { ...args, nodeId: parent.id, offset: Math.floor(index / limit) * limit }),
-      selected_file: source.project(node, []),
-    };
+    return makeReveal(model({ ...args, siteId: file.site_id }), { ...args, nodeId: file.node_id });
+  }
+
+  function revealNode(args: CommandArgs): StorageFileReveal {
+    checkWorkspace(current(), args.expectedWorkspace);
+    return makeReveal(model(args), args);
   }
 
   function fileContentMatches(args: CommandArgs): FileContentMatchesPage {
@@ -442,6 +452,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
     children: (args: CommandArgs) => makeChildren(model(args), args),
-    snapshot, openFolderIn, reveal, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
+    snapshot, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
   };
 }

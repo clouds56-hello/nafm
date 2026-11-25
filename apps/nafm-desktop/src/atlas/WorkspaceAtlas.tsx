@@ -24,6 +24,13 @@ interface ContentsVisit {
 
 type InspectorPane = InspectorView | ContentsVisit;
 
+function directoryKey(
+  workspace: string | undefined, site: string | undefined, target: string | null | undefined, folder: string | undefined,
+  sort: DirectorySort, anchor: number,
+) {
+  return JSON.stringify([workspace, site, target, folder, sort.field, sort.direction, anchor]);
+}
+
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
 }
@@ -46,6 +53,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const contentsScroll = useRef(new Map<string, number | "end">());
   const focusFirstSite = useRef(false);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
+  const pendingReveal = useRef<AbortController | null>(null);
+  const [revealingFileId, setRevealingFileId] = useState<string | null>(null);
+  const [revealedRow, setRevealedRow] = useState<{ key: string; id: string } | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
@@ -60,9 +70,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   }, [siteId]);
   const openInspector = useCallback((next: InspectorPane) => {
     lastOpened.current = "inspector";
+    setRevealedRow(null);
     rememberPane(next);
     setInspectorOpen(true);
   }, [rememberPane]);
+  const closeInspector = useCallback(() => {
+    pendingReveal.current?.abort();
+    setRevealedRow(null);
+    setInspectorOpen(false);
+  }, []);
   const openAddSite = dashboard && state.activeTaskCount === 0
     ? (event: MouseEvent<HTMLButtonElement>) => onAddSite(event, dashboard.workspace_name)
     : undefined;
@@ -87,9 +103,13 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
-    return JSON.stringify([dashboard?.workspace_name, site?.id, target?.id, folder?.id, sort.field, sort.direction, anchor]);
+    return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
   const contentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
+  useLayoutEffect(() => () => pendingReveal.current?.abort(), [inspectorView, siteId, selected?.id]);
+  useEffect(() => {
+    if (revealedRow && revealedRow.key !== contentsKey) setRevealedRow(null);
+  }, [contentsKey, revealedRow]);
   function changeDirectorySort(sort: DirectorySort) {
     contentsScroll.current.delete(contentsKeyFor(sort, 0));
     return state.setDirectorySort(sort);
@@ -155,7 +175,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
         const active = panel?.getAttribute("data-atlas-panel") ?? lastOpened.current;
         if (sitesOpen && (active === "sites" || !inspectorView)) setSitesOpen(false);
         else if (fileOpen) goBack();
-        else setInspectorOpen(false);
+        else closeInspector();
         return;
       }
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
@@ -172,7 +192,32 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp]);
+  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector]);
+
+  async function showFileInContents(file: StorageNode) {
+    if (pendingReveal.current && !pendingReveal.current.signal.aborted) return;
+    const attempt = new AbortController();
+    pendingReveal.current = attempt;
+    setRevealingFileId(file.id);
+    try {
+      const destination = await state.revealSelectedFileInContents(file.id, () => !attempt.signal.aborted);
+      if (!destination || attempt.signal.aborted) return;
+      const key = directoryKey(
+        dashboard?.workspace_name, destination.site_id, destination.target_site_id, destination.node_id,
+        destination.sort, destination.anchor_offset,
+      );
+      // A previous visit to this directory may have scrolled away from the file.
+      contentsScroll.current.set(key, destination.anchor_offset);
+      inspectorOrigin.current = null;
+      openInspector("contents");
+      setRevealedRow({ key, id: file.id });
+    } finally {
+      if (pendingReveal.current === attempt) {
+        pendingReveal.current = null;
+        setRevealingFileId(null);
+      }
+    }
+  }
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
@@ -321,7 +366,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                 origin={inspectorOrigin}
                 onViewChange={openInspector}
                 onBackToContents={goBack}
-                onClose={() => setInspectorOpen(false)}
+                onClose={closeInspector}
                 details={location ? (
                   <StorageDetails
                     location={location}
@@ -332,6 +377,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
+                    onShowInContents={selected?.kind === "file" && !fileOpen
+                      ? () => void showFileInContents(selected) : undefined}
+                    revealing={revealingFileId === selected?.id}
                   >
                     {dashboard && selectedNode && (
                       <ContentActions
@@ -370,7 +418,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                       scrollPositions={contentsScroll.current}
                       contentsKey={contentsKey}
                       anchorIndex={state.contentsAnchorOffset}
-                      returnFileId={currentVisit?.fileId ?? null}
+                      returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
                       active={inspectorView === "contents"}
                       loading={state.childrenLoading}
                       loadingMore={state.loadingMoreChildren}

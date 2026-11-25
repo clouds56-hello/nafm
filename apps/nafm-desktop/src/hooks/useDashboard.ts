@@ -5,6 +5,7 @@ import {
   cancelScan,
   getStorageChildren,
   getStorageFileReveal,
+  getStorageNodeReveal,
   getStorageViewSnapshot,
   loadDashboard,
   onScanTaskEvent,
@@ -76,6 +77,12 @@ interface RowRange {
 }
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
+
+type FileRevealDestination =
+  | { kind: "node"; siteId: string; id: string; shouldApply?: () => boolean }
+  | { kind: "match"; siteId: string; id: string };
+
+type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">;
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1133,31 +1140,29 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (failed) void loadChildrenRange(failed.start, failed.end);
   }, [loadChildrenRange]);
 
-  const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
-    const workspaceName = workspaceNameRef.current;
+  const revealFile = useCallback(async (destination: FileRevealDestination): Promise<FileRevealLocation | null> => {
+    const requestedWorkspace = workspaceNameRef.current;
     const currentSiteId = selectedSiteRef.current;
-    const currentDashboard = dashboard;
-    if (!workspaceName || !currentSiteId || !currentDashboard || navigationInProgressRef.current) return;
+    const currentDashboard = dashboardRef.current;
+    if (!requestedWorkspace || !currentSiteId || !currentDashboard || navigationInProgressRef.current) return null;
 
     const currentTarget = targetSiteRef.current;
-    const preferredTarget = currentTarget && currentTarget !== match.site_id
-      ? currentTarget
-      : currentSiteId !== match.site_id
-        ? currentSiteId
-        : null;
-    const destinationTarget = preferredTarget
-      ?? currentDashboard.sites.find((site) => site.id !== match.site_id)?.id
-      ?? null;
     const previousEntry = currentNavigationEntry();
-    const requestId = locationRequestRef.current + 1;
-    const operationId = navigationOperationRef.current + 1;
-    const requestedWorkspace = workspaceName;
-    locationRequestRef.current = requestId;
+    const matchesSelection = () => destination.kind === "match"
+      || (selectedSiteRef.current === destination.siteId && selectedNodeRef.current?.id === destination.id
+        && (destination.shouldApply?.() ?? true));
+    if (!matchesSelection()) return null;
+
+    const requestId = ++locationRequestRef.current;
+    const operationId = ++navigationOperationRef.current;
+    const canApply = () => locationRequestRef.current === requestId
+      && navigationOperationRef.current === operationId
+      && workspaceNameRef.current === requestedWorkspace
+      && matchesSelection();
     childrenRequestRef.current += 1;
     pendingRangeRef.current = null;
     childrenRetryRef.current = null;
     setLoadingMoreChildren(false);
-    navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
     setChildrenLoading(true);
     childrenLoadingRef.current = true;
@@ -1165,13 +1170,24 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setNotice(null);
 
     try {
-      const sort = readSiteDirectorySort(requestedWorkspace, match.site_id);
-      const reveal = await getStorageFileReveal(requestedWorkspace, match.file_id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
-      if (locationRequestRef.current !== requestId
-        || navigationOperationRef.current !== operationId
-        || workspaceNameRef.current !== requestedWorkspace) return;
+      const savedSort = readSiteDirectorySort(requestedWorkspace, destination.siteId);
+      const sort = destination.kind === "node" ? previousEntry?.sort ?? savedSort : savedSort;
+      const preferredTarget = currentTarget && currentTarget !== destination.siteId ? currentTarget : currentSiteId;
+      const destinationTarget = destination.kind === "node"
+        ? currentTarget
+        : validTarget(currentDashboard.sites, destination.siteId, preferredTarget);
+      const reveal = destination.kind === "node"
+        ? await getStorageNodeReveal(
+          requestedWorkspace, destination.siteId, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort,
+        )
+        : await getStorageFileReveal(requestedWorkspace, destination.id, destinationTarget, 5, 12, CHILDREN_PAGE_SIZE, sort);
+      if (!canApply()) return null;
 
-      const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset, sort };
+      const selectedIndex = destination.kind === "node"
+        ? reveal.page.children.findIndex((child) => child.id === destination.id)
+        : 0;
+      if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
+      const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
@@ -1201,20 +1217,22 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setChildrenPage(page);
       setChildrenError(null);
       setSelectedNode(reveal.selected_file);
-      setDuplicateJumpRevision((current) => current + 1);
+      if (destination.kind === "match") setDuplicateJumpRevision((current) => current + 1);
       setTreeError(null);
 
-      if (previousEntry && !sameNavigationEntry(previousEntry, destinationEntry)) {
-        backHistoryRef.current = [...backHistoryRef.current, previousEntry];
+      // Showing the file in its current directory changes the inspector and scroll position only.
+      if (destination.kind === "match" || previousEntry?.node_id !== destinationEntry.node_id) {
+        if (previousEntry && !sameNavigationEntry(previousEntry, destinationEntry)) {
+          backHistoryRef.current = [...backHistoryRef.current, previousEntry];
+        }
+        forwardHistoryRef.current = [];
+        setBackHistory(backHistoryRef.current);
+        setForwardHistory([]);
       }
-      forwardHistoryRef.current = [];
-      setBackHistory(backHistoryRef.current);
-      setForwardHistory([]);
+      return destinationEntry;
     } catch (revealError) {
-      if (locationRequestRef.current === requestId
-        && workspaceNameRef.current === requestedWorkspace) {
-        setNotice(errorMessage(revealError));
-      }
+      if (canApply()) setNotice(errorMessage(revealError));
+      return null;
     } finally {
       if (navigationOperationRef.current === operationId) {
         navigationInProgressRef.current = false;
@@ -1224,7 +1242,17 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         setChildrenLoading(false);
       }
     }
-  }, [currentNavigationEntry, dashboard]);
+  }, [currentNavigationEntry]);
+
+  const jumpToContentMatch = useCallback(async (match: FileContentMatch) => {
+    await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id });
+  }, [revealFile]);
+
+  const revealSelectedFileInContents = useCallback(async (fileId: string, shouldApply?: () => boolean) => {
+    const siteId = selectedSiteRef.current;
+    if (!siteId || selectedNodeRef.current?.kind !== "file" || childrenLoadingRef.current) return null;
+    return revealFile({ kind: "node", siteId, id: fileId, shouldApply });
+  }, [revealFile]);
 
   const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
     invalidateCleanupPreview();
@@ -1383,6 +1411,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     selectedNode: activeSelectedNode,
     selectNode,
     jumpToContentMatch,
+    revealSelectedFileInContents,
     duplicateJumpRevision,
     childrenPage,
     contentsAnchorOffset: childrenPage?.anchor_offset ?? 0,
@@ -1453,6 +1482,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     healthMetric,
     isSelectedStaged,
     jumpToContentMatch,
+    revealSelectedFileInContents,
     loading,
     openFolderExternally,
     setDirectorySort,

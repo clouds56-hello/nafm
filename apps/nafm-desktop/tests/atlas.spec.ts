@@ -484,3 +484,90 @@ test("Escape from a file opened directly on the atlas returns to its arc", async
   await expect(inspector).toBeHidden();
   await expect(file).toBeFocused();
 });
+
+test("Show in Contents takes a file arc to its exact row in the containing folder", async ({ page }) => {
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const sites = page.getByRole("complementary", { name: "Sites" });
+  const trailer = arc(page, /^Trailer master\.mov,/).and(page.locator('[data-node-id*="/Brand campaign/"]'));
+  const fileId = await trailer.getAttribute("data-node-id");
+  const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+  const file = contents.getByRole("button", { name: /^Trailer master\.mov/ });
+
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await trailer.press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Trailer master.mov" })).toBeVisible();
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(sites.getByRole("button", { name: "Close sites" })).toBeVisible();
+  await expect(file).toHaveAttribute("data-entry-id", fileId!);
+  await expect(file).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(contents.getByRole("button", { name: /^Camera originals\.mxf/ })).toBeFocused();
+});
+
+test("Show in Contents scrolls to a distant file using the site's saved order", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 450 });
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+  const proof = arc(page, /^Proof 001\.jpg,/);
+
+  await arc(page, /^Photo Library,/).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  await contents.getByRole("button", { name: "Sort contents", exact: true }).click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: "Descending", exact: true }).click();
+  await page.keyboard.press("Escape");
+  const file = contents.getByRole("button", { name: /^Proof 001\.jpg/ });
+  await expect(file).toHaveCount(0);
+  await inspector.getByRole("button", { name: "Close inspector" }).click();
+
+  await proof.press("Enter");
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).click();
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(file).toBeFocused();
+  await expect(contents.getByRole("row").filter({
+    has: page.getByRole("button", { name: /^Proof 001\.jpg/ }),
+  })).toHaveAttribute("aria-rowindex", "98");
+  await expect(file).toBeInViewport();
+  await page.keyboard.press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Proof 001.jpg" })).toBeVisible();
+  await inspector.getByRole("button", { name: "Back to Contents", exact: true }).click();
+  await expect(file).toBeFocused();
+  await expect(file).toBeInViewport();
+});
+
+test("an older Show in Contents response leaves a newly inspected atlas file in place", async ({ page }) => {
+  const request = await page.evaluateHandle(() => {
+    const bridge = (window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    }).__TAURI_INTERNALS__;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "get_storage_node_reveal") {
+        read.pending = true;
+        await gate;
+        read.replied = true;
+      }
+      return response;
+    };
+    return read;
+  });
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const camera = arc(page, /^Camera originals\.mxf,/);
+  await camera.press("Enter");
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+  await expect.poll(() => request.evaluate((read) => read.pending)).toBe(true);
+  await arc(page, /^Launch film\.mov,/).press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Launch film.mov" })).toBeVisible();
+  await request.evaluate((read) => read.release());
+  await expect.poll(() => request.evaluate((read) => read.replied)).toBe(true);
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await expect(inspector.getByRole("heading", { name: "Launch film.mov" })).toBeVisible();
+});

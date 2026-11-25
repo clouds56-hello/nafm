@@ -1108,11 +1108,56 @@ impl Repository {
           .as_deref()
           .map(|id| require_site(&conn, id))
           .transpose()?;
-        storage_file_reveal(
+        let node_id = format!("storage:{}:{}", file.site_folder_id, file.path.display());
+        storage_node_reveal(
           &conn,
           site,
           coverage_target,
-          &file,
+          &node_id,
+          max_depth,
+          max_children,
+          page_limit,
+          sort,
+        )
+        .map_err(|error| match error {
+          NafmError::StorageNodeNotFound(_) | NafmError::StorageNodeNotNavigable(_) => {
+            NafmError::TrackedFileNotFound(file.id)
+          }
+          other => other,
+        })
+      })
+    })
+    .await?
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_node_reveal(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+    sort: DirectorySort,
+  ) -> Result<StorageFileReveal> {
+    let db_path = self.db_path.clone();
+    let site_selector = site_selector.to_owned();
+    let target_site_selector = target_site_selector.map(str::to_owned);
+    let node_id = node_id.to_owned();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || {
+        let site = require_site(&conn, &site_selector)?;
+        let coverage_target = target_site_selector
+          .as_deref()
+          .map(|id| require_site(&conn, id))
+          .transpose()?;
+        storage_node_reveal(
+          &conn,
+          site,
+          coverage_target,
+          &node_id,
           max_depth,
           max_children,
           page_limit,
@@ -4432,25 +4477,24 @@ fn storage_view_snapshot(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn storage_file_reveal(
+fn storage_node_reveal(
   conn: &Connection,
   site: Site,
   coverage_target: Option<Site>,
-  file: &RevealFileRecord,
+  node_id: &str,
   max_depth: u32,
   max_children: u32,
   page_limit: u64,
   sort: DirectorySort,
 ) -> Result<StorageFileReveal> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
-  let selected_node_id = format!("storage:{}:{}", file.site_folder_id, file.path.display());
-  let selected_path = find_storage_node_builder_path(&root, &selected_node_id)
-    .ok_or_else(|| NafmError::TrackedFileNotFound(file.id.clone()))?;
+  let missing = || NafmError::StorageNodeNotFound(node_id.to_owned());
+  let selected_path = find_storage_node_builder_path(&root, node_id).ok_or_else(missing)?;
   let (selected, parent_path) = selected_path
     .split_last()
     .expect("a selected storage file path should contain a file");
   if selected.kind != StorageNodeKind::File {
-    return Err(NafmError::TrackedFileNotFound(file.id.clone()));
+    return Err(NafmError::StorageNodeNotNavigable(node_id.to_owned()));
   }
   let parent = parent_path
     .last()
@@ -4459,7 +4503,7 @@ fn storage_file_reveal(
   let selected_index = child_builders
     .iter()
     .position(|child| child.id == selected.id)
-    .ok_or_else(|| NafmError::TrackedFileNotFound(file.id.clone()))?;
+    .ok_or_else(missing)?;
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
   let offset = selected_index as u64 / page_limit * page_limit;
   let selected_file = storage_node_without_children(selected);

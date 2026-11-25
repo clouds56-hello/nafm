@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, FileContentMatchStatus, HashAlgorithm,
-  HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent, SiteFolderKind, SiteHashStatus,
+  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, FileContentMatchStatus,
+  HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent, SiteFolderKind, SiteHashStatus,
   StageWarningReason, StorageNodeKind,
 };
 use tempfile::TempDir;
@@ -452,6 +452,38 @@ async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
     reveal.page.children[0].id, reveal.selected_file.id,
     "the containing page should include the exact selected node"
   );
+
+  assert_ne!(selected_file_id, reveal.selected_file.id);
+  let from_atlas = fixture
+    .repo
+    .storage_node_reveal(
+      &source.id,
+      Some(&target.id),
+      &reveal.selected_file.id,
+      2,
+      2,
+      3,
+      DirectorySort::default(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(from_atlas.selected_file.id, reveal.selected_file.id);
+  assert_eq!(from_atlas.location.root.id, reveal.location.root.id);
+  assert_eq!(from_atlas.page.offset, reveal.page.offset);
+  assert_eq!(from_atlas.tree.coverage_target.unwrap().id, target.id);
+  let wrong_site = fixture
+    .repo
+    .storage_node_reveal(
+      &target.id,
+      None,
+      &reveal.selected_file.id,
+      2,
+      2,
+      3,
+      DirectorySort::default(),
+    )
+    .await;
+  assert!(matches!(wrong_site, Err(NafmError::StorageNodeNotFound(_))));
 
   let (target_file_id, _, _, _) = tracked_file_identity(&fixture.repo, &target_path);
   let cross_site_reveal = fixture

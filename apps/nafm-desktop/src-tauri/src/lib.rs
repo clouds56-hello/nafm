@@ -53,6 +53,7 @@ pub fn run() {
       commands::dashboard::get_file_content_matches,
       commands::similarity::find_similar_folders,
       commands::dashboard::get_storage_file_reveal,
+      commands::dashboard::get_storage_node_reveal,
       commands::scan::start_scan,
       commands::scan::cancel_scan,
       commands::staging::stage_path,

@@ -280,6 +280,21 @@ export function getStorageFileReveal(
   });
 }
 
+export function getStorageNodeReveal(
+  expectedWorkspace: string,
+  siteId: string,
+  nodeId: string,
+  targetSiteId: string | null,
+  maxDepth: number,
+  maxChildren: number,
+  limit: number,
+  sort?: DirectorySort,
+): Promise<StorageFileReveal> {
+  return invoke<StorageFileReveal>("get_storage_node_reveal", {
+    expectedWorkspace, siteId, nodeId, targetSiteId, maxDepth, maxChildren, limit, sort,
+  });
+}
+
 export function getFileContentMatches(
   siteId: string,
   path: string,

@@ -41,6 +41,22 @@
   overflow-wrap: anywhere;
 }
 
+.atlas-readout .atlas-detail-reveal {
+  margin: -3px 0 7px;
+  padding-inline: 8px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 5px;
+  background: #202239;
+}
+
+.atlas-detail-reveal svg { flex: none; }
+.atlas-readout .atlas-detail-reveal:hover:not([aria-disabled]) { border-color: #626891; }
+.atlas-detail-reveal[aria-disabled="true"] { opacity: .65; }
+
+@media (pointer: coarse) {
+  .atlas-readout .atlas-detail-reveal { min-height: 44px; }
+}
+
 .atlas-details {
   display: grid;
   min-width: 0;
