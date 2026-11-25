@@ -117,6 +117,20 @@ function SiteProgress({ name, showName, snapshot, progress, completion, stopping
   );
 }
 
+function focusActivityItem(item: HTMLElement | null | undefined) {
+  if (!item) return;
+  item.focus({ preventScroll: true });
+  const scroller = item.closest<HTMLElement>(".atlas-toolbar-panel");
+  if (!scroller) return;
+  const top = scroller.getBoundingClientRect().top + scroller.clientTop;
+  const bounds = item.getBoundingClientRect();
+  const above = bounds.top - top;
+  const below = bounds.bottom - (top + scroller.clientHeight);
+  // Reveal the nearest edge inside the disclosure, including for results taller than its viewport.
+  if (above < 0 && below < 0) scroller.scrollTop += Math.max(above, below);
+  if (above > 0 && below > 0) scroller.scrollTop += Math.min(above, below);
+}
+
 function ActivityPanel({
   tasks, sites, progressBySite, completionBySite, cancellingRequestIds, scanInterruptions, lastResult, onStop, onScan, recoveries,
 }: ScanActivityProps & { recoveries: ReadonlyMap<string, ScanRecovery> }) {
@@ -146,8 +160,7 @@ function ActivityPanel({
       focusAfterStart.current = null;
       if (document.activeElement === document.body || document.activeElement === start.button) {
         const request = panel.current?.querySelector<HTMLElement>(`[data-scan-request="${activeTask.request_id}"]`);
-        request?.focus({ preventScroll: true });
-        request?.scrollIntoView({ block: "nearest" });
+        focusActivityItem(request);
       }
     } else if (start && !startingIds.has(start.siteId)) {
       focusAfterStart.current = null;
@@ -158,8 +171,7 @@ function ActivityPanel({
     const recovery = removed.kind === "recovery"
       ? panel.current?.querySelector<HTMLButtonElement>(`[data-scan-recovery="${CSS.escape(removed.siteId)}"]`)
       : null;
-    (recovery ?? result.current ?? panel.current)?.focus({ preventScroll: true });
-    recovery?.scrollIntoView({ block: "nearest" });
+    focusActivityItem(recovery ?? result.current ?? panel.current);
   }, [tasks, lastResult, startingIds, recoveries]);
 
   const names = new Map(sites.map((site) => [site.id, site.name]));

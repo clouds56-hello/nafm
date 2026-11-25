@@ -34,6 +34,30 @@ function result(dialog: Locator, fileName: RegExp) {
   return dialog.getByRole("list", { name: "Matching files", exact: true }).getByRole("button", { name: fileName });
 }
 
+function holdFinderStep(page: Page, phase: "lookup" | "reveal") {
+  return page.evaluateHandle((phase) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor_direction?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      const matches = phase === "reveal" ? command === "get_storage_file_reveal"
+        : command === "search_indexed_files" && args.anchor_direction === "next";
+      if (matches && !read.pending) {
+        read.pending = true;
+        await gate;
+        requestAnimationFrame(() => { read.replied = true; });
+      }
+      return response;
+    };
+    return read;
+  }, phase);
+}
+
 test("Find files distinguishes same names across sites and Back restores the starting folder", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });
@@ -202,26 +226,7 @@ test("closing Details cancels a pending Finder result reveal", async ({ page }) 
   await expect(details(page).getByText("Result 1 of 3", { exact: true })).toBeVisible();
   const firstFolder = await currentFolder(page).textContent();
 
-  const reveal = await page.evaluateHandle(() => {
-    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
-    };
-    const invoke = bridge.invoke.bind(bridge);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const read = { pending: false, replied: false, release };
-    bridge.invoke = async (command, args) => {
-      const response = await invoke(command, args);
-      if (command === "get_storage_file_reveal" && !read.pending) {
-        read.pending = true;
-        await gate;
-        requestAnimationFrame(() => { read.replied = true; });
-      }
-      return response;
-    };
-    return read;
-  });
-
+  const reveal = await holdFinderStep(page, "reveal");
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   const next = inspector.getByRole("button", { name: "Next result", exact: true });
   try {
@@ -241,6 +246,46 @@ test("closing Details cancels a pending Finder result reveal", async ({ page }) 
   await expect(query(dialog)).toHaveValue(search);
   await expect(trailers.first()).toBeFocused();
 });
+
+for (const phase of ["lookup", "reveal"] as const) {
+  test(`Show in Contents supersedes a pending Finder result ${phase}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 620 });
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await page.keyboard.press("ControlOrMeta+f");
+
+    const dialog = finder(page);
+    const rawQuery = "  TrAiLeR master  ";
+    const trailers = result(dialog, /^Trailer master\.mov/);
+    await query(dialog).fill(rawQuery);
+    await expect(trailers).toHaveCount(3);
+    await trailers.first().press("Enter");
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Backup campaign");
+
+    const hold = await holdFinderStep(page, phase);
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const next = inspector.getByRole("button", { name: "Next result", exact: true });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+    const shown = contents.getByRole("grid").getByRole("button", { name: /^Trailer master\.mov/ });
+    try {
+      await next.press("Enter");
+      await expect.poll(() => hold.evaluate((read) => read.pending)).toBe(true);
+      await details(page).getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+      await expect(shown).toBeFocused();
+      await expect(shown).toBeInViewport();
+    } finally {
+      await hold.evaluate((read) => read.release());
+    }
+    await expect.poll(() => hold.evaluate((read) => read.replied)).toBe(true);
+    await expect(currentFolder(page)).toHaveText("Backup campaign");
+    await expect(shown).toBeFocused();
+
+    await page.keyboard.press("ControlOrMeta+f");
+    await expect(query(dialog)).toHaveValue(rawQuery);
+    await expect(trailers.first()).toBeFocused();
+  });
+}
 
 test("Atlas Back restores the filtered Contents list after opening a Finder result on another site", async ({ page }) => {
   await page.goto("/mock/");

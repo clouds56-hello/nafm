@@ -41,6 +41,7 @@ import type {
   DuplicateFile,
   FileContentMatch,
   FinderPosition,
+  ReviewPosition,
   ScanInterruption,
   FolderOpenDestination,
   FolderSimilarityMatch,
@@ -90,10 +91,12 @@ interface NavigationEntry {
 }
 
 export type AnalysisInspection = { kind: "analysis"; session: symbol };
+type ReviewInspection = { kind: "review"; position: ReviewPosition };
 
 export type AtlasInspection =
   | { kind: "finder"; position: FinderPosition }
   | AnalysisInspection
+  | ReviewInspection
   | { kind: "file" };
 
 export interface AtlasWorkspaceLocation {
@@ -1639,7 +1642,8 @@ export function useDashboard(
   }, [currentNavigationEntry, selectLocationNode]);
 
   const jumpToContentMatch = useCallback(async (
-    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | AnalysisInspection, replaceCurrent = false,
+    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal,
+    origin: FinderPosition | AnalysisInspection | ReviewInspection, replaceCurrent = false,
   ): Promise<string | null> => {
     const inspection: AtlasInspection = "kind" in origin ? origin : { kind: "finder", position: origin };
     const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection, replaceCurrent });

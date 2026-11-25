@@ -28,6 +28,7 @@ export function useFinderFileStep(
   const [requested, setRequested] = useState<FinderStep | null>(null);
   const [feedback, setFeedback] = useState<FinderStepFeedback | null>(null);
   const callbacks = useRef({ open, onOpened });
+  const activeRequest = useRef<AbortController>(null);
   const pending = workspace && requested?.source === position ? requested : null;
   const saved = feedback?.source === position && feedback.revision === revision ? feedback : null;
   const rank = saved?.rank === undefined ? (position?.content_revision === revision ? position : null) : saved.rank;
@@ -43,6 +44,7 @@ export function useFinderFileStep(
     }
     const { source, direction } = pending;
     const controller = new AbortController();
+    activeRequest.current = controller;
     const report = (status: string, rank?: FinderRank | null) => setFeedback({ source, revision, status, rank });
 
     const step = async () => {
@@ -85,7 +87,10 @@ export function useFinderFileStep(
     };
 
     void step();
-    return () => controller.abort();
+    return () => {
+      if (activeRequest.current === controller) activeRequest.current = null;
+      controller.abort();
+    };
   }, [pending, requested, revision, workspace]);
 
   if (!workspace || !position) return undefined;
@@ -97,6 +102,10 @@ export function useFinderFileStep(
     pending: pending?.direction ?? null,
     status: pending ? `Opening the ${pending.direction} result…` : saved?.status ?? "",
     rank,
+    cancel: () => {
+      activeRequest.current?.abort();
+      setRequested(null);
+    },
     onStep: (direction: DirectoryFileDirection) => {
       if (!pending && (direction === "next" ? next : previous)) {
         setRequested((active) => active?.source === position ? active : { source: position, direction });

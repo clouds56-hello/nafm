@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type {
-  CleanupPreview, CleanupPreviewInvalidation, DuplicateFile, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
+  CleanupPreview, CleanupPreviewInvalidation, DuplicateFile, ReviewPosition, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
   StageVerificationBlocker, StageWarning, StageWarningReason,
 } from "../../lib/types";
 import type { ScanSite, SiteVerification } from "../siteVerification";
@@ -9,11 +9,6 @@ import { VerificationScanButton } from "../VerificationScanButton";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
 import "./cleanup-review.css";
-
-export interface ReviewPosition {
-  file_id: string;
-  scroll_top: number;
-}
 
 interface ReviewDrawerProps {
   open: boolean;
@@ -36,8 +31,8 @@ interface ReviewDrawerProps {
   onScanSite: ScanSite;
   onRemove: (path: string) => void;
   onHistoryStep: (request: StageHistoryRequest) => Promise<boolean>;
-  onInspect: (file: DuplicateFile, signal: AbortSignal) => Promise<string | null>;
-  onInspected: (file: DuplicateFile, position: ReviewPosition) => void;
+  onInspect: (file: DuplicateFile, signal: AbortSignal, position: ReviewPosition) => Promise<string | null>;
+  onInspected: () => void;
 }
 
 const warningLabels: Record<StageWarningReason, string> = {
@@ -181,11 +176,11 @@ function OpenReviewDrawer({
   const previewMessageId = useId();
   const verificationHeadingId = useId();
   const initialPosition = useRef(position);
-  const previousPreview = useRef(preview);
+  const previousPreview = useRef<CleanupPreview | null | undefined>(undefined);
   const navigation = useAnalysisNavigation(
-    ({ file }: { file: DuplicateFile; position: ReviewPosition }, signal) => onInspect(file, signal),
+    ({ file, position }: { file: DuplicateFile; position: ReviewPosition }, signal) => onInspect(file, signal, position),
     onClose,
-    ({ file, position }) => onInspected(file, position),
+    onInspected,
   );
 
   const trackHistoryFocus = useCallback((controls: HTMLDivElement | null) => {
@@ -246,8 +241,12 @@ function OpenReviewDrawer({
   }, []);
 
   useEffect(() => {
-    if (preview && (!initialPosition.current || preview !== previousPreview.current)) previewSummary.current?.focus();
+    const previous = previousPreview.current;
     previousPreview.current = preview;
+    const openingWithPreview = previous === undefined && !initialPosition.current;
+    if (preview && preview !== previous && (openingWithPreview || document.activeElement === previewButton.current)) {
+      previewSummary.current?.focus();
+    }
   }, [preview]);
 
   useLayoutEffect(() => {
@@ -354,7 +353,10 @@ function OpenReviewDrawer({
           <span className="atlas-scan-announcement" role="status">{historyAnnouncement}</span>
           <button
             type="button" className="atlas-analysis-primary" ref={previewButton}
-            onClick={canPreview ? onPreview : undefined} aria-disabled={!canPreview || undefined}
+            onClick={canPreview ? (event) => {
+              event.currentTarget.focus({ preventScroll: true });
+              onPreview();
+            } : undefined} aria-disabled={!canPreview || undefined}
             aria-describedby={!effectiveReady || staged.length === 0 ? blockedMessageId
               : showPreviewPrompt && previewInvalidation ? previewMessageId : undefined}
           >

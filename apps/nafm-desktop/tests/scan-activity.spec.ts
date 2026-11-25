@@ -226,6 +226,48 @@ test("stopping the first verification keeps its inventory browsable", async ({ p
 test.describe("compact scan activity", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
+  test("stopping the focused scan reveals its result while the other requests keep running", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 310 });
+    await openMock(page, "scanning");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    for (const name of [field, "Team share"]) {
+      await sites.getByRole("button", { name: `Scan ${name}`, exact: true }).press("Enter");
+    }
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await activityTrigger(page).press("Enter");
+    const activity = activityPanel(page);
+    const stop = activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true });
+    await expect(stop).toBeFocused();
+    const pageTop = await page.evaluate(() => window.scrollY);
+    expect(pageTop).toBeGreaterThan(0);
+
+    await stop.press("Enter");
+    await page.clock.runFor(500);
+    const result = activity.getByRole("region", { name: "Latest scan result", exact: true });
+    const resume = result.getByRole("button", { name: `Resume verification of ${studio}`, exact: true });
+    await expect(result).toBeFocused();
+    await expect(resume).toBeInViewport({ ratio: 0.99 });
+    const panelBounds = (await activity.boundingBox())!;
+    const resultBounds = (await result.boundingBox())!;
+    expect(Math.abs(panelBounds.y + panelBounds.height - resultBounds.y - resultBounds.height)).toBeLessThanOrEqual(2);
+    expect(await page.evaluate(() => window.scrollY)).toBe(pageTop);
+    await resume.tap();
+    const resumed = activity.getByRole("region", { name: studio, exact: true });
+    await expect(resumed).toBeFocused();
+    await resumed.getByRole("button", { name: `Stop scan of ${studio}`, exact: true }).press("Enter");
+    const other = activity.getByRole("button", { name: `Stop scan of ${field}`, exact: true });
+    await other.focus();
+    const activityTop = await activity.evaluate((panel) => panel.scrollTop);
+    await page.clock.runFor(500);
+    await expect(resumed).toHaveCount(0);
+    await expect(other).toBeFocused();
+    await expect(other).toBeInViewport({ ratio: 0.99 });
+    expect(await activity.evaluate((panel) => panel.scrollTop)).toBe(activityTop);
+    await page.keyboard.press("Escape");
+    await expect(activityTrigger(page)).toBeFocused();
+  });
+
   test("stopping and resuming verification keeps the same folder open", async ({ page }) => {
     await openMock(page, "scanning");
     const trigger = activityTrigger(page);

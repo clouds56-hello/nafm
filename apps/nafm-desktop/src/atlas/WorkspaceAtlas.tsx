@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { ContentActions, type ComparisonKind } from "./analysis/ContentActions";
 import { FileCopiesDialog } from "./analysis/FileCopiesDialog";
-import { ReviewDrawer, type ReviewPosition } from "./analysis/ReviewDrawer";
+import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { SimilarFoldersDialog } from "./analysis/SimilarFoldersDialog";
 import type { AnalysisPosition } from "./analysis/useAnalysisPage";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
@@ -28,7 +28,7 @@ import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import { siteHasInventory } from "../lib/scanView";
 import type {
   DirectoryAdjacentFile, DirectoryRefresh, DirectoryRefreshTarget, DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage,
-  HealthMetric, StorageNode,
+  HealthMetric, ReviewPosition, StorageNode,
 } from "../lib/types";
 import { PlusIcon } from "../management/Icons";
 import { resolveAddedSite, type AddSiteOrigin, type SiteAddition } from "../management/siteAddition";
@@ -68,15 +68,6 @@ interface FinderSession {
 interface RevealedContentsVisit {
   id: string;
   searchPaused: boolean;
-}
-
-interface ReviewInspection {
-  session: symbol;
-  workspace: string;
-  siteId: string;
-  path: string;
-  position: ReviewPosition;
-  returning: boolean;
 }
 
 type ComparisonSession = {
@@ -186,8 +177,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     const view = saved?.contentsVisit ?? (saved?.revealedContentsVisit ? "contents" : null);
     return new Map<AtlasInspection, InspectorPane>(savedInspection && view ? [[savedInspection, view]] : []);
   });
-  const [reviewSession, setReviewSession] = useState(() => Symbol());
-  const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
+  const [reviewReturn, setReviewReturn] = useState<ReviewPosition | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [comparisonVisits, setComparisonVisits] = useState(() => new Map<AnalysisInspection, ComparisonSession>());
   const [mapMode, setMapMode] = useState<MapMode>(saved?.mapMode ?? "size");
@@ -307,10 +297,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     (position) => setFinderSession((session) => session?.id === position.session && session.openedFrom === null
       ? { ...session, latestPosition: position } : session),
   );
-  const analysisSession = inspection?.kind === "analysis" ? inspection.session : null;
-  const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
-  const returnToReview = reviewed && reviewed.session === analysisSession && selected?.kind === "file"
-    && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
+  const returnToReview = inspection?.kind === "review" && selected?.kind === "file" ? inspection.position : null;
   const comparison = comparisonSession?.workspace === findWorkspace ? comparisonSession : null;
   const comparisonVisit = inspection?.kind === "analysis" ? comparisonVisits.get(inspection) : null;
   const returnToComparison = comparison && comparisonVisit?.destination && comparisonVisit.session === comparison.session
@@ -341,14 +328,13 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
 
   function openReview() {
-    setReviewSession(Symbol());
-    setReviewInspection(null);
+    setReviewReturn(null);
     state.setReviewOpen(true);
   }
 
   function closeReview() {
-    if (reviewed?.returning) setAnalysisFocusRequested(true);
-    setReviewInspection(null);
+    if (reviewReturn) setAnalysisFocusRequested(true);
+    setReviewReturn(null);
     state.setReviewOpen(false);
   }
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
@@ -674,6 +660,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   async function showFileInContents(file: StorageNode) {
     if (!folder || (pendingReveal.current && !pendingReveal.current.signal.aborted)) return;
+    finderStep?.cancel();
     const focusOrigin = document.activeElement;
     const attempt = new AbortController();
     pendingReveal.current = attempt;
@@ -989,7 +976,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     } : returnToReview ? {
                       label: "Back to review",
                       run: () => {
-                        setReviewInspection({ ...returnToReview, returning: true });
+                        setReviewReturn(returnToReview);
                         state.setReviewOpen(true);
                       },
                     } : undefined}
@@ -1168,7 +1155,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onScanSite={state.scan}
           preview={state.preview}
           previewInvalidation={state.previewInvalidation}
-          position={reviewed?.returning ? reviewed.position : null}
+          position={reviewReturn}
           loadingPreview={state.previewLoading}
           error={state.reviewError}
           stagingBusy={state.stagingBusy}
@@ -1176,10 +1163,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
           onHistoryStep={state.stepStageHistory}
-          onInspect={(file, signal) => state.jumpToContentMatch(file, signal, { kind: "analysis", session: reviewSession })}
-          onInspected={(file, position) => {
-            setReviewInspection({ session: reviewSession, workspace: dashboard.workspace_name,
-              siteId: file.site_id, path: file.path, position, returning: false });
+          onInspect={(file, signal, position) => state.jumpToContentMatch(file, signal, { kind: "review", position })}
+          onInspected={() => {
+            setReviewReturn(null);
             state.setReviewOpen(false);
             showAnalysisDetails();
           }}

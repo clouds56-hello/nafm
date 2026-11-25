@@ -184,6 +184,47 @@ test("cleanup review can undo and redo a removal before running a fresh preview"
   await expect(retained).toContainText(sharedPath);
 });
 
+test("a delayed cleanup preview keeps focus on the control reached while waiting", async ({ page }) => {
+  await stageCopy(page, "Brand campaign");
+  await inspector(page).getByRole("button", { name: "Open review", exact: true }).press("Enter");
+  const dialog = review(page);
+  const pending = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const state = { received: false, release };
+    bridge.invoke = async (command, args) => {
+      const result = await invoke(command, args);
+      if (command === "preview_cleanup") {
+        state.received = true;
+        await gate;
+      }
+      return result;
+    };
+    return state;
+  });
+
+  try {
+    await dialog.getByRole("button", { name: "Preview cleanup", exact: true }).press("Enter");
+    await expect.poll(() => pending.evaluate((state) => state.received)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Checking…", exact: true })).toBeFocused();
+    const close = dialog.getByRole("button", { name: "Close cleanup review", exact: true });
+    await close.focus();
+    await expect(close).toBeFocused();
+    await pending.evaluate((state) => state.release());
+    const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+    await expect(preview).toContainText("92 GB");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toBeHidden();
+  } finally {
+    await pending.evaluate((state) => state.release());
+  }
+});
+
 test("an inventory refresh interrupts an in-progress cleanup check and allows a new preview", async ({ page }) => {
   await stageCopy(page, "Backup campaign");
   await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
@@ -489,6 +530,78 @@ test.describe("compact cleanup review inspection", () => {
     await expect(staged).toBeFocused();
     await expect(preview.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
     expect(await requests.jsonValue()).toEqual(["preview_cleanup", "get_storage_file_reveal", "get_storage_file_reveal"]);
+  });
+
+  test("Atlas history restores the review row for each inspected copy", async ({ page }) => {
+    await page.keyboard.press("ControlOrMeta+f");
+    const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+    await finder.getByRole("searchbox", { name: "File name", exact: true }).fill("  TrAiLeR master  ");
+    await finder.getByRole("button", { name: /^Trailer master\.mov/ }).first().press("Enter");
+    await expect(finder).toBeHidden();
+
+    const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+    const stage = details.getByRole("button", { name: "Stage for review", exact: true });
+    await expect(details).toContainText(backupPath);
+    await stage.press("Enter");
+    await expect(details.getByRole("button", { name: "Remove from review", exact: true })).toBeVisible();
+    await inspector(page).getByRole("button", { name: "Next result", exact: true }).press("Enter");
+    await expect(details).toContainText(sourcePath);
+    await stage.press("Enter");
+    await details.getByRole("button", { name: "Open review", exact: true }).press("Enter");
+
+    const dialog = review(page);
+    const body = dialog.locator(".atlas-analysis-body");
+    const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+    const close = dialog.getByRole("button", { name: "Close cleanup review", exact: true });
+    const backToReview = details.getByRole("button", { name: "Back to review", exact: true });
+    const previous = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+    await dialog.getByRole("button", { name: "Preview cleanup", exact: true }).press("Enter");
+    await expect(preview).toContainText("184 GB");
+
+    async function inspectAtCurrentRow(row: Locator, folder: string, path: string) {
+      await row.scrollIntoViewIfNeeded();
+      const scroll = await body.evaluate((element) => element.scrollTop);
+      await row.press("Enter");
+      await expect(dialog).toBeHidden();
+      await expect(currentFolder(page)).toHaveText(folder);
+      await expect(details).toContainText(path);
+      return scroll;
+    }
+
+    async function returnToRow(row: Locator, scroll: number) {
+      await backToReview.press("Enter");
+      await expect(preview).toContainText("184 GB");
+      await expect(row).toBeFocused();
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+      await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(scroll, 0);
+    }
+
+    const retained = inspectCopy(dialog, "Would remain", sharedPath);
+    const backup = inspectCopy(dialog, "Staged for cleanup", backupPath);
+    const retainedScroll = await inspectAtCurrentRow(retained, "Campaign mirror", sharedPath);
+    await returnToRow(retained, retainedScroll);
+    await body.evaluate((element) => { element.scrollTop = 0; });
+    const backupScroll = await inspectAtCurrentRow(backup, "Backup campaign", backupPath);
+    expect(backupScroll).not.toBe(retainedScroll);
+
+    await previous.press("Enter");
+    await expect(details).toContainText(sharedPath);
+    await returnToRow(retained, retainedScroll);
+    await close.press("Enter");
+    await expect(dialog).toBeHidden();
+
+    await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+    await page.getByRole("button", { name: /^Review\b/ }).press("Enter");
+    await expect(preview).toContainText("184 GB");
+    await close.press("Enter");
+
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(details).toContainText(backupPath);
+    await returnToRow(backup, backupScroll);
+    await close.press("Enter");
+    await previous.press("Enter");
+    await expect(details).toContainText(sharedPath);
+    await returnToRow(retained, retainedScroll);
   });
 });
 

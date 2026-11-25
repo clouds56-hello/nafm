@@ -379,6 +379,11 @@ export interface FinderPosition {
   result_count: number;
 }
 
+export interface ReviewPosition {
+  file_id: string;
+  scroll_top: number;
+}
+
 export interface ScanSelector {
   site_id?: string;
   all?: boolean;
