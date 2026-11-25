@@ -297,7 +297,7 @@ test("cleanup review verifies the potential retained copy in place before a fres
   await expect(sites.getByText("Verifying files", { exact: true })).toBeVisible();
   await stopTeam.press("Enter");
   await page.clock.runFor(550);
-  await expect(scanTeam).toBeEnabled();
+  await expect(sites.getByRole("button", { name: "Resume verification of Team share", exact: true })).toBeEnabled();
   await sites.getByRole("button", { name: "Close sites", exact: true }).click();
 
   const openReview = inspector(page).getByRole("button", { name: "Open review", exact: true });

@@ -7,7 +7,7 @@ import type {
   ScanTaskEvent,
   ScanTaskSiteState,
   SiteOverview,
-  FirstScanInterruption,
+  ScanInterruption,
 } from "./types";
 
 export function scanPhaseLabel(phase: ScanPhase): string {
@@ -31,7 +31,7 @@ export function scanSitePublishedInventory(site: ScanTaskSiteState) {
   return site.status === "completed" || site.phase === "hashing" || site.phase === "finalizing";
 }
 
-export function firstScanRecovery(kind: FirstScanInterruption["kind"] | undefined) {
+export function scanRecovery(kind: ScanInterruption["kind"] | undefined) {
   if (kind === "failed") return { status: "Scan failed", action: "Retry scan", shortAction: "Retry" } as const;
   if (kind === "cancelled") return { status: "Scan stopped", action: "Restart scan", shortAction: "Restart" } as const;
   return null;

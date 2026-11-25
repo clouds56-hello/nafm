@@ -1,8 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { formatCount } from "../lib/format";
-import { firstScanRecovery, scanPhaseLabel, scanSitePublishedInventory } from "../lib/scanView";
+import { scanRecovery, scanPhaseLabel, scanSitePublishedInventory } from "../lib/scanView";
 import type {
-  FirstScanInterruption, ScanActivityResult, ScanCompletionView, ScanProgressView, ScanTask, ScanTaskSiteState, SiteOverview,
+  ScanActivityResult, ScanCompletionView, ScanInterruption, ScanProgressView, ScanTask, ScanTaskSiteState, SiteOverview,
 } from "../lib/types";
 import { CheckIcon, RefreshIcon, WarningIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
@@ -15,7 +15,7 @@ export interface ScanActivityProps {
   completionBySite: ReadonlyMap<string, ScanCompletionView>;
   cancellingRequestIds: ReadonlySet<number>;
   blockedSiteIds: ReadonlySet<string>;
-  firstScanInterruptions: ReadonlyMap<string, FirstScanInterruption>;
+  scanInterruptions: ReadonlyMap<string, ScanInterruption>;
   lastResult: ScanActivityResult | null;
   onStop: (requestId: number) => void;
   onScan: (siteId: string) => Promise<void>;
@@ -45,21 +45,27 @@ interface ScanRecovery {
   site: SiteOverview;
   action: "Resume verification" | "Retry scan" | "Restart scan";
   summary: string | null;
-  interruption?: FirstScanInterruption;
+  interruption?: ScanInterruption;
 }
 
-const unsavedInventory = "Inventory wasn’t saved";
+type RemovedActivityFocus = { kind: "request" } | { kind: "recovery"; siteId: string };
 
-function scanRecoveries({ sites, blockedSiteIds, firstScanInterruptions, lastResult }: ScanActivityProps) {
+const unsavedInventory = "Inventory wasn’t saved";
+const retainedInventory = "Indexed files remain available";
+
+function scanRecoveries({ sites, blockedSiteIds, scanInterruptions, lastResult }: ScanActivityProps) {
   const latestStates = new Map(lastResult?.site_states.map((state) => [state.site_id, state]));
   const recoveries = new Map<string, ScanRecovery>();
   for (const site of sites) {
     if (blockedSiteIds.has(site.id)) continue;
-    const interruption = firstScanInterruptions.get(site.id);
-    const firstRecovery = firstScanRecovery(interruption?.kind);
-    if (firstRecovery) {
+    const interruption = scanInterruptions.get(site.id);
+    const recovery = scanRecovery(interruption?.kind);
+    if (interruption && recovery) {
       recoveries.set(site.id, {
-        site, action: firstRecovery.action, summary: unsavedInventory, interruption,
+        site, action: recovery.action, interruption,
+        summary: interruption.has_inventory
+          ? verificationSummary(null, site.pending_hash_count) ?? retainedInventory
+          : unsavedInventory,
       });
       continue;
     }
@@ -67,10 +73,9 @@ function scanRecoveries({ sites, blockedSiteIds, firstScanInterruptions, lastRes
     if (state?.status === "completed" && state.hashes_pending === 0) continue;
     const pending = site.latest_inventory_at ? site.pending_hash_count
       : state && scanSitePublishedInventory(state) ? state.hashes_pending : 0;
-    const singleFailure = lastResult?.kind === "failed" && latestStates.size === 1 && state?.status === "running";
-    if (singleFailure || pending > 0) {
+    if (pending > 0) {
       recoveries.set(site.id, {
-        site, action: singleFailure ? "Retry scan" : "Resume verification", summary: verificationSummary(null, pending),
+        site, action: "Resume verification", summary: verificationSummary(null, pending),
       });
     }
   }
@@ -113,16 +118,25 @@ function SiteProgress({ name, showName, snapshot, progress, completion, stopping
 }
 
 function ActivityPanel({
-  tasks, sites, progressBySite, completionBySite, cancellingRequestIds, firstScanInterruptions, lastResult, onStop, onScan, recoveries,
+  tasks, sites, progressBySite, completionBySite, cancellingRequestIds, scanInterruptions, lastResult, onStop, onScan, recoveries,
 }: ScanActivityProps & { recoveries: ReadonlyMap<string, ScanRecovery> }) {
   const panel = useRef<HTMLDivElement>(null);
   const result = useRef<HTMLElement>(null);
-  const restoreFocus = useRef(false);
+  const restoreFocus = useRef<RemovedActivityFocus | null>(null);
   const focusAfterStart = useRef<{ siteId: string; button: HTMLButtonElement } | null>(null);
   const [startingIds, setStartingIds] = useState<ReadonlySet<string>>(new Set());
-  const trackStopButton = useCallback((button: HTMLButtonElement | null) => {
+  const trackRequest = useCallback((request: HTMLElement | null) => {
+    if (!request) return;
+    return () => {
+      if (request.contains(document.activeElement)) restoreFocus.current = { kind: "request" };
+    };
+  }, []);
+  const trackRecovery = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return;
-    return () => { restoreFocus.current ||= document.activeElement === button; };
+    return () => {
+      const siteId = button.dataset.scanRecovery;
+      if (siteId && document.activeElement === button) restoreFocus.current = { kind: "recovery", siteId };
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -138,11 +152,15 @@ function ActivityPanel({
     } else if (start && !startingIds.has(start.siteId)) {
       focusAfterStart.current = null;
     }
-    if (!restoreFocus.current) return;
-    restoreFocus.current = false;
-    if (document.activeElement !== document.body) return;
-    (result.current ?? panel.current)?.focus({ preventScroll: true });
-  }, [tasks, lastResult, startingIds]);
+    const removed = restoreFocus.current;
+    restoreFocus.current = null;
+    if (!removed || document.activeElement !== document.body) return;
+    const recovery = removed.kind === "recovery"
+      ? panel.current?.querySelector<HTMLButtonElement>(`[data-scan-recovery="${CSS.escape(removed.siteId)}"]`)
+      : null;
+    (recovery ?? result.current ?? panel.current)?.focus({ preventScroll: true });
+    recovery?.scrollIntoView({ block: "nearest" });
+  }, [tasks, lastResult, startingIds, recoveries]);
 
   const names = new Map(sites.map((site) => [site.id, site.name]));
   const siteName = (id: string | undefined) => (id && names.get(id)) || "Storage site";
@@ -153,15 +171,17 @@ function ActivityPanel({
   const interrupted = unlisted.filter((recovery) => recovery.interruption);
   const verificationPending = unlisted.filter((recovery) => !recovery.interruption);
 
-  function recoveryRow({ site, action, summary }: ScanRecovery, resultSummary = summary) {
+  function recoveryRow({ site, action, summary, interruption }: ScanRecovery, resultSummary = summary, inLatestResult = false) {
     const starting = startingIds.has(site.id);
+    const reason = interruption?.message;
     return (
       <li key={site.id} className="atlas-scan-site atlas-scan-recovery-row">
         <div>
           <strong>{site.name}</strong>
           {resultSummary && <div className="atlas-scan-site-status">{resultSummary}</div>}
+          {reason && (!inLatestResult || reason !== lastResult?.message) && <div className="atlas-scan-site-status">{reason}</div>}
         </div>
-        <button className="atlas-scan-action atlas-scan-resume" type="button"
+        <button ref={trackRecovery} data-scan-recovery={site.id} className="atlas-scan-action atlas-scan-resume" type="button"
           aria-label={`${action} of ${site.name}`} aria-disabled={starting || undefined} onClick={async (event) => {
             if (starting) return;
             const button = event.currentTarget;
@@ -195,10 +215,11 @@ function ActivityPanel({
         const stopping = activityIsStopping(task, cancellingRequestIds);
         const stopLabel = task.selector.all ? "Stop all scans" : `Stop scan of ${name}`;
         return (
-          <section key={task.request_id} className="atlas-scan-request" aria-label={name} tabIndex={-1} data-scan-request={task.request_id}>
+          <section key={task.request_id} ref={trackRequest} className="atlas-scan-request"
+            aria-label={name} tabIndex={-1} data-scan-request={task.request_id}>
             <div className="atlas-scan-request-header">
               <strong>{name}</strong>
-              <button ref={trackStopButton} className="atlas-scan-action" type="button" aria-label={stopLabel}
+              <button className="atlas-scan-action" type="button" aria-label={stopLabel}
                 aria-disabled={stopping || undefined} onClick={(event) => {
                   event.currentTarget.focus({ preventScroll: true });
                   if (!stopping) onStop(task.request_id);
@@ -229,10 +250,10 @@ function ActivityPanel({
           <ul className="atlas-scan-site-list" role="list">
             {lastResult.site_states.map((state) => {
               const recovery = recoveries.get(state.site_id);
-              const interruption = firstScanInterruptions.get(state.site_id);
-              const summary = interruption?.request_id === lastResult.request_id ? unsavedInventory
+              const interruption = scanInterruptions.get(state.site_id);
+              const summary = interruption?.request_id === lastResult.request_id && !interruption.has_inventory ? unsavedInventory
                 : scanSitePublishedInventory(state) ? verificationSummary(state.total_files, state.hashes_pending) : null;
-              if (recovery && belongsInLatestResult(recovery)) return recoveryRow(recovery, summary ?? undefined);
+              if (recovery && belongsInLatestResult(recovery)) return recoveryRow(recovery, summary ?? recovery.summary, true);
               return (
                 <li key={state.site_id} className="atlas-scan-site">
                   <strong>{siteName(state.site_id)}</strong>

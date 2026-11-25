@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { formatCount } from "../lib/format";
-import { firstScanRecovery, scanPhaseLabel } from "../lib/scanView";
-import type { FirstScanInterruption, ScanProgressView } from "../lib/types";
+import { scanRecovery, scanPhaseLabel } from "../lib/scanView";
+import type { ScanInterruption, ScanProgressView } from "../lib/types";
 
 export interface FirstScanState {
   requestId?: number;
@@ -10,7 +10,7 @@ export interface FirstScanState {
   scanAll: boolean;
   blocked: boolean;
   inventoryLoading: boolean;
-  interruption?: FirstScanInterruption["kind"];
+  interruption?: ScanInterruption["kind"];
   onScan: () => Promise<void>;
   onCancel: (requestId: number) => void;
 }
@@ -21,7 +21,7 @@ export function FirstScanCenter({ name, scan }: { name: string; scan: FirstScanS
   const progress = scan.progress?.request_id === scan.requestId ? scan.progress : undefined;
   const loadingInventory = scan.inventoryLoading && !running;
   const unavailable = scan.stopping || starting || (!running && scan.blocked);
-  const recovery = firstScanRecovery(scan.interruption);
+  const recovery = scanRecovery(scan.interruption);
   let status = loadingInventory ? "Reading inventory" : recovery?.status ?? "Ready to scan";
   if (scan.stopping) status = "Stopping scan";
   else if (progress) status = scanPhaseLabel(progress.phase);

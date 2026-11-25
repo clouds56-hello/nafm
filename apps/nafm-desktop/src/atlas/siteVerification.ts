@@ -1,7 +1,7 @@
 import { siteAnalysisReady } from "../lib/analysis";
 import { formatCount } from "../lib/format";
-import { firstScanRecovery, scanPhaseLabel } from "../lib/scanView";
-import type { FirstScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
+import { scanRecovery, scanPhaseLabel } from "../lib/scanView";
+import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
 
 type CoverageRole = "source" | "target";
 
@@ -29,7 +29,7 @@ interface SiteScanState {
   stopping: boolean;
   blocked: boolean;
   progress?: ScanProgressView;
-  interruption?: FirstScanInterruption;
+  interruption?: ScanInterruption;
   failure?: string;
   verificationRequired?: boolean;
 }
@@ -52,7 +52,7 @@ function activeStatus(site: SiteOverview, scan: SiteScanState) {
 
 function describeScanAction(
   site: SiteOverview, scan: SiteScanState, active: boolean,
-  interruption: ReturnType<typeof firstScanRecovery>, role?: CoverageRole,
+  interruption: ReturnType<typeof scanRecovery>, role?: CoverageRole,
 ): SiteScanAction {
   const verb = interruption?.shortAction ?? (site.hash_status === "pending" ? "Resume" : "Scan");
   const inactiveLabel = interruption?.action ?? (verb === "Resume" ? "Resume verification" : "Scan this site");
@@ -72,8 +72,8 @@ function describeScanAction(
 export function siteVerification(site: SiteOverview, scan: SiteScanState, role?: CoverageRole): SiteVerification {
   const active = activeStatus(site, scan);
   const needsVerification = Boolean(scan.verificationRequired) || !siteAnalysisReady(site);
-  const failure = needsVerification ? scan.failure : undefined;
-  const interruption = firstScanRecovery(scan.interruption?.kind ?? (failure || site.scan_state === "failed" ? "failed" : undefined));
+  const failure = scan.failure;
+  const interruption = scanRecovery(scan.interruption?.kind ?? (failure || site.scan_state === "failed" ? "failed" : undefined));
   const action = needsVerification || interruption ? describeScanAction(site, scan, Boolean(active), interruption, role) : undefined;
   if (active) return { status: active, tone: "active", needsVerification, action };
   if (interruption) return { status: interruption.status, tone: "pending", needsVerification, action, failure };

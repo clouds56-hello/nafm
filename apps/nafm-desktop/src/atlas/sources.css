@@ -150,10 +150,12 @@
   border-color: #c4c8ff;
 }
 
-.source-action:hover:enabled {
+.source-action:hover:enabled:not([aria-disabled="true"]) {
   color: var(--source-signal);
   border-color: var(--source-signal);
 }
+
+.source-action[aria-disabled="true"] { opacity: .5; }
 
 .source-action span {
   color: var(--source-signal);

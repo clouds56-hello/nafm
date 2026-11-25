@@ -74,7 +74,7 @@
   color: var(--atlas-muted);
 }
 
-.atlas-site-rail :where(button):hover:enabled {
+.atlas-site-rail :where(button):hover:enabled:not([aria-disabled="true"]) {
   border-color: #484d70;
   background: #23263a;
   color: var(--atlas-ink);
@@ -239,6 +239,7 @@
 }
 
 .atlas-site-rail .atlas-site-rail-scan { gap: 4px; font: 10px/1 var(--atlas-mono); white-space: nowrap; }
+.atlas-site-rail .atlas-site-rail-scan[aria-disabled="true"] { opacity: .5; }
 .atlas-site-rail-scan svg { width: 11px; height: 11px; }
 .atlas-site-rail .atlas-site-rail-manage { width: 21px; padding: 0; color: var(--atlas-muted); font-size: 15px; }
 

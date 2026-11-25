@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
-import { firstScanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
-import type { FirstScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
+import { scanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
+import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
@@ -18,7 +18,7 @@ interface SiteRailProps {
   scanAllRequests: ReadonlySet<number>;
   cancellingRequests: ReadonlySet<number>;
   progressBySite: ReadonlyMap<string, ScanProgressView>;
-  firstScanInterruptions: ReadonlyMap<string, FirstScanInterruption>;
+  scanInterruptions: ReadonlyMap<string, ScanInterruption>;
   onOpen: () => void;
   onClose: () => void;
   onSelect: (id: string) => void;
@@ -56,7 +56,7 @@ export function SiteRail({
   scanAllRequests,
   cancellingRequests,
   progressBySite,
-  firstScanInterruptions,
+  scanInterruptions,
   onOpen,
   onClose,
   onSelect,
@@ -158,16 +158,21 @@ export function SiteRail({
             const previousProgress = progressBySite.get(site.id);
             const progress = scanning && previousProgress?.request_id === requestId ? previousProgress : undefined;
             const progressValue = scanProgressValue(progress);
-            const recovery = firstScanRecovery(firstScanInterruptions.get(site.id)?.kind);
+            const interruption = scanInterruptions.get(site.id);
+            const kind = interruption?.kind ?? (site.scan_state === "failed" ? "failed" : undefined);
+            const recovery = scanRecovery(kind === "cancelled" && interruption?.has_inventory ? undefined : kind);
+            const hasInventory = siteHasInventory(site);
+            const resuming = !recovery && hasInventory && site.hash_status === "pending";
+            const scanUnavailable = stopping || (!scanning && blockedIds.has(site.id));
             const status = stopping ? "Stopping…" : progress ? scanPhaseLabel(progress.phase)
               : scanning ? "Starting scan…" : recovery?.status ?? inventoryStatus(site);
             const scanLabel = scanning
               ? scanAll ? "Stop all" : "Stop"
-              : recovery?.shortAction ?? (site.latest_inventory_at ? "Rescan" : "Scan");
+              : recovery?.shortAction ?? (resuming ? "Resume" : site.latest_inventory_at ? "Rescan" : "Scan");
             const scanActionLabel = stopping ? `Scan is stopping for ${site.name}`
               : scanning ? scanAll ? `Stop remaining scans from ${site.name}` : `Stop scan of ${site.name}`
-                : recovery ? `${recovery.action} of ${site.name}` : `Scan ${site.name}`;
-            const hasInventory = siteHasInventory(site);
+                : recovery ? `${recovery.action} of ${site.name}`
+                  : resuming ? `Resume verification of ${site.name}` : `Scan ${site.name}`;
             const justAdded = addedSite?.id === site.id;
             const showAdded = justAdded && !hasInventory && !scanning && !recovery && site.scan_state === "idle";
             const selected = activeId === site.id;
@@ -230,7 +235,7 @@ export function SiteRail({
                 <div className="atlas-site-rail-footer">
                   <div className="atlas-site-rail-status" data-scanning={scanning || undefined}>
                     {showAdded && <span id={addedStatusId} className="atlas-site-rail-added" role="status">Site added</span>}
-                    <span title={status}>{status}</span>
+                    <span title={!scanning ? interruption?.message ?? status : status}>{status}</span>
                   </div>
                   <div className="atlas-site-rail-actions">
                     <button
@@ -238,8 +243,10 @@ export function SiteRail({
                       type="button"
                       aria-label={scanActionLabel}
                       title={scanActionLabel}
-                      disabled={stopping || (!scanning && blockedIds.has(site.id))}
-                      onClick={() => {
+                      aria-disabled={scanUnavailable || undefined}
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        if (scanUnavailable) return;
                         if (requestId === undefined) onScan(site.id);
                         else onCancel(requestId);
                       }}

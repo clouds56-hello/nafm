@@ -428,9 +428,11 @@ export interface ScanActivityResult {
   message: string | null;
 }
 
-export interface FirstScanInterruption {
+export interface ScanInterruption {
   request_id: number;
   kind: "cancelled" | "failed";
+  has_inventory: boolean;
+  message: string | null;
 }
 
 export interface DuplicateFile {

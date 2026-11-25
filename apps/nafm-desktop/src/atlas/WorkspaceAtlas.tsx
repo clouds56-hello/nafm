@@ -230,7 +230,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       scanAll: requestId !== undefined && state.scanAllRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(site.id),
       inventoryLoading: awaitingTree,
-      interruption: state.firstScanInterruptions.get(site.id)?.kind ?? (site.scan_state === "failed" ? "failed" as const : undefined),
+      interruption: state.scanInterruptions.get(site.id)?.kind ?? (site.scan_state === "failed" ? "failed" as const : undefined),
       onScan: () => state.scan(site.id),
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
@@ -325,15 +325,14 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   function verificationScanState(id: string) {
     const requestId = state.scanRequestBySite.get(id);
     const progress = state.progressBySite.get(id);
-    const latestScan = state.lastScanResult;
-    const failed = latestScan?.kind === "failed" && latestScan.site_states.some((item) => item.site_id === id && item.status === "running");
+    const interruption = state.scanInterruptions.get(id);
     return {
       running: requestId !== undefined,
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(id),
       progress: progress?.request_id === requestId ? progress : undefined,
-      interruption: state.firstScanInterruptions.get(id),
-      failure: failed ? latestScan.message ?? "The scan failed." : undefined,
+      interruption,
+      failure: interruption?.kind === "failed" ? interruption.message ?? "The scan failed." : undefined,
     };
   }
   const currentVerification = site ? siteVerification(site, verificationScanState(site.id)) : null;
@@ -662,7 +661,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           tasks: state.activeScanTasks,
           progressBySite: state.progressBySite,
           completionBySite: state.completionBySite,
-          firstScanInterruptions: state.firstScanInterruptions,
+          scanInterruptions: state.scanInterruptions,
           cancellingRequestIds: state.cancellingRequestIds,
           blockedSiteIds: state.scanBlockedSiteIds,
           lastResult: state.lastScanResult,
@@ -752,7 +751,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
               scanAllRequests={state.scanAllRequestIds}
               cancellingRequests={state.cancellingRequestIds}
               progressBySite={state.progressBySite}
-              firstScanInterruptions={state.firstScanInterruptions}
+              scanInterruptions={state.scanInterruptions}
               open={sitesOpen}
               onOpen={() => { lastOpened.current = "sites"; setSitesOpen(true); }}
               onClose={() => setSitesOpen(false)}
@@ -944,7 +943,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           scanAllRequests={state.scanAllRequestIds}
           cancellingRequests={state.cancellingRequestIds}
           progressBySite={state.progressBySite}
-          firstScanInterruptions={state.firstScanInterruptions}
+          scanInterruptions={state.scanInterruptions}
           onScan={(id) => void state.scan(id)}
           onCancelScan={(id) => void state.cancel(id)}
           onManage={(id) => { setSourcesOpen(false); workspace.openManagement("sites", id); }}
