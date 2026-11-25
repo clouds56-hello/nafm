@@ -2863,6 +2863,7 @@ async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
   let mut anchor = StorageDirectoryAnchor {
     child_id: child.id.clone(),
     query: Some("  ShOt  ".into()),
+    inspect_file: false,
   };
   let snapshot = fixture
     .repo
@@ -2905,6 +2906,82 @@ async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
     assert_eq!(fallback.page.children[0].name, "beta-shot.bin");
     assert!(fallback.filtered_page.is_none());
   }
+}
+
+#[tokio::test]
+async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_visible_map() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("inspected-media");
+  let nested = media.join("nested");
+  let outside = media.join("outside");
+  fs::create_dir(&nested).unwrap();
+  fs::create_dir(&outside).unwrap();
+  let file_path = nested.join("retained.bin");
+  fs::write(&file_path, b"retained").unwrap();
+  fs::write(outside.join("other.bin"), b"other").unwrap();
+  fixture.create_site("inspected-source").await;
+  fixture
+    .add_site_folder("inspected-source", &media, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("inspected-source").await.unwrap();
+
+  let tree = fixture.repo.storage_tree("inspected-source", 4, 20).await.unwrap();
+  let parent = &tree.root.children[0];
+  let nested = child_named(parent, "nested");
+  let file = child_named(nested, "retained.bin");
+  let outside = child_named(parent, "outside");
+  let anchor = StorageDirectoryAnchor {
+    child_id: file.id.clone(),
+    query: Some("retained".into()),
+    inspect_file: true,
+  };
+  let sort = DirectorySort {
+    field: DirectorySortField::Name,
+    direction: SortDirection::Asc,
+  };
+  let snapshot = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 1, 0, 1, 1, sort, Some(&anchor))
+    .await
+    .unwrap();
+  assert!(snapshot.location.root.children.is_empty());
+  assert_eq!(snapshot.page.offset, 1);
+  assert_eq!(snapshot.page.children[0].id, outside.id);
+  assert!(snapshot.filtered_page.is_none());
+  let inspected = snapshot.inspected_file.unwrap();
+  assert_eq!(inspected.id, file.id);
+  assert_eq!(inspected.path, file.path);
+  assert_eq!(inspected.modified_unix_millis, file.modified_unix_millis);
+  assert_eq!(inspected.total_bytes, 8);
+  assert_eq!(inspected.verified_file_count, 1);
+  assert_eq!(inspected.space_health, file.space_health);
+
+  let direct = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("inspected-source", None, &nested.id, 10, 0, 1, 1, sort, Some(&anchor))
+    .await
+    .unwrap();
+  assert_eq!(direct.page.offset, 0);
+  assert_eq!(direct.page.children[0].id, file.id);
+  assert_eq!(direct.filtered_page.unwrap().children[0].id, file.id);
+  assert_eq!(direct.inspected_file.unwrap().id, file.id);
+
+  let outside_scope = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("inspected-source", None, &outside.id, 0, 0, 1, 1, sort, Some(&anchor))
+    .await
+    .unwrap();
+  assert!(outside_scope.inspected_file.is_none());
+
+  fs::remove_file(file_path).unwrap();
+  fixture.repo.scan_site("inspected-source").await.unwrap();
+  let removed = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 0, 0, 1, 1, sort, Some(&anchor))
+    .await
+    .unwrap();
+  assert!(removed.inspected_file.is_none());
+  assert_eq!(removed.page.children[0].id, outside.id);
 }
 
 #[tokio::test]

@@ -269,6 +269,7 @@ export interface StorageViewSnapshot {
   location: StorageLocation;
   page: StorageChildrenPage;
   filtered_page?: StorageChildrenPage | null;
+  inspected_file?: StorageNode | null;
 }
 
 export interface StorageFileReveal extends StorageViewSnapshot {
@@ -278,6 +279,7 @@ export interface StorageFileReveal extends StorageViewSnapshot {
 export interface StorageDirectoryAnchor {
   child_id: string;
   query: string | null;
+  inspect_file?: boolean;
 }
 
 export interface DirectoryRefresh {

@@ -24,6 +24,7 @@ interface DirectorySearchOptions {
   query: string;
   sort: DirectorySort;
   contentRevision: number;
+  inspectedFileId?: string;
   onRefresh?: (update: DirectoryRefresh) => boolean | void;
 }
 
@@ -31,8 +32,14 @@ function directorySearchKey(scope: string, query: string, sort: DirectorySort) {
   return JSON.stringify([scope, query, sort.field, sort.direction]);
 }
 
+function refreshAnchorIndex(page: StorageChildrenPage | null, fallback: number, inspectedFileId?: string) {
+  if (!page || !inspectedFileId) return fallback;
+  const index = page.children.findIndex((file) => file.id === inspectedFileId);
+  return index < 0 ? fallback : page.offset + index;
+}
+
 export function useDirectorySearch({
-  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, onRefresh,
+  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, inspectedFileId, onRefresh,
 }: DirectorySearchOptions) {
   const enabled = Boolean(query && siteId && folderId);
   const key = directorySearchKey(scope, query, { field, direction });
@@ -46,16 +53,16 @@ export function useDirectorySearch({
   const preferredIndex = request?.preferredIndex;
   const changingTarget = delivered !== null && delivered.targetId !== targetId;
   const refreshing = delivered !== null && !changingTarget && delivered.revision !== contentRevision;
-  const refreshIndex = refreshing ? preferredIndex ?? range.offset : undefined;
+  const refreshIndex = refreshing ? refreshAnchorIndex(page, preferredIndex ?? range.offset, inspectedFileId) : undefined;
   const anchor = page && refreshIndex !== undefined ? page.children[refreshIndex - page.offset]?.id : undefined;
   const error = failure?.key === key && failure.targetId === targetId && failure.revision === contentRevision && failure.range === range
     && failure.refreshIndex === refreshIndex ? failure.message : null;
   const pending = enabled && !error && (changingTarget || refreshing || delivered?.range !== range);
-  const latest = useRef({ key, targetId, revision: contentRevision, range, preferredIndex, onRefresh });
+  const latest = useRef({ key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, onRefresh });
 
   useLayoutEffect(() => {
-    latest.current = { key, targetId, revision: contentRevision, range, preferredIndex, onRefresh };
-  }, [key, targetId, contentRevision, range, preferredIndex, onRefresh]);
+    latest.current = { key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, onRefresh };
+  }, [key, targetId, contentRevision, range, preferredIndex, inspectedFileId, onRefresh]);
 
   const requestWindow = useCallback((next: DirectoryRequest) => {
     latest.current = { ...latest.current, ...next };
@@ -70,7 +77,8 @@ export function useDirectorySearch({
         const active = latest.current;
         return current && active.key === key && active.targetId === targetId
           && active.revision === contentRevision && active.range === range
-          && (refreshIndex === undefined || (active.preferredIndex ?? range.offset) === refreshIndex);
+          && (refreshIndex === undefined
+            || refreshAnchorIndex(page, active.preferredIndex ?? range.offset, active.inspectedFileId) === refreshIndex);
       };
       if (!stillWanted()) return;
       try {

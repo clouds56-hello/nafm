@@ -35,6 +35,7 @@ interface ContentsVisit {
   contentsKey: string;
   fileId: string;
   source: "contents" | "atlas";
+  rowIndex?: number;
 }
 
 type InspectorPane = InspectorView | ContentsVisit;
@@ -196,6 +197,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     query: searchQuery,
     sort: state.directorySort,
     contentRevision: state.contentRevision,
+    inspectedFileId: inspectorView === "details" && selectedNode?.kind === "file" ? selectedNode.id : undefined,
     onRefresh: onSearchRefresh,
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
@@ -281,7 +283,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   async function restoreSearch() {
     if (await state.leaveContentsGroup()) setPausedSearchScope(null);
   }
-  useLayoutEffect(() => () => pendingReveal.current?.abort(), [inspectorView, siteId, selected?.id]);
+  useLayoutEffect(() => () => pendingReveal.current?.abort(), [inspectorView, siteId, selected?.id, state.selectedFileUnavailable]);
   useEffect(() => {
     if (revealedRow && revealedRow.key !== contentsKey) setRevealedRow(null);
   }, [contentsKey, revealedRow]);
@@ -418,9 +420,22 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const canGoBack = fileOpen || state.canGoBack;
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
   const goBack = useCallback(() => {
-    if (currentVisit?.view === "details") openInspector({ ...currentVisit, view: "contents" });
-    else return backLocation();
-  }, [currentVisit, backLocation, openInspector]);
+    if (currentVisit?.view !== "details") return backLocation();
+    let rowIndex = currentVisit.rowIndex;
+    if (currentVisit.source === "contents" && !state.selectedFileUnavailable && directoryPage) {
+      const index = directoryPage.children.findIndex((node) => node.id === currentVisit.fileId);
+      if (index >= 0) {
+        const nextIndex = directoryPage.offset + index;
+        if (nextIndex !== rowIndex) {
+          setContentsReveal({
+            key: currentVisit.contentsKey, index: nextIndex, onApplied: () => setContentsReveal(null),
+          });
+        }
+        rowIndex = nextIndex;
+      }
+    }
+    openInspector({ ...currentVisit, view: "contents", rowIndex });
+  }, [currentVisit, backLocation, directoryPage, openInspector, state.selectedFileUnavailable]);
   const goForward = useCallback(() => {
     if (currentVisit?.view === "contents") openInspector({ ...currentVisit, view: "details" });
     else return forwardLocation();
@@ -571,9 +586,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     }
     if (!origin || inspectorView === "contents" || currentVisit) {
       if (!origin) inspectorOrigin.current = null;
+      const row = origin ? -1 : directoryPage?.children.findIndex((entry) => entry.id === node.id) ?? -1;
       openInspector({
         view: "details", fileId: node.id, contentsKey,
         source: origin ? "atlas" : "contents",
+        rowIndex: directoryPage && row >= 0 ? directoryPage.offset + row : undefined,
       });
     } else {
       openInspector(view);
@@ -753,6 +770,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     onOpenFolder={state.openFolderExternally}
                     entries={directoryPage?.children ?? []}
                     selected={selected}
+                    fileUnavailable={state.selectedFileUnavailable}
                     focusRequested={analysisFocusRequested && inspectorView === "details"}
                     onFocusHandled={finishAnalysisFocus}
                     metric={metric}
@@ -771,11 +789,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                         state.setReviewOpen(true);
                       },
                     } : undefined}
-                    onShowInContents={selected?.kind === "file" && (!fileOpen || currentVisit?.source === "atlas")
+                    onShowInContents={!state.selectedFileUnavailable && selected?.kind === "file" && (!fileOpen || currentVisit?.source === "atlas")
                       ? () => void showFileInContents(selected) : undefined}
                     revealing={revealingFileId === selected?.id}
                   >
-                    {dashboard && selectedNode && (
+                    {dashboard && selectedNode && !state.selectedFileUnavailable && (
                       <ContentActions
                         node={selectedNode}
                         metric={state.healthMetric}
@@ -819,9 +837,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       reveal={contentsReveal?.key === contentsKey ? contentsReveal : undefined}
                       refreshHandler={directoryRefresh}
-                      returnEntryId={currentVisit?.source === "contents" ? currentVisit.fileId : null}
+                      returnEntryId={currentVisit?.source === "contents" && !state.selectedFileUnavailable ? currentVisit.fileId : null}
                       revealedEntry={revealedRow?.key === contentsKey ? revealedRow : undefined}
-                      resumeVisibleRow={currentVisit?.source === "atlas"}
+                      resumeVisibleRow={Boolean(currentVisit && (currentVisit.source === "atlas" || state.selectedFileUnavailable))}
                       historyFocusOrigin={historyFocusOrigin}
                       onHistoryFocusHandled={finishHistoryFocus}
                       active={inspectorView === "contents"}

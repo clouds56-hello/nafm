@@ -533,6 +533,142 @@ test.describe("Contents during a rescan", () => {
   });
 });
 
+test.describe("compact file Details during a rescan", () => {
+  test.use({ viewport: { width: 390, height: 620 }, hasTouch: true, reducedMotion: "reduce" });
+
+  async function openLateFile(page: Page, filtered: boolean) {
+    await arc(page, /^Photo Library,/).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const details = inspector.getByRole("region", { name: "Storage details", exact: true });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+    const grid = contents.getByRole("grid");
+    const search = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+    const proof = grid.getByRole("button", { name: /^Proof 096\.jpg/ });
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    if (filtered) {
+      await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+      await search.fill("  pRoOf  ");
+    }
+    await expect(grid).toHaveAttribute("aria-rowcount", filtered ? "96" : "100");
+    await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    await expect(proof).toBeInViewport();
+    const fileId = (await proof.getAttribute("data-entry-id"))!;
+    await proof.focus();
+    const scrollPosition = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scrollPosition).toBeGreaterThan(0);
+    await page.keyboard.press("Enter");
+    await expect(details.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+    await expect(back).toBeFocused();
+    return { details, contents, grid, search, proof, back, fileId, scrollPosition };
+  }
+
+  async function observeRescan(page: Page, fileId: string, change?: "moved" | "removed") {
+    return page.evaluateHandle(async ({ fileId, change }) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+        };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const siteId = "studio-archive";
+      const nodeId = "site_folder:studio-archive:1";
+      const inventory = change ? await invoke("get_storage_children", {
+        siteId, nodeId, offset: 0, limit: 128, sort: { field: "size", direction: "desc" },
+      }) as StorageChildrenPage : null;
+      const file = inventory?.children.find((entry) => entry.id === fileId);
+      const children = inventory?.children.filter((entry) => entry.id !== fileId);
+      if (change === "moved" && file && children) {
+        children.splice(20, 0, {
+          ...file, total_bytes: Math.round((children[19].total_bytes + children[20].total_bytes) / 2),
+        });
+      }
+      const read = {
+        inspected: false, filtered: false,
+        start: () => invoke("start_scan", { expectedWorkspace: "Studio workspace", selector: { site_id: siteId } }),
+      };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if ((command !== "get_storage_view_snapshot" && command !== "get_storage_children") || args.nodeId !== nodeId) return response;
+        const snapshot = command === "get_storage_view_snapshot" ? response as StorageViewSnapshot : null;
+        const anchor = args.anchor as { child_id?: string; inspect_file?: boolean } | string | undefined;
+        if (snapshot?.inspected_file?.id === fileId && anchor && typeof anchor === "object"
+          && anchor.inspect_file && anchor.child_id === fileId) read.inspected = true;
+        if (command === "get_storage_children" && anchor === fileId && args.query === "pRoOf") read.filtered = true;
+        if (!children) return response;
+        const page = snapshot?.page ?? response as StorageChildrenPage;
+        const childId = typeof anchor === "string" ? anchor : anchor?.child_id;
+        const rank = children.findIndex((entry) => entry.id === childId);
+        const offset = rank >= 0 ? Math.floor(rank / page.limit) * page.limit
+          : Math.min(page.offset, Math.max(0, children.length - page.limit));
+        const replacement = { ...page, offset, total_children: children.length, children: children.slice(offset, offset + page.limit) };
+        if (!snapshot) return replacement;
+        const inspected = snapshot.inspected_file && children.find((entry) => entry.id === snapshot.inspected_file?.id);
+        return { ...snapshot, page: replacement, inspected_file: inspected };
+      };
+      return read;
+    }, { fileId, change });
+  }
+
+  test("a real rescan keeps an unchanged filtered file open and returns to its exact row", async ({ page }) => {
+    await page.goto("/mock/?scenario=large");
+    const { details, contents, search, proof, back, fileId, scrollPosition } = await openLateFile(page, true);
+    const scan = await observeRescan(page, fileId);
+    await scan.evaluate((read) => read.start());
+    await expect.poll(() => scan.evaluate((read) => read.inspected && read.filtered), { timeout: 12_000 }).toBe(true);
+    await expect(details.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+    await expect(back).toBeFocused();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(search).toHaveValue("  pRoOf  ");
+    await expect(proof).toBeFocused();
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollPosition);
+  });
+
+  test("Back to Contents seeks the inspected file when a rescan moves it", async ({ page }) => {
+    const { details, grid, proof, back, fileId } = await openLateFile(page, false);
+    const size = details.getByText("Size", { exact: true }).locator("..");
+    const originalSize = await size.innerText();
+    const scan = await observeRescan(page, fileId, "moved");
+    await scan.evaluate((read) => read.start());
+    await expect(size).not.toHaveText(originalSize, { timeout: 12_000 });
+    await expect(back).toBeFocused();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(grid.locator('[aria-rowindex="21"] [data-entry-id]')).toHaveAttribute("data-entry-id", fileId);
+    await expect(proof).toBeFocused();
+    await expect(proof).toBeInViewport({ ratio: 0.99 });
+    await page.keyboard.press("ArrowDown");
+    await expect(grid.locator('[aria-rowindex="22"] [data-entry-id]')).toBeFocused();
+  });
+
+  test("a removed file remains identified in Details and Back resumes the nearby list", async ({ page }) => {
+    const { details, contents, grid, proof, back, fileId, scrollPosition } = await openLateFile(page, false);
+    const copies = details.getByRole("button", { name: "Exact copies", exact: true });
+    await copies.focus();
+    await expect(copies).toBeFocused();
+    const scan = await observeRescan(page, fileId, "removed");
+    await scan.evaluate((read) => read.start());
+    await expect(details.getByRole("status").filter({ hasText: "This file is no longer in the index." }))
+      .toBeVisible({ timeout: 12_000 });
+    await expect(details.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+    await expect(details.getByText("Last indexed path", { exact: true })).toBeVisible();
+    await expect(details.getByText("Verification", { exact: true })).toBeHidden();
+    await expect(copies).toBeHidden();
+    await expect(details).toBeFocused();
+    await expect(back).toBeVisible();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(grid).toHaveAttribute("aria-rowcount", "99");
+    await expect(proof).toHaveCount(0);
+    const nearby = grid.locator(":focus[data-entry-id]");
+    await expect(nearby).toBeInViewport({ ratio: 0.99 });
+    expect(await contents.evaluate((pane) => pane.scrollTop)).toBeGreaterThan(scrollPosition - 100);
+  });
+});
+
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {
   let releaseFirst!: () => void;
   const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });

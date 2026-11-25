@@ -4695,6 +4695,12 @@ fn storage_view_snapshot(
     .and_then(|anchor| anchor.query.as_deref())
     .zip(anchor_index)
     .and_then(|(query, index)| anchored_filtered_directory_page(&page, &entries, index, query));
+  let inspected_file = anchor.filter(|anchor| anchor.inspect_file).and_then(|anchor| {
+    let node = anchor_index
+      .map(|index| entries[index])
+      .or_else(|| find_storage_node_builder_path(selected, &anchor.child_id).and_then(|path| path.last().copied()))?;
+    (node.kind == StorageNodeKind::File).then(|| storage_node_without_children(node))
+  });
 
   Ok(StorageViewSnapshot {
     tree: StorageTree {
@@ -4714,6 +4720,7 @@ fn storage_view_snapshot(
     },
     page,
     filtered_page,
+    inspected_file,
   })
 }
 

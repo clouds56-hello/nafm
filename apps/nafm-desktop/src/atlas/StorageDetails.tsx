@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { FolderOpenDestination, HealthMetric, StorageLocation, StorageNode } from "../lib/types";
@@ -10,6 +10,7 @@ interface StorageDetailsProps {
   location: StorageLocation;
   entries: readonly StorageNode[];
   selected: StorageNode | null;
+  fileUnavailable: boolean;
   focusRequested: boolean;
   onFocusHandled: () => void;
   metric: HealthMetric | null;
@@ -49,10 +50,25 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  location, entries, selected, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
+  location, entries, selected, fileUnavailable, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
   returnAction, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
+  const lostActionFocus = useRef(false);
+  const removableAction = useCallback((element: HTMLElement | null) => {
+    if (!element) return;
+    return () => {
+      if (element.contains(document.activeElement)) lostActionFocus.current = true;
+    };
+  }, []);
+  useLayoutEffect(() => {
+    const lostFocus = lostActionFocus.current;
+    lostActionFocus.current = false;
+    const panel = panelRef.current;
+    if (fileUnavailable && lostFocus && document.activeElement === document.body && panel?.getClientRects().length) {
+      panel.focus({ preventScroll: true });
+    }
+  });
   useEffect(() => {
     if (!focusRequested) return;
     panelRef.current?.focus();
@@ -81,6 +97,7 @@ export function StorageDetails({
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
         </div>
       </header>
+      {fileUnavailable && <p className="atlas-inspector-status" role="status">This file is no longer in the index.</p>}
       {(returnAction || onShowInContents) && (
         <div className="atlas-detail-actions">
           {returnAction && (
@@ -94,6 +111,7 @@ export function StorageDetails({
           {onShowInContents && (
             <button
               className="atlas-text-button atlas-detail-action" type="button"
+              ref={removableAction}
               aria-disabled={revealing || undefined} aria-busy={revealing || undefined}
               onClick={onShowInContents}
             >
@@ -107,32 +125,36 @@ export function StorageDetails({
       )}
       <dl className="atlas-details">
         <div className="atlas-detail-path">
-          <dt>Path</dt>
+          <dt>{fileUnavailable ? "Last indexed path" : "Path"}</dt>
           <dd>{node.path ? <code>{node.path}</code> : node.kind === "site" ? "Site root" : "—"}</dd>
         </div>
-        <div className="atlas-detail-metric">
-          <dt>Size</dt>
-          <dd>{formatBytes(node.total_bytes)}</dd>
-        </div>
-        {container && (
-          <div className="atlas-detail-metric">
-            <dt>Share of parent</dt>
-            <dd title={container.total_bytes === 0 ? `${container.name} has no bytes` : container.name}>
-              {formatShare(node.total_bytes, container.total_bytes)}
-            </dd>
-          </div>
+        {!fileUnavailable && (
+          <>
+            <div className="atlas-detail-metric">
+              <dt>Size</dt>
+              <dd>{formatBytes(node.total_bytes)}</dd>
+            </div>
+            {container && (
+              <div className="atlas-detail-metric">
+                <dt>Share of parent</dt>
+                <dd title={container.total_bytes === 0 ? `${container.name} has no bytes` : container.name}>
+                  {formatShare(node.total_bytes, container.total_bytes)}
+                </dd>
+              </div>
+            )}
+            <div className="atlas-detail-metric">
+              <dt>Verification</dt>
+              <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
+            </div>
+            <HealthDetail label="Space health" score={space} active={metric === "space_health"} metric="space"
+              evidence={node.space_total_files > 0 ? `${formatFileEquivalent(node.space_healthy_file_equivalents)} of ${formatCount(node.space_total_files)} file equivalents` : null} />
+            <HealthDetail label={targetName ? `Coverage → ${targetName}` : "Coverage"} score={coverage} active={metric === "coverage_health"} metric="coverage"
+              emptyLabel={targetName ? "Unavailable" : "Choose a target"}
+              evidence={node.coverage_total_files > 0 ? `${formatCount(node.coverage_covered_files)} of ${formatCount(node.coverage_total_files)} content groups` : null} />
+          </>
         )}
-        <div className="atlas-detail-metric">
-          <dt>Verification</dt>
-          <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
-        </div>
-        <HealthDetail label="Space health" score={space} active={metric === "space_health"} metric="space"
-          evidence={node.space_total_files > 0 ? `${formatFileEquivalent(node.space_healthy_file_equivalents)} of ${formatCount(node.space_total_files)} file equivalents` : null} />
-        <HealthDetail label={targetName ? `Coverage → ${targetName}` : "Coverage"} score={coverage} active={metric === "coverage_health"} metric="coverage"
-          emptyLabel={targetName ? "Unavailable" : "Choose a target"}
-          evidence={node.coverage_total_files > 0 ? `${formatCount(node.coverage_covered_files)} of ${formatCount(node.coverage_total_files)} content groups` : null} />
       </dl>
-      {children}
+      {children && <div ref={removableAction}>{children}</div>}
     </section>
   );
 }

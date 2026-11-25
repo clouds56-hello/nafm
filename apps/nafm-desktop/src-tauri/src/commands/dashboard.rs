@@ -198,6 +198,8 @@ pub struct StorageViewSnapshotResponse {
   page: StorageChildrenPage,
   #[serde(skip_serializing_if = "Option::is_none")]
   filtered_page: Option<StorageChildrenPage>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  inspected_file: Option<StorageNode>,
 }
 
 impl From<StorageViewSnapshot> for StorageViewSnapshotResponse {
@@ -207,12 +209,14 @@ impl From<StorageViewSnapshot> for StorageViewSnapshotResponse {
       location,
       page,
       filtered_page,
+      inspected_file,
     } = snapshot;
     Self {
       tree: StorageTreeResponse::from(tree),
       location: StorageLocationResponse::from(location),
       page,
       filtered_page,
+      inspected_file,
     }
   }
 }
@@ -674,6 +678,7 @@ mod tests {
       location: reveal.location.clone(),
       page: reveal.page.clone(),
       filtered_page: None,
+      inspected_file: None,
     }))
     .unwrap();
     assert_eq!(snapshot_json["tree"]["site_id"], "source-site");
@@ -683,18 +688,21 @@ mod tests {
     assert_eq!(snapshot_json["page"]["children"][0]["id"], "selected-file");
     assert_eq!(snapshot_json["page"]["children"][0]["modified_unix_millis"], 1000);
     assert!(snapshot_json.get("filtered_page").is_none());
+    assert!(snapshot_json.get("inspected_file").is_none());
 
     let filtered_snapshot_json = serde_json::to_value(StorageViewSnapshotResponse::from(StorageViewSnapshot {
       tree: reveal.tree.clone(),
       location: reveal.location.clone(),
       page: reveal.page.clone(),
       filtered_page: Some(reveal.page.clone()),
+      inspected_file: Some(reveal.selected_file.clone()),
     }))
     .unwrap();
     assert_eq!(
       filtered_snapshot_json["filtered_page"]["children"][0]["id"],
       "selected-file"
     );
+    assert_eq!(filtered_snapshot_json["inspected_file"]["id"], "selected-file");
 
     let mut filtered_reveal = reveal.clone();
     filtered_reveal.filtered_page = Some(reveal.page.clone());

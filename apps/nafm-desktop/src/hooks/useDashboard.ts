@@ -89,6 +89,7 @@ export type AtlasInspection =
 interface AtlasSelection {
   node: StorageNode;
   inspection: AtlasInspection | null;
+  unavailable: boolean;
 }
 
 interface DirectoryWindow extends StorageChildrenPage {
@@ -130,6 +131,10 @@ interface LocationLoadOptions {
 interface DirectoryAnchorLoad {
   request?: StorageDirectoryAnchor;
   onArrival?: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
+}
+
+function inspectFileAnchor(id: string): DirectoryAnchorLoad {
+  return { request: { child_id: id, query: null, inspect_file: true } };
 }
 
 type FileRevealDestination =
@@ -330,8 +335,8 @@ export function useDashboard(
     }
   }, []);
 
-  const selectLocationNode = useCallback((node: StorageNode | null, inspection: AtlasInspection | null = null) => {
-    const next = node ? { node, inspection } : null;
+  const selectLocationNode = useCallback((node: StorageNode | null, inspection: AtlasInspection | null = null, unavailable = false) => {
+    const next = node ? { node, inspection, unavailable } : null;
     selectionRef.current = next;
     setSelection(next);
   }, []);
@@ -485,9 +490,14 @@ export function useDashboard(
       const preserved = historyAction === "preserve" ? selectionRef.current : null;
       const selectedId = preserved?.node.id ?? entry.selected_node_id;
       const inspection = preserved ? preserved.inspection : entry.inspection ?? null;
-      const selection = findNode(nextLocation.root, selectedId)
-        ?? page.children.find((child) => child.id === selectedId)
-        ?? nextLocation.root;
+      const inspectedFileId = sameFolder && anchor?.request?.inspect_file ? anchor.request.child_id : null;
+      if (inspectedFileId && inspectedFileId !== selectedId) return "superseded";
+      const indexedSelection = snapshot.inspected_file?.id === selectedId ? snapshot.inspected_file
+        : findNode(nextLocation.root, selectedId) ?? page.children.find((child) => child.id === selectedId);
+      const lastSelected = selectionRef.current?.node;
+      const unavailableFile = !indexedSelection && inspectedFileId === lastSelected?.id && lastSelected.kind === "file"
+        ? lastSelected : null;
+      const selection = indexedSelection ?? unavailableFile ?? nextLocation.root;
 
       if (sameFolder && anchor?.onArrival?.(nextLocation, page, snapshot.filtered_page) === false) return "superseded";
       if (previousEntry && previousEntry.site_id !== entry.site_id) {
@@ -503,7 +513,7 @@ export function useDashboard(
       setCoverageTargetSiteId(entry.target_site_id);
       setLocation(nextLocation);
       setChildrenPage(page);
-      selectLocationNode(selection, selection.id === selectedId ? inspection : null);
+      selectLocationNode(selection, selection.id === selectedId ? inspection : null, Boolean(unavailableFile));
       setChildrenError(null);
       setTreeError(null);
       if (!silent || previousEntry?.site_id !== entry.site_id
@@ -621,7 +631,9 @@ export function useDashboard(
         });
       },
     } : undefined;
-    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor });
+    const selected = preserve ? selectionRef.current?.node : null;
+    const inspectionAnchor = selected?.kind === "file" ? inspectFileAnchor(selected.id) : undefined;
+    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor: anchor ?? inspectionAnchor });
     return result === "loaded";
   }, [browsingScope, currentNavigationEntry, directoryRefresh, loadFolderLocation]);
 
@@ -709,9 +721,7 @@ export function useDashboard(
       const current = siteListChanged ? currentNavigationEntry() : null;
       if (current && current.site_id === nextSite) {
         const selected = selectionRef.current?.node;
-        const anchor = selected?.kind === "file" && !childrenPageRef.current?.children.some((entry) => entry.id === selected.id)
-          ? { request: { child_id: selected.id, query: null } }
-          : undefined;
+        const anchor = selected?.kind === "file" ? inspectFileAnchor(selected.id) : undefined;
         // Site edits refresh the visible folder without blocking a newer navigation.
         await loadFolderLocation({ ...current, target_site_id: nextTarget }, "preserve", { silent: true, anchor });
       } else if (nextSite) {
@@ -1097,7 +1107,7 @@ export function useDashboard(
     await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push", {
       action: { title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target" },
       anchor: inspectedFileId && current.selected_node_id === inspectedFileId
-        ? { request: { child_id: inspectedFileId, query: null } }
+        ? inspectFileAnchor(inspectedFileId)
         : undefined,
     });
   }, [currentNavigationEntry, loadFolderLocation]);
@@ -1213,6 +1223,7 @@ export function useDashboard(
     if (!siteId) return;
     if (node.kind === "file") {
       setLocationFailure(null);
+      locationRequestRef.current += 1;
       if (pendingRangeRef.current) {
         // Keep this row's data available for Back while its details are open.
         childrenRequestRef.current += 1;
@@ -1221,7 +1232,6 @@ export function useDashboard(
       }
       if (childrenLoadingRef.current) {
         // A file in the displayed folder can still be selected while another location is opening.
-        locationRequestRef.current += 1;
         childrenRequestRef.current += 1;
         navigationOperationRef.current += 1;
         navigationInProgressRef.current = false;
@@ -1755,6 +1765,7 @@ export function useDashboard(
     setHealthMetric,
     location,
     selectedNode: activeSelectedNode,
+    selectedFileUnavailable: selection?.unavailable ?? false,
     inspection: selection?.inspection ?? null,
     selectNode,
     jumpToContentMatch,
@@ -1859,6 +1870,7 @@ export function useDashboard(
     scan,
     scanningTaskCount,
     selection?.inspection,
+    selection?.unavailable,
     selectCoverageTarget,
     selectNode,
     selectSite,

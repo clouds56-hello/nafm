@@ -256,9 +256,13 @@ function makeSnapshot(
   const children = orderedChildren(node, directorySort(args.sort));
   const childIndex = anchor ? children.findIndex((child) => child.id === anchor.child_id) : -1;
   const start = childIndex >= 0 ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
+  const inspected = anchor?.inspect_file
+    ? children[childIndex] ?? findPath(node, anchor.child_id)?.at(-1)
+    : undefined;
   const snapshot = {
     tree: makeTree(model, args), location: makeLocation(model, args),
     page: projectChildrenPage(model, node, children, start, limit),
+    ...(inspected?.kind === "file" ? { inspected_file: model.project(inspected, []) } : {}),
   };
 
   const query = anchor?.query?.trim().toLowerCase();
@@ -324,11 +328,12 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   function snapshot(args: CommandArgs) {
     checkWorkspace(current(), args.expectedWorkspace);
     if (args.anchor == null) return makeSnapshot(model(args), args);
-    const { child_id, query } = record(args.anchor);
-    if (typeof child_id !== "string" || (query != null && typeof query !== "string")) {
+    const { child_id, query, inspect_file } = record(args.anchor);
+    if (typeof child_id !== "string" || (query != null && typeof query !== "string")
+      || (inspect_file !== undefined && typeof inspect_file !== "boolean")) {
       throw new Error("Invalid directory anchor.");
     }
-    return makeSnapshot(model(args), args, { child_id, query: query ?? null });
+    return makeSnapshot(model(args), args, { child_id, query: query ?? null, inspect_file });
   }
 
   function children(args: CommandArgs) {
