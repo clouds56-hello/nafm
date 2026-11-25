@@ -7,19 +7,20 @@ import type { AnalysisPosition } from "./analysis/useAnalysisPage";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type AtlasToolbarExtension, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
-import { coverageSiteVerification } from "./coverageVerification";
+import { siteVerification } from "./siteVerification";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
 import { LocationRecovery } from "./LocationRecovery";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
+import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { useDashboard } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
-import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
+import { siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import { siteHasInventory } from "../lib/scanView";
@@ -289,22 +290,27 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const targetOptions = dashboard?.sites.filter((candidate) => candidate.id !== site?.id) ?? [];
   const coverage = mapMode === "coverage_health";
   const folderCoverage = folder && coverage ? nodeHealthPresentation(folder, "coverage_health", targetCompleteness) : null;
-  const analysisNotice = site && metric === "space_health" ? spaceHealthNotice(site) : null;
   const changeCoverageTarget = (id: string) => void state.selectCoverageTarget(id);
   const swapCoverageSites = () => { if (site && target) void selectSite(target.id, site.id); };
-  function coverageScanState(id: string) {
+  function verificationScanState(id: string) {
     const requestId = state.scanRequestBySite.get(id);
     const progress = state.progressBySite.get(id);
+    const latestScan = state.lastScanResult;
+    const failed = latestScan?.kind === "failed" && latestScan.site_states.some((item) => item.site_id === id && item.status === "running");
     return {
       running: requestId !== undefined,
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(id),
       progress: progress?.request_id === requestId ? progress : undefined,
       interruption: state.firstScanInterruptions.get(id),
+      failure: failed ? latestScan.message ?? "The scan failed." : undefined,
     };
   }
-  const sourceVerification = coverage && site ? coverageSiteVerification(site, "source", coverageScanState(site.id)) : null;
-  const targetVerification = coverage && target ? coverageSiteVerification(target, "target", coverageScanState(target.id)) : null;
+  const currentVerification = site ? siteVerification(site, verificationScanState(site.id)) : null;
+  const sourceVerification = coverage && site ? siteVerification(site, verificationScanState(site.id), "source") : null;
+  const targetVerification = coverage && target ? siteVerification(target, verificationScanState(target.id), "target") : null;
+  const comparisonSite = comparison?.open && dashboard?.sites.find((item) => item.id === comparison.siteId);
+  const comparisonVerification = comparisonSite ? siteVerification(comparisonSite, verificationScanState(comparisonSite.id)) : undefined;
 
   useEffect(() => {
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
@@ -497,6 +503,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           targets: targetOptions,
           target,
           navigationBusy: state.childrenLoading,
+          spaceVerification: currentVerification,
           sourceVerification,
           targetVerification,
           onTargetChange: changeCoverageTarget,
@@ -591,11 +598,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
               >
                 {target && folderCoverage && folderCoverage.state !== "unavailable" && <HealthScale />}
               </CoverageFooter>
-            ) : folder && !firstScan && metric === "space_health" && (
-              <>
-                {analysisNotice && <p className="atlas-map-notice" role="status">{analysisNotice}</p>}
+            ) : folder && !firstScan && currentVerification && metric === "space_health" && (
+              <SpaceHealthFooter verification={currentVerification} onScanSite={state.scan}>
                 <HealthScale />
-              </>
+              </SpaceHealthFooter>
             )}
           </footer>
           <div className="atlas-panels">
@@ -664,6 +670,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                         node={selectedNode}
                         metric={state.healthMetric}
                         sourceAnalysisReady={siteAnalysisReady(site)}
+                        verification={currentVerification}
+                        onScanSite={state.scan}
                         staged={state.isSelectedStaged}
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
@@ -724,8 +732,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       </main>
       {comparison?.open && (comparison.kind === "copies" ? comparison.node.path !== null && (
         <FileCopiesDialog
-          key={state.contentRevision} workspaceName={comparison.workspace} siteId={comparison.siteId}
+          workspaceName={comparison.workspace} siteId={comparison.siteId}
           source={{ name: comparison.node.name, site: comparison.siteName, path: comparison.node.path, size: comparison.node.total_bytes }}
+          verification={comparisonVerification} onScanSite={state.scan}
           contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToContentMatch} onClose={closeComparison}
           onShown={(match, position) => {
             setComparisonSession({ ...comparison, open: false, position, destination: { siteId: match.site_id, path: match.path } });
@@ -734,8 +743,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
         />
       ) : (
         <SimilarFoldersDialog
-          key={state.contentRevision} workspaceName={comparison.workspace} siteId={comparison.siteId}
+          workspaceName={comparison.workspace} siteId={comparison.siteId}
           siteName={comparison.siteName} node={comparison.node}
+          verification={comparisonVerification} onScanSite={state.scan}
           contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToSimilarFolder} onClose={closeComparison}
           onShown={(match, position) => {
             setComparisonSession({

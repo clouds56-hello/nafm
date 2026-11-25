@@ -8,7 +8,8 @@ import { FolderOpenControl } from "./FolderOpenControl";
 import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
 import { ScanActivity, type ScanActivityProps } from "./ScanActivity";
 import { CoverageScanActions } from "./CoverageScanActions";
-import type { CoverageSiteVerification } from "./coverageVerification";
+import type { SiteVerification } from "./siteVerification";
+import { VerificationScanButton } from "./VerificationScanButton";
 import "./atlas-toolbar.css";
 
 const mapModes = [
@@ -50,8 +51,9 @@ export interface AtlasToolbarProps {
     targets: readonly SiteOverview[];
     target: SiteOverview | null;
     navigationBusy: boolean;
-    sourceVerification: CoverageSiteVerification | null;
-    targetVerification: CoverageSiteVerification | null;
+    spaceVerification: SiteVerification | null;
+    sourceVerification: SiteVerification | null;
+    targetVerification: SiteVerification | null;
     onTargetChange: (id: string) => void;
     onSwap: () => void;
     onScanSite: (siteId: string) => Promise<void>;
@@ -116,6 +118,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
 function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sourceName: string }) {
   const mode = mapModes.find(({ value }) => value === map.mode)?.title;
   const picker = useRef<HTMLSelectElement>(null);
+  const spaceMetric = useRef<HTMLButtonElement>(null);
   return (
     <ToolbarDisclosure
       label="Map options"
@@ -132,6 +135,7 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
             {mapModes.map(({ value, title }) => (
               <button
                 key={value}
+                ref={value === "space_health" ? spaceMetric : undefined}
                 type="button"
                 aria-pressed={map.mode === value}
                 onClick={() => {
@@ -143,6 +147,13 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
               </button>
             ))}
           </div>
+          {map.mode === "space_health" && map.spaceVerification?.action && (
+            <div className="atlas-toolbar-comparison">
+              <span className="atlas-toolbar-comparison-source">{map.spaceVerification.status}</span>
+              <VerificationScanButton action={map.spaceVerification.action} onScanSite={map.onScanSite}
+                className="atlas-toolbar-panel-action" focusTarget={spaceMetric} />
+            </div>
+          )}
           {map.mode === "coverage_health" && (
             <div className="atlas-toolbar-comparison">
               <span className="atlas-toolbar-comparison-source" title={sourceName}>From {sourceName}</span>

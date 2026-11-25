@@ -20,7 +20,7 @@
 .atlas-content-actions button:hover:enabled,
 .atlas-analysis-dialog button:hover:enabled { border-color: #757bad; background: #303554; }
 .atlas-content-actions button:disabled,
-.atlas-analysis-dialog button:disabled { opacity: .5; }
+.atlas-analysis-dialog :is(button, select):is(:disabled, [aria-disabled="true"]) { opacity: .5; }
 
 .atlas-content-actions button {
   display: flex;

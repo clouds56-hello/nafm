@@ -10,6 +10,8 @@ interface AnalysisPageControlsProps {
 export function AnalysisPageControls({ page, loading, goTo, pageNumbers }: AnalysisPageControlsProps) {
   if (!page.total_matches) return null;
   const end = page.offset + page.matches.length;
+  const previousDisabled = loading || page.offset === 0;
+  const nextDisabled = loading || end >= page.total_matches;
   return (
     <div className="atlas-analysis-pagination" role="group" aria-label="Result pages">
       <span aria-live="polite">
@@ -17,10 +19,10 @@ export function AnalysisPageControls({ page, loading, goTo, pageNumbers }: Analy
           ? `Page ${formatCount(Math.floor(page.offset / page.limit) + 1)} of ${formatCount(Math.ceil(page.total_matches / page.limit))}`
           : `${formatCount(page.offset + 1)}–${formatCount(end)} of ${formatCount(page.total_matches)}`}
       </span>
-      <button type="button" disabled={loading || page.offset === 0} onClick={() => goTo(Math.max(0, page.offset - page.limit))}>
+      <button type="button" aria-disabled={previousDisabled || undefined} onClick={previousDisabled ? undefined : () => goTo(Math.max(0, page.offset - page.limit))}>
         Previous
       </button>
-      <button type="button" disabled={loading || end >= page.total_matches} onClick={() => goTo(page.offset + page.limit)}>
+      <button type="button" aria-disabled={nextDisabled || undefined} onClick={nextDisabled ? undefined : () => goTo(page.offset + page.limit)}>
         Next
       </button>
     </div>

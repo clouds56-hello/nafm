@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 
 interface AnalysisPage {
   offset: number;
@@ -15,18 +15,19 @@ export interface AnalysisPosition<Page> {
 }
 
 export function useAnalysisPage<Page extends AnalysisPage>(
-  load: (offset: number) => Promise<Page>, initialOffset = 0, cachedPage?: Page,
+  load: (offset: number) => Promise<Page>, revision: number, initialOffset = 0, cachedPage?: Page,
 ) {
   const [request, setRequest] = useState({ offset: initialOffset });
-  const [result, setResult] = useState<{ request: typeof request; page: Page } | null>(
-    () => cachedPage ? { request, page: cachedPage } : null,
+  const [result, setResult] = useState<{ request: typeof request; revision: number; page: Page } | null>(
+    () => cachedPage ? { request, revision, page: cachedPage } : null,
   );
-  const [failure, setFailure] = useState<{ request: typeof request; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ request: typeof request; revision: number; message: string } | null>(null);
   const page = result?.page ?? null;
-  const error = failure?.request === request ? failure.message : null;
-  const loading = result?.request !== request && failure?.request !== request;
+  const failed = failure?.request === request && failure.revision === revision;
+  const error = failed ? failure.message : null;
+  const loading = !failed && (result?.request !== request || result.revision !== revision);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!loading) return;
     let active = true;
     // Skip StrictMode's probe mount before issuing an IPC request.
@@ -41,16 +42,16 @@ export function useAnalysisPage<Page extends AnalysisPage>(
           setRequest((current) => current === request ? { offset } : current);
           return;
         }
-        setResult({ request, page: next });
+        setResult({ request, revision, page: next });
       } catch (error) {
-        if (active) setFailure({ request, message: error instanceof Error ? error.message : String(error) });
+        if (active) setFailure({ request, revision, message: error instanceof Error ? error.message : String(error) });
       }
     }, 0);
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [load, loading, request]);
+  }, [load, loading, request, revision]);
 
   return {
     page,

@@ -1,15 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 export function useAnalysisNavigation<Match>(
   onJump: (match: Match, signal: AbortSignal) => Promise<string | null>,
   onClose: () => void,
   onOpened: (match: Match) => void = onClose,
+  revision?: number,
 ) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<AbortController | null>(null);
 
-  useEffect(() => () => attempt.current?.abort(), []);
+  useLayoutEffect(() => {
+    setOpening(false);
+    setError(null);
+    return () => {
+      attempt.current?.abort();
+      attempt.current = null;
+    };
+  }, [revision]);
 
   function close() {
     attempt.current?.abort();
@@ -28,8 +36,10 @@ export function useAnalysisNavigation<Match>(
       if (failure === null) onOpened(match);
       else setError(failure);
     } finally {
-      attempt.current = null;
-      if (!request.signal.aborted) setOpening(false);
+      if (attempt.current === request) {
+        attempt.current = null;
+        setOpening(false);
+      }
     }
   }
 

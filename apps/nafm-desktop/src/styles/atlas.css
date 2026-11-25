@@ -111,16 +111,6 @@ button:disabled { cursor: default; }
 
 .atlas-panels { display: contents; }
 
-.atlas-map-notice {
-  flex: 1 0 100%;
-  margin: 0;
-  padding: 2px 0 6px;
-  border-bottom: 1px solid var(--atlas-border);
-  color: var(--atlas-muted);
-  font: 11px/1.45 var(--atlas-mono);
-  overflow-wrap: anywhere;
-}
-
 .atlas-chart-well {
   display: grid;
   min-height: 0;

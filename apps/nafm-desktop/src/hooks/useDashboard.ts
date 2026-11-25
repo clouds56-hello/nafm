@@ -1022,7 +1022,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (siteId) await refreshTree(siteId, targetSiteRef.current, true);
   }, [refreshTree]);
 
-  const scan = useCallback(async (siteId?: string) => {
+  const scan = useCallback(async (siteId?: string, onError?: (message: string) => void) => {
     setNotice(null);
     try {
       const workspaceName = workspaceNameRef.current;
@@ -1059,7 +1059,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         return next;
       });
     } catch (scanError) {
-      setNotice(errorMessage(scanError));
+      const message = errorMessage(scanError);
+      setNotice(message);
+      onError?.(message);
     }
   }, [invalidateCleanupPreview, updateCompletionBySite]);
 

@@ -4,7 +4,7 @@ import type { SiteOverview } from "../lib/types";
 import { PlusIcon } from "../management/Icons";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { CoverageScanActions } from "./CoverageScanActions";
-import type { CoverageSiteVerification } from "./coverageVerification";
+import type { SiteVerification } from "./siteVerification";
 import "./coverage-footer.css";
 
 interface CoverageFooterProps {
@@ -13,8 +13,8 @@ interface CoverageFooterProps {
   targets: readonly SiteOverview[];
   coverage: HealthPresentation | null;
   hasFolderContent: boolean;
-  sourceVerification: CoverageSiteVerification;
-  targetVerification: CoverageSiteVerification | null;
+  sourceVerification: SiteVerification;
+  targetVerification: SiteVerification | null;
   navigationBusy?: boolean;
   onTargetChange: (id: string) => void;
   onSwap: () => void;
@@ -36,8 +36,8 @@ function comparisonResult(
 }
 
 function unavailableReason(
-  source: CoverageSiteVerification,
-  target: CoverageSiteVerification,
+  source: SiteVerification,
+  target: SiteVerification,
   hasFolderContent: boolean,
 ) {
   if (!hasFolderContent && source.tone === "ready") return "No content in this folder to compare.";

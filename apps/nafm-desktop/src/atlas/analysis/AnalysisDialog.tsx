@@ -9,14 +9,16 @@ interface AnalysisDialogProps {
   children: ReactNode;
   toolbar?: ReactNode;
   initialFocus?: RefObject<HTMLElement | null>;
+  closeButtonRef?: RefObject<HTMLButtonElement | null>;
   footer?: ReactNode;
   onClose: () => void;
 }
 
-export function AnalysisDialog({ title, subtitle, drawer, className, children, toolbar, initialFocus, footer, onClose }: AnalysisDialogProps) {
+export function AnalysisDialog({ title, subtitle, drawer, className, children, toolbar, initialFocus, closeButtonRef, footer, onClose }: AnalysisDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const localCloseRef = useRef<HTMLButtonElement>(null);
+  const closeRef = closeButtonRef ?? localCloseRef;
 
   useLayoutEffect(() => {
     const dialog = dialogRef.current;
@@ -32,7 +34,7 @@ export function AnalysisDialog({ title, subtitle, drawer, className, children, t
         opener.focus({ preventScroll: true });
       }
     };
-  }, [initialFocus]);
+  }, [initialFocus, closeRef]);
 
   return (
     <dialog
