@@ -105,15 +105,15 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     const row = listRef.current?.querySelector<HTMLButtonElement>(search.anchorIndex === null
       ? `[data-virtual-row="${restoredIndex}"] button` : 'button[aria-current="true"]');
     if (!row) {
-      if (search.fileAt(restoredIndex)) restoring.current = null;
+      if (restoredIndex < start || restoredIndex >= end) viewport.scrollToRow(restoredIndex);
       return;
     }
     restoring.current = null;
     row.focus({ preventScroll: true });
     const bounds = scrollPane.current.getBoundingClientRect();
     const rowBounds = row.getBoundingClientRect();
-    if (rowBounds.bottom <= bounds.top || rowBounds.top >= bounds.bottom) row.scrollIntoView({ block: "nearest" });
-  }, [ready, start, end, restoredIndex, search.anchorIndex, search.locatingFile, search.total, search.fileAt, listRef]);
+    if (rowBounds.top < bounds.top - 1 || rowBounds.bottom > bounds.bottom + 1) row.scrollIntoView({ block: "nearest" });
+  }, [ready, start, end, restoredIndex, search.anchorIndex, search.locatingFile, search.total, search.fileAt, listRef, viewport.scrollToRow]);
 
   useLayoutEffect(() => {
     const pending = pendingFocus.current;
@@ -226,7 +226,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     void navigation.show({
       file,
       position: {
-        session, query: search.query, file_id: file.file_id, row_index: index,
+        session, content_revision: search.resultRevision, query: search.query, file_id: file.file_id, row_index: index,
         scroll_position: scrollPosition, result_count: total,
       },
     });

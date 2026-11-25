@@ -20,6 +20,7 @@ import { isCompactAtlas, revealInCompactAtlas, watchAtlasPanelReflow } from "./c
 import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import { useContentsFileStep } from "./useContentsFileStep";
+import { useFinderFileStep } from "./useFinderFileStep";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
@@ -297,6 +298,15 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   const finderPosition = inspection?.kind === "finder" && inspection.position.session === finder?.id ? inspection.position : null;
+  const finderStep = useFinderFileStep(
+    findWorkspace,
+    inspectorView === "details" && finder?.openedFrom === null && !state.selectedFileUnavailable ? finderPosition : null,
+    state.contentRevision,
+    state.childrenLoading,
+    (file, signal, position) => state.jumpToContentMatch(file, signal, position, true),
+    (position) => setFinderSession((session) => session?.id === position.session && session.openedFrom === null
+      ? { ...session, latestPosition: position } : session),
+  );
   const analysisSession = inspection?.kind === "analysis" ? inspection.session : null;
   const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
   const returnToReview = reviewed && reviewed.session === analysisSession && selected?.kind === "file"
@@ -377,10 +387,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const positionPage = currentVisit?.source === "contents" && currentVisit.view === "details"
     && !state.selectedFileUnavailable && !state.childrenLoading && !(search.enabled && search.refreshing) ? directoryPage : null;
   const positionIndex = positionPage?.children.findIndex((entry) => entry.id === currentVisit?.fileId) ?? -1;
-  const listPosition = positionPage && positionIndex >= 0 ? {
+  const listPosition = finderStep?.rank ? {
+    index: finderStep.rank.row_index, total: finderStep.rank.result_count, label: "Result" as const, site: site?.name,
+  } : positionPage && positionIndex >= 0 ? {
     index: positionPage.offset + positionIndex,
     total: positionPage.total_children,
-    filtered: search.enabled,
+    label: search.enabled ? "Match" as const : "Item" as const,
   } : undefined;
   const fileStep = useContentsFileStep(
     currentVisit?.source === "contents" && currentVisit.view === "details" && findWorkspace && siteId && folder && inspection
@@ -940,7 +952,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 inspection={inspection}
                 openedFile={openedFile}
                 fileOpen={fileOpen}
-                fileStep={fileStep}
+                fileStep={finderStep ?? fileStep}
+                stepSource={finderStep ? "finder" : undefined}
                 folderName={folder?.name}
                 view={inspectorView}
                 initialView={selected?.kind === "file" ? "details" : "contents"}
@@ -957,7 +970,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     entries={directoryPage?.children ?? []}
                     selected={selected}
                     fileUnavailable={state.selectedFileUnavailable}
-                    announceFileChange={Boolean(fileStep)}
+                    announceFileChange={Boolean(finderStep ?? fileStep)}
                     listPosition={listPosition}
                     focusRequested={analysisFocusRequested && inspectorView === "details"}
                     onFocusHandled={finishAnalysisFocus}
@@ -971,6 +984,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       }),
                     } : findWorkspace && finderPosition ? {
                       label: "Back to results",
+                      shortLabel: "Results",
                       run: () => setFinderSession((session) => session && { ...session, openedFrom: "details" }),
                     } : returnToReview ? {
                       label: "Back to review",

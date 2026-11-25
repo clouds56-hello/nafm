@@ -322,6 +322,8 @@ pub struct IndexedFileSearchPage {
   pub limit: u64,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub anchor_index: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub neighbor_index: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

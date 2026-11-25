@@ -16,6 +16,7 @@ interface AtlasInspectorProps {
   openedFile: RefObject<AtlasInspection | null>;
   contentsPane: RefObject<HTMLDivElement | null>;
   fileOpen: boolean;
+  stepSource?: "finder";
   fileStep?: {
     previous: boolean;
     next: boolean;
@@ -41,7 +42,7 @@ const tabs = [
 ] as const;
 
 export function AtlasInspector({
-  view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, folderName, detailsKey, origin,
+  view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, stepSource, folderName, detailsKey, origin,
   onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -54,6 +55,8 @@ export function AtlasInspector({
   const stepFromFile = useRef<string | null>(null);
   const canStepFiles = Boolean(fileStep);
   const screen = fileOpen ? "file" : view;
+  const finderSteps = stepSource === "finder" && screen === "details";
+  const steps = screen === "file" || finderSteps ? fileStep : undefined;
   const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null; inspection: AtlasInspection | null }>({
     screen, siteId, file: screen === "file" ? detailsKey : null, inspection,
   });
@@ -165,49 +168,22 @@ export function AtlasInspector({
         onBackToContents();
       }}
     >
-      <header className="atlas-inspector-bar" data-file-step={screen === "file" && canStepFiles || undefined}>
+      <header className="atlas-inspector-bar" data-file-step={steps ? true : undefined}>
         {screen === "file" ? (
-          <>
-            <div className="atlas-inspector-file-nav">
-              <button type="button" ref={backButton} aria-label="Back to Contents" onClick={onBackToContents}>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M13 8H3m5-5L3 8l5 5" />
-                </svg>
-                {fileStep ? (
-                  <span className="atlas-inspector-file-context">
-                    Contents
-                    <small title={folderName}>{folderName}</small>
-                  </span>
-                ) : "Contents"}
-              </button>
-              {!fileStep && <span title={folderName}>{folderName}</span>}
-            </div>
-            {fileStep && (
-              <div className="atlas-inspector-file-steps" role="group" aria-label="Browse files">
-                {(["previous", "next"] as const).map((direction) => {
-                  const label = direction === "previous" ? "Previous file" : "Next file";
-                  const unavailable = !fileStep[direction] || Boolean(fileStep.pending);
-                  return (
-                    <button
-                      key={direction} type="button" className="atlas-inspector-file-step" title={label} aria-label={label}
-                      aria-disabled={unavailable || undefined} aria-busy={fileStep.pending === direction || undefined}
-                      onClick={(event) => {
-                        if (unavailable) return;
-                        event.currentTarget.focus({ preventScroll: true });
-                        stepFromFile.current = detailsKey;
-                        fileStep.onStep(direction);
-                      }}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
-                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d={direction === "previous" ? "m10 4-4 4 4 4" : "m6 4 4 4-4 4"} />
-                      </svg>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </>
+          <div className="atlas-inspector-file-nav">
+            <button type="button" ref={backButton} aria-label="Back to Contents" onClick={onBackToContents}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M13 8H3m5-5L3 8l5 5" />
+              </svg>
+              {steps ? (
+                <span className="atlas-inspector-file-context">
+                  Contents
+                  <small title={folderName}>{folderName}</small>
+                </span>
+              ) : "Contents"}
+            </button>
+            {!steps && <span title={folderName}>{folderName}</span>}
+          </div>
         ) : (
           <div className="atlas-inspector-tabs" role="tablist" aria-label="Inspector view" onKeyDown={handleTabKeys}>
             {tabs.map((tab) => (
@@ -227,13 +203,38 @@ export function AtlasInspector({
             ))}
           </div>
         )}
+        {steps && (
+          <div className="atlas-inspector-file-steps" role="group" aria-label={finderSteps ? "Browse search results" : "Browse files"}>
+            {(["previous", "next"] as const).map((direction) => {
+              const label = `${direction === "previous" ? "Previous" : "Next"} ${finderSteps ? "result" : "file"}`;
+              const unavailable = !steps[direction] || Boolean(steps.pending);
+              return (
+                <button
+                  key={direction} type="button" className="atlas-inspector-file-step" title={label} aria-label={label}
+                  aria-disabled={unavailable || undefined} aria-busy={steps.pending === direction || undefined}
+                  onClick={(event) => {
+                    if (unavailable) return;
+                    event.currentTarget.focus({ preventScroll: true });
+                    if (screen === "file") stepFromFile.current = detailsKey;
+                    steps.onStep(direction);
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
+                    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d={direction === "previous" ? "m10 4-4 4 4 4" : "m6 4 4 4-4 4"} />
+                  </svg>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <button className="atlas-inspector-close" type="button" aria-label="Close inspector" onClick={(event) => {
           event.currentTarget.focus({ preventScroll: true });
           onClose();
         }}>
           <CloseIcon />
         </button>
-        {screen === "file" && fileStep && <p className="atlas-inspector-file-step-status" role="status">{fileStep.status}</p>}
+        {steps && <p className="atlas-inspector-file-step-status" role="status">{steps.status}</p>}
       </header>
       {tabs.map((tab) => (
         <div

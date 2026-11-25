@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nafm_core::{
-  AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, DirectorySortField,
-  FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent,
-  SiteFolderKind, SiteHashStatus, SortDirection, StageHistoryDirection, StageHistoryRequest, StageVerificationBlocker,
-  StageWarningReason, StorageDirectoryAnchor, StorageDirectoryFilter, StorageNodeKind,
+  AddSiteFolderRequest, AdjacentFileDirection, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort,
+  DirectorySortField, FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions,
+  ScanEvent, SiteFolderKind, SiteHashStatus, SortDirection, StageHistoryDirection, StageHistoryRequest,
+  StageVerificationBlocker, StageWarningReason, StorageDirectoryAnchor, StorageDirectoryFilter, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -437,6 +437,28 @@ async fn indexed_file_search_matches_names_across_published_sites() {
   assert_eq!(pending_match.site_id, pending.id);
   assert_eq!(pending_match.name, "Trailer.mov");
   assert!(!pending_match.verified);
+  let across_sites = fixture
+    .repo
+    .search_indexed_files_page(
+      " TrAiLeR ",
+      0,
+      2,
+      Some(&first.matches[1].file_id),
+      Some(AdjacentFileDirection::Next),
+    )
+    .await
+    .unwrap();
+  assert_eq!(
+    (
+      across_sites.anchor_index,
+      across_sites.neighbor_index,
+      across_sites.offset
+    ),
+    (Some(1), Some(2), 2)
+  );
+  assert_eq!(across_sites.matches[0].file_id, pending_match.file_id);
+  assert!(!across_sites.matches[0].verified);
+
   let reveal = fixture
     .repo
     .storage_file_reveal(&pending_match.file_id, None, 5, 12, 6)
@@ -513,6 +535,45 @@ async fn indexed_file_search_anchors_a_file_at_its_current_published_rank() {
   assert_eq!(moved.matches[0].name, "original needle.txt");
   assert_eq!(moved.matches[1].file_id, anchor_id);
 
+  let forward = fixture
+    .repo
+    .search_indexed_files_page(" NEEdle ", 0, 2, Some(anchor_id), Some(AdjacentFileDirection::Next))
+    .await
+    .unwrap();
+  assert_eq!(
+    (
+      forward.anchor_index,
+      forward.neighbor_index,
+      forward.offset,
+      forward.total_matches
+    ),
+    (Some(3), Some(4), 4, 5)
+  );
+  assert_eq!(forward.matches.len(), 1);
+  assert_eq!(forward.matches[0].name, "tail needle.txt");
+  let tail_id = forward.matches[0].file_id.as_str();
+  let backward = fixture
+    .repo
+    .search_indexed_files_page("needle", 4, 2, Some(tail_id), Some(AdjacentFileDirection::Previous))
+    .await
+    .unwrap();
+  assert_eq!(
+    (backward.anchor_index, backward.neighbor_index, backward.offset),
+    (Some(4), Some(3), 2)
+  );
+  assert_eq!(backward.matches[1].file_id, anchor_id);
+  let boundary = fixture
+    .repo
+    .search_indexed_files_page("needle", 0, 2, Some(tail_id), Some(AdjacentFileDirection::Next))
+    .await
+    .unwrap();
+  assert_eq!(
+    (boundary.anchor_index, boundary.neighbor_index, boundary.offset),
+    (Some(4), None, 4)
+  );
+  assert_eq!(boundary.matches[0].file_id, tail_id);
+  assert!(serde_json::to_value(boundary).unwrap().get("neighbor_index").is_none());
+
   let nonmatching = fixture
     .repo
     .search_indexed_files_with_anchor("earlier", u64::MAX, 2, Some(anchor_id))
@@ -529,12 +590,23 @@ async fn indexed_file_search_anchors_a_file_at_its_current_published_rank() {
   fixture.repo.scan_site(&second_site.id).await.unwrap();
   let missing = fixture
     .repo
-    .search_indexed_files_with_anchor("needle", u64::MAX, 2, Some(anchor_id))
+    .search_indexed_files_page(
+      "needle",
+      u64::MAX,
+      2,
+      Some(anchor_id),
+      Some(AdjacentFileDirection::Next),
+    )
     .await
     .unwrap();
   assert_eq!(
-    (missing.anchor_index, missing.offset, missing.total_matches),
-    (None, 2, 4)
+    (
+      missing.anchor_index,
+      missing.neighbor_index,
+      missing.offset,
+      missing.total_matches
+    ),
+    (None, None, 2, 4)
   );
   assert_eq!(missing.matches[1].name, "tail needle.txt");
   let in_range = fixture

@@ -2,9 +2,10 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort, FileContentMatchesPage, IndexedFileSearchPage,
-  ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage, StorageDirectoryAnchor,
-  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
+  AdjacentFileDirection, AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort, FileContentMatchesPage,
+  IndexedFileSearchPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage,
+  StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree,
+  StorageViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -420,11 +421,12 @@ pub async fn search_indexed_files(
   offset: u64,
   limit: u64,
   anchor_file_id: Option<String>,
+  anchor_direction: Option<AdjacentFileDirection>,
 ) -> Result<IndexedFileSearchPage, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .search_indexed_files_with_anchor(&query, offset, limit, anchor_file_id.as_deref())
+    .search_indexed_files_page(&query, offset, limit, anchor_file_id.as_deref(), anchor_direction)
     .await
     .map_err(|error| error.to_string())
 }

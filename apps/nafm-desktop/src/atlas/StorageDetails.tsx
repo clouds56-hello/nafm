@@ -14,14 +14,14 @@ interface StorageDetailsProps {
   selected: StorageNode | null;
   fileUnavailable: boolean;
   announceFileChange?: boolean;
-  listPosition?: { index: number; total: number; filtered: boolean };
+  listPosition?: { index: number; total: number; label: "Item" | "Match" | "Result"; site?: string };
   focusRequested: boolean;
   onFocusHandled: () => void;
   metric: HealthMetric | null;
   targetCompleteness: number;
   targetName: string | null;
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
-  returnAction?: { label: string; run: () => void };
+  returnAction?: { label: string; shortLabel?: string; run: () => void };
   onShowInContents?: () => void;
   revealing: boolean;
   children?: ReactNode;
@@ -89,7 +89,7 @@ export function StorageDetails({
   const space = nodeHealthPresentation(node, "space_health");
   const coverage = nodeHealthPresentation(node, "coverage_health", targetCompleteness);
   const heading = listPosition
-    ? `${listPosition.filtered ? "Match" : "Item"} ${formatCount(listPosition.index + 1)} of ${formatCount(listPosition.total)}`
+    ? `${listPosition.label} ${formatCount(listPosition.index + 1)} of ${formatCount(listPosition.total)}`
     : node.kind === "file" ? "Selected file"
     : node.kind === "smaller_items" ? "Grouped entries"
     : node.kind === "site" ? "Current source" : "Current folder";
@@ -97,7 +97,10 @@ export function StorageDetails({
   return (
     <section className="atlas-readout" aria-label="Storage details" ref={panelRef} tabIndex={-1}>
       <header className="atlas-readout-heading" aria-live={announceFileChange ? "polite" : undefined} aria-atomic={announceFileChange || undefined}>
-        <p className="atlas-kicker">{heading}</p>
+        <p className="atlas-kicker atlas-readout-context">
+          <span>{heading}</span>
+          {listPosition?.site && <span className="atlas-readout-site" title={listPosition.site}>{listPosition.site}</span>}
+        </p>
         <div className="atlas-readout-title">
           <h2>{node.name}</h2>
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
@@ -107,11 +110,12 @@ export function StorageDetails({
       {(returnAction || onShowInContents) && (
         <div className="atlas-detail-actions">
           {returnAction && (
-            <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog" onClick={returnAction.run}>
+            <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog"
+              aria-label={returnAction.shortLabel ? returnAction.label : undefined} onClick={returnAction.run}>
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M13 8H3m5-5L3 8l5 5" />
               </svg>
-              {returnAction.label}
+              {returnAction.shortLabel ?? returnAction.label}
             </button>
           )}
           {onShowInContents && (
@@ -141,6 +145,10 @@ export function StorageDetails({
               <dt>Size</dt>
               <dd>{formatBytes(node.total_bytes)}</dd>
             </div>
+            <div className="atlas-detail-metric">
+              <dt>Verification</dt>
+              <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
+            </div>
             {container && (
               <div className="atlas-detail-metric">
                 <dt>Share of parent</dt>
@@ -149,10 +157,6 @@ export function StorageDetails({
                 </dd>
               </div>
             )}
-            <div className="atlas-detail-metric">
-              <dt>Verification</dt>
-              <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
-            </div>
             <div className="atlas-detail-metric">
               <dt>{node.kind === "file" ? "Modified" : "Contents modified"}</dt>
               <dd><ModifiedDate node={node} /></dd>

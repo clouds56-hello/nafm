@@ -214,6 +214,8 @@
 @media (max-width: 760px), (pointer: coarse) {
   .atlas-inspector-trigger, .atlas-inspector-tabs button { min-height: 44px; }
   .atlas-inspector-tabs button { padding-inline: 8px; }
+  .atlas-inspector-bar[data-file-step] .atlas-inspector-tabs { gap: 4px; }
+  .atlas-inspector-bar[data-file-step] .atlas-inspector-tabs button { min-width: 44px; padding-inline: 3px; }
   .atlas-inspector-close, .atlas-inspector-file-step { width: 44px; height: 44px; }
   .atlas-inspector-pane:has(> .atlas-directory) { scroll-padding-block-start: var(--atlas-scroll-header-height, 52px); }
 }

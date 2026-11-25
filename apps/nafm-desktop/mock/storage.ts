@@ -1,5 +1,6 @@
 import type {
   CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
+  IndexedFileSearchPage,
   SiteKind, SiteOverview, StageAddReport, StageHistoryState, StageRemoveReport, StageWarning, StorageChildrenPage,
   StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
@@ -370,13 +371,15 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return null;
   }
 
-  function searchIndexedFiles(args: CommandArgs) {
+  function searchIndexedFiles(args: CommandArgs): IndexedFileSearchPage {
     const workspace = current();
     checkWorkspace(workspace, args.expected_workspace);
     const { offset, limit } = paging(args);
     if (typeof args.query !== "string") throw new Error("Invalid file search.");
     const anchor = args.anchor_file_id;
     if (anchor != null && typeof anchor !== "string") throw new Error("Invalid search file.");
+    const direction = args.anchor_direction;
+    if (direction != null && direction !== "previous" && direction !== "next") throw new Error("Invalid file direction.");
     const query = args.query.trim().toLowerCase();
     const matches = query ? indexedFiles(workspace)
       .filter((file) => file.name.toLowerCase().includes(query))
@@ -391,12 +394,15 @@ export function createStorageApi(current: () => PreviewWorkspace) {
       })) : [];
     matches.sort((a, b) => compareText(a.site_name, b.site_name) || compareText(a.path, b.path) || compareText(a.file_id, b.file_id));
     const index = anchor == null ? -1 : matches.findIndex((file) => file.file_id === anchor);
+    const candidate = index + (direction === "previous" ? -1 : 1);
+    const neighbor = direction && index >= 0 && candidate >= 0 && candidate < matches.length ? candidate : undefined;
     const lastPage = Math.floor(Math.max(0, matches.length - 1) / limit) * limit;
-    const start = index >= 0 ? Math.floor(index / limit) * limit
+    const start = index >= 0 ? Math.floor((neighbor ?? index) / limit) * limit
       : anchor == null ? offset : Math.min(offset, lastPage);
     return {
       matches: matches.slice(start, start + limit), offset: start, limit, total_matches: matches.length,
       ...(index >= 0 ? { anchor_index: index } : {}),
+      ...(neighbor !== undefined ? { neighbor_index: neighbor } : {}),
     };
   }
 

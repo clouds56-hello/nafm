@@ -19,6 +19,7 @@ import type {
   Dashboard,
   DirectoryAdjacentFile,
   DirectoryAdjacentFileRequest,
+  DirectoryFileDirection,
   DirectorySort,
   FileContentMatchesPage,
   HiddenPolicy,
@@ -56,8 +57,11 @@ export function findSimilarFolders(request: FolderSimilarityRequest): Promise<Fo
 
 export function searchIndexedFiles(
   expectedWorkspace: string, query: string, offset: number, limit: number, anchorFileId?: string,
+  anchorDirection?: DirectoryFileDirection,
 ): Promise<IndexedFileSearchPage> {
-  return invoke("search_indexed_files", { expected_workspace: expectedWorkspace, query, offset, limit, anchor_file_id: anchorFileId });
+  return invoke("search_indexed_files", {
+    expected_workspace: expectedWorkspace, query, offset, limit, anchor_file_id: anchorFileId, anchor_direction: anchorDirection,
+  });
 }
 
 export function completeRemotePath(request: PathCompletionRequest): Promise<PathCompletion> {

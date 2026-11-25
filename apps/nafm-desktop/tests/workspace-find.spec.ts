@@ -71,6 +71,177 @@ test("Find files distinguishes same names across sites and Back restores the sta
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
+test("Details steps through same-named Finder results without adding Atlas history entries", async ({ page }) => {
+  await page.goto("/mock/");
+  await page.getByRole("region", { name: "Circular storage map" })
+    .getByRole("button", { name: /^Projects,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await page.keyboard.press("ControlOrMeta+f");
+
+  const dialog = finder(page);
+  const input = query(dialog);
+  const rawQuery = "  TrAiLeR master  ";
+  const trailers = result(dialog, /^Trailer master\.mov/);
+  await input.fill(rawQuery);
+  await expect(trailers).toHaveCount(3);
+  const paths = await Promise.all([0, 1, 2].map((index) =>
+    trailers.nth(index).locator("small[title]").getAttribute("title")));
+  expect(new Set(paths).size).toBe(3);
+  expect(paths).toContain(studioTrailer);
+  expect(paths).toContain(mirroredTrailer);
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const previousResult = inspector.getByRole("button", { name: "Previous result", exact: true });
+  const nextResult = inspector.getByRole("button", { name: "Next result", exact: true });
+  const back = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  const forward = folderPath(page).getByRole("button", { name: "Next location", exact: true });
+  async function expectResult(index: number) {
+    await expect(details(page)).toContainText(paths[index]!);
+    await expect(details(page).getByText(`Result ${index + 1} of 3`, { exact: true })).toBeInViewport();
+  }
+
+  await trailers.first().press("Enter");
+  await expect(dialog).toBeHidden();
+  await expectResult(0);
+  await expect(previousResult).toBeDisabled();
+  await expect(inspector.getByRole("tab", { name: "Contents", exact: true })).toBeVisible();
+  await expect(details(page).getByRole("button", { name: "Show in Contents", exact: true })).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "Next file", exact: true })).toHaveCount(0);
+
+  await nextResult.press("Enter");
+  await expectResult(1);
+  await expect(nextResult).toBeFocused();
+  await previousResult.press("Enter");
+  await expectResult(0);
+  await expect(previousResult).toBeFocused();
+  await nextResult.press("Enter");
+  await expectResult(1);
+  await nextResult.press("Enter");
+  await expectResult(2);
+  await expect(nextResult).toBeDisabled();
+  await expect(nextResult).toBeFocused();
+
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(rawQuery);
+  await expect(trailers.last()).toBeFocused();
+  await trailers.nth(1).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expectResult(1);
+  await back.press("Enter");
+  await expectResult(2);
+  await back.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await forward.press("Enter");
+  await expectResult(2);
+  await forward.press("Enter");
+  await expectResult(1);
+});
+
+test("compact Finder result steps across a page boundary and reveals the returned row", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+
+  const dialog = finder(page);
+  const pane = dialog.locator(".atlas-analysis-body");
+  const input = query(dialog);
+  const rawQuery = "  PrOoF  ";
+  const proof = (rank: number) => result(dialog, new RegExp(`^Proof ${String(rank).padStart(3, "0")}\\.jpg`));
+  await input.fill(rawQuery);
+  await expect(proof(1)).toBeInViewport();
+  const rowHeight = (await proof(1).boundingBox())!.height;
+  const initialRank = 48;
+  const finalRank = 56;
+  await pane.evaluate((body, { rowHeight, initialRank }) => {
+    body.scrollTop = (initialRank + 0.5) * rowHeight - body.clientHeight;
+  }, { rowHeight, initialRank });
+  await expect(proof(initialRank)).toBeVisible();
+  await expect(proof(initialRank).locator("..")).toHaveAttribute("aria-posinset", String(initialRank));
+  await proof(initialRank).evaluate((button) => {
+    const body = button.closest<HTMLElement>(".atlas-analysis-body")!;
+    const paneBottom = body.getBoundingClientRect().top + body.clientTop + body.clientHeight;
+    body.scrollTop += button.getBoundingClientRect().bottom - paneBottom + 12;
+  });
+  await expect(proof(initialRank)).toBeInViewport({ ratio: 0.99 });
+  await expect(proof(finalRank)).toHaveCount(0);
+  const initialScroll = await pane.evaluate((body) => body.scrollTop);
+  await proof(initialRank).press("Enter");
+  await expect(dialog).toBeHidden();
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const next = inspector.getByRole("button", { name: "Next result", exact: true });
+  for (let rank = initialRank; rank <= finalRank; rank += 1) {
+    if (rank > initialRank) await next.press("Enter");
+    await expect(details(page).getByRole("heading", {
+      name: `Proof ${String(rank).padStart(3, "0")}.jpg`, exact: true,
+    })).toBeVisible();
+  }
+  await expect(next).toBeFocused();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(rawQuery);
+  await expect(proof(finalRank)).toBeFocused();
+  await expect(proof(finalRank)).toBeInViewport({ ratio: 0.99 });
+  expect(await pane.evaluate((body) => body.scrollTop)).toBeGreaterThan(initialScroll);
+  await page.keyboard.press("ArrowDown");
+  await expect(proof(finalRank + 1)).toBeFocused();
+});
+
+test("closing Details cancels a pending Finder result reveal", async ({ page }) => {
+  await page.goto("/mock/");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+
+  const dialog = finder(page);
+  const search = "  TrAiLeR master  ";
+  const trailers = result(dialog, /^Trailer master\.mov/);
+  await query(dialog).fill(search);
+  await expect(trailers).toHaveCount(3);
+  await trailers.first().press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page).getByText("Result 1 of 3", { exact: true })).toBeVisible();
+  const firstFolder = await currentFolder(page).textContent();
+
+  const reveal = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "get_storage_file_reveal" && !read.pending) {
+        read.pending = true;
+        await gate;
+        requestAnimationFrame(() => { read.replied = true; });
+      }
+      return response;
+    };
+    return read;
+  });
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const next = inspector.getByRole("button", { name: "Next result", exact: true });
+  try {
+    await next.press("Enter");
+    await expect.poll(() => reveal.evaluate((read) => read.pending)).toBe(true);
+    await expect(next).toBeDisabled();
+    await inspector.getByRole("button", { name: "Close inspector", exact: true }).press("Enter");
+    await expect(inspector).toBeHidden();
+  } finally {
+    await reveal.evaluate((read) => read.release());
+  }
+  await expect.poll(() => reveal.evaluate((read) => read.replied)).toBe(true);
+  await expect(inspector).toBeHidden();
+  await expect(currentFolder(page)).toHaveText(firstFolder!);
+
+  await page.keyboard.press("ControlOrMeta+f");
+  await expect(query(dialog)).toHaveValue(search);
+  await expect(trailers.first()).toBeFocused();
+});
+
 test("Atlas Back restores the filtered Contents list after opening a Finder result on another site", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });
@@ -256,6 +427,19 @@ test("Find files can seek across hundreds of matches and return to the inspected
   await expect(last).toBeFocused();
   await expect(last).toBeInViewport({ ratio: 0.99 });
   expect(await pane.evaluate((body) => body.scrollTop)).toBeCloseTo(savedScroll, 0);
+
+  await last.evaluate((button) => {
+    const body = button.closest<HTMLElement>(".atlas-analysis-body")!;
+    body.scrollTop -= body.getBoundingClientRect().bottom - button.getBoundingClientRect().top - 12;
+  });
+  await expect(last).toBeInViewport();
+  await expect(last).not.toBeInViewport({ ratio: 0.25 });
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  await backToResults(page).press("Enter");
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 0.99 });
   await page.keyboard.press("ArrowUp");
   await expect(previous).toBeFocused();
 });

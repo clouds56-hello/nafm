@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { searchIndexedFiles } from "../lib/tauri";
 import type { IndexedFileSearchResult } from "../lib/types";
 
-const PAGE_SIZE = 48;
+export const FINDER_PAGE_SIZE = 48;
 const MAX_CACHED_PAGES = 8;
 const MAX_CACHED_QUERIES = 12;
 const firstRow = { start: 0, end: 1 };
@@ -40,7 +40,7 @@ function searchKey(workspace: string, revision: number, name: string) {
 }
 
 function pageOffset(index: number) {
-  return Math.floor(index / PAGE_SIZE) * PAGE_SIZE;
+  return Math.floor(index / FINDER_PAGE_SIZE) * FINDER_PAGE_SIZE;
 }
 
 function cachedFile(cached: CachedSearch | undefined, index: number) {
@@ -51,7 +51,7 @@ function cachedFile(cached: CachedSearch | undefined, index: number) {
 function coveringPages(range: SearchRange, total: number | null): SearchRange {
   const max = total ?? Infinity;
   const start = pageOffset(Math.min(range.start, Math.max(0, max - 1)));
-  return { start, end: Math.min(range.end, max, start + MAX_CACHED_PAGES * PAGE_SIZE) };
+  return { start, end: Math.min(range.end, max, start + MAX_CACHED_PAGES * FINDER_PAGE_SIZE) };
 }
 
 function includesPage(range: SearchRange, offset: number) {
@@ -59,7 +59,7 @@ function includesPage(range: SearchRange, offset: number) {
 }
 
 function firstMissingPage(range: SearchRange, cached?: CachedSearch) {
-  for (let offset = range.start; offset < range.end; offset += PAGE_SIZE) {
+  for (let offset = range.start; offset < range.end; offset += FINDER_PAGE_SIZE) {
     if (!cached?.pages.has(offset)) return offset;
   }
   return null;
@@ -93,7 +93,8 @@ export function useIndexedFileSearch(
   const key = JSON.stringify([workspace, name]);
   const requestKey = searchKey(workspace, revision, name);
   const requested = cache.get(requestKey);
-  const visible = cache.get(searchKey(workspace, displayedRevision, name)) ?? requested;
+  const displayed = cache.get(searchKey(workspace, displayedRevision, name));
+  const visible = displayed ?? requested;
   const total = name ? visible?.total ?? null : 0;
   const refreshing = Boolean(name && visible && !initialAnchor && displayedRevision !== revision);
   const previousIndex = refreshing ? intent.preferredIndex ?? range.start : initialAnchor ? range.start : 0;
@@ -123,13 +124,13 @@ export function useIndexedFileSearch(
       };
       if (!stillWanted()) return;
       try {
-        const page = await searchIndexedFiles(workspace, name, offset, PAGE_SIZE, anchorFileId);
+        const page = await searchIndexedFiles(workspace, name, offset, FINDER_PAGE_SIZE, anchorFileId);
         if (!stillWanted()) return;
         const count = page.total_matches;
         const index = anchorFileId ? page.anchor_index : undefined;
         const expectedOffset = !anchorFileId ? offset : index !== undefined ? pageOffset(index)
           : Math.min(offset, pageOffset(Math.max(0, count - 1)));
-        if (page.offset !== expectedOffset || page.matches.length !== Math.min(PAGE_SIZE, Math.max(0, count - page.offset))
+        if (page.offset !== expectedOffset || page.matches.length !== Math.min(FINDER_PAGE_SIZE, Math.max(0, count - page.offset))
           || (index !== undefined && page.matches[index - page.offset]?.file_id !== anchorFileId)) {
           throw new Error("The search returned an unexpected page.");
         }
@@ -211,6 +212,6 @@ export function useIndexedFileSearch(
 
   return {
     query, name, key, changeQuery, loading, error, total, fileAt, loadRange, retry: () => setFailure(null),
-    locatingFile: Boolean(initialAnchor), anchorIndex, refreshing,
+    locatingFile: Boolean(initialAnchor), anchorIndex, refreshing, resultRevision: displayed ? displayedRevision : revision,
   };
 }

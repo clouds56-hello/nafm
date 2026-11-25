@@ -5,7 +5,7 @@ use percent_encoding::percent_decode_str;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{IndexedFileMatch, IndexedFileSearchPage, Result};
+use crate::{AdjacentFileDirection, IndexedFileMatch, IndexedFileSearchPage, Result};
 
 const MAX_SEARCH_PAGE_SIZE: u64 = 200;
 const MATCHING_FILES: &str = "
@@ -34,6 +34,7 @@ pub(super) fn search(
   offset: u64,
   limit: u64,
   anchor_file_id: Option<&str>,
+  anchor_direction: Option<AdjacentFileDirection>,
 ) -> Result<IndexedFileSearchPage> {
   let mut page = IndexedFileSearchPage {
     matches: Vec::new(),
@@ -41,6 +42,7 @@ pub(super) fn search(
     offset,
     limit: limit.clamp(1, MAX_SEARCH_PAGE_SIZE),
     anchor_index: None,
+    neighbor_index: None,
   };
   if query.is_empty() {
     if anchor_file_id.is_some() {
@@ -83,8 +85,13 @@ pub(super) fn search(
       None,
     ),
   };
+  page.neighbor_index = match (page.anchor_index, anchor_direction) {
+    (Some(index), Some(AdjacentFileDirection::Previous)) => index.checked_sub(1),
+    (Some(index), Some(AdjacentFileDirection::Next)) if index + 1 < page.total_matches => Some(index + 1),
+    _ => None,
+  };
   if anchor_file_id.is_some() {
-    page.offset = match page.anchor_index {
+    page.offset = match page.neighbor_index.or(page.anchor_index) {
       Some(index) => index / page.limit * page.limit,
       None => offset.min(page.total_matches.saturating_sub(1) / page.limit * page.limit),
     };

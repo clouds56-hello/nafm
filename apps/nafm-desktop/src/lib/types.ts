@@ -366,10 +366,12 @@ export interface IndexedFileSearchPage {
   limit: number;
   total_matches: number;
   anchor_index?: number;
+  neighbor_index?: number;
 }
 
 export interface FinderPosition {
   session: symbol;
+  content_revision: number;
   query: string;
   file_id: string;
   row_index: number;

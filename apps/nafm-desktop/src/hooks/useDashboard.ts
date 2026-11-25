@@ -166,7 +166,7 @@ function inspectFileAnchor(id: string): DirectoryAnchorLoad {
 
 type FileRevealDestination =
   | { kind: "node"; siteId: string; id: string; filter?: StorageDirectoryFilter; shouldApply?: () => boolean }
-  | { kind: "match"; siteId: string; id: string; signal: AbortSignal; inspection: AtlasInspection };
+  | { kind: "match"; siteId: string; id: string; signal: AbortSignal; inspection: AtlasInspection; replaceCurrent?: boolean };
 
 type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">
   & { filtered_page?: StorageChildrenPage | null };
@@ -1619,8 +1619,8 @@ export function useDashboard(
       setTreeError(null);
 
       // Showing the file in its current directory changes the inspector and scroll position only.
-      if (previousEntry && (destination.kind === "match" || previousEntry.node_id !== destinationEntry.node_id)
-        && !sameNavigationEntry(previousEntry, destinationEntry)) {
+      const addsHistory = destination.kind === "match" ? !destination.replaceCurrent : previousEntry?.node_id !== destinationEntry.node_id;
+      if (previousEntry && addsHistory && !sameNavigationEntry(previousEntry, destinationEntry)) {
         backHistoryRef.current = [...backHistoryRef.current, previousEntry];
         forwardHistoryRef.current = [];
         setBackHistory(backHistoryRef.current);
@@ -1639,10 +1639,10 @@ export function useDashboard(
   }, [currentNavigationEntry, selectLocationNode]);
 
   const jumpToContentMatch = useCallback(async (
-    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | AnalysisInspection,
+    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | AnalysisInspection, replaceCurrent = false,
   ): Promise<string | null> => {
     const inspection: AtlasInspection = "kind" in origin ? origin : { kind: "finder", position: origin };
-    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection });
+    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection, replaceCurrent });
     return result.error;
   }, [revealFile]);
 

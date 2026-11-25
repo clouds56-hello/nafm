@@ -1966,13 +1966,26 @@ impl Repository {
     limit: u64,
     anchor_file_id: Option<&str>,
   ) -> Result<IndexedFileSearchPage> {
+    self
+      .search_indexed_files_page(query, offset, limit, anchor_file_id, None)
+      .await
+  }
+
+  pub async fn search_indexed_files_page(
+    &self,
+    query: &str,
+    offset: u64,
+    limit: u64,
+    anchor_file_id: Option<&str>,
+    anchor_direction: Option<AdjacentFileDirection>,
+  ) -> Result<IndexedFileSearchPage> {
     let db_path = self.db_path.clone();
     let query = query.trim().to_lowercase();
     let anchor_file_id = anchor_file_id.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
-        indexed_file_search::search(&conn, query, offset, limit, anchor_file_id.as_deref())
+        indexed_file_search::search(&conn, query, offset, limit, anchor_file_id.as_deref(), anchor_direction)
       })
     })
     .await?
