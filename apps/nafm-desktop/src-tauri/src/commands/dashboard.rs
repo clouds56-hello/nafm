@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  DirectorySort, FileContentMatchesPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun,
-  StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
+  DirectorySort, FileContentMatchesPage, IndexedFileSearchPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus,
+  StageCommitDryRun, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageTree,
+  StorageViewSnapshot,
 };
 use serde::Serialize;
 use tauri::State;
@@ -360,6 +361,22 @@ pub async fn get_file_content_matches(
     .repository_for(&expected_workspace)
     .await?
     .file_content_matches(&site_id, &path, offset, limit)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn search_indexed_files(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  query: String,
+  offset: u64,
+  limit: u64,
+) -> Result<IndexedFileSearchPage, String> {
+  state
+    .repository_for(&expected_workspace)
+    .await?
+    .search_indexed_files(&query, offset, limit)
     .await
     .map_err(|error| error.to_string())
 }

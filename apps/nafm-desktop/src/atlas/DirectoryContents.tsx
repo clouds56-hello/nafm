@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { formatCount } from "../lib/format";
 import type { DirectorySort, FolderOpenDestination, HealthMetric, StorageChildrenPage, StorageLocation, StorageNode } from "../lib/types";
-import { CloseIcon } from "../management/Icons";
+import { CloseIcon, SearchIcon } from "../management/Icons";
 import { DirectorySortControl } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
@@ -214,9 +214,7 @@ export function DirectoryContents({
               onSearchChange("");
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
-              <circle cx="6.75" cy="6.75" r="4.25" /><path d="m10 10 3.5 3.5" />
-            </svg>
+            <SearchIcon width="16" height="16" />
           </button>
         )}
         {searchOpen && (

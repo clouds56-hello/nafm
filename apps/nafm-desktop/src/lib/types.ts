@@ -298,6 +298,23 @@ export interface FileContentMatchesPage {
   limit: number;
 }
 
+export interface IndexedFileSearchResult {
+  file_id: string;
+  site_id: string;
+  site_name: string;
+  name: string;
+  path: string;
+  size_bytes: number;
+  verified: boolean;
+}
+
+export interface IndexedFileSearchPage {
+  matches: IndexedFileSearchResult[];
+  offset: number;
+  limit: number;
+  total_matches: number;
+}
+
 export interface ScanSelector {
   site_id?: string;
   all?: boolean;

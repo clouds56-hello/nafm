@@ -5,6 +5,7 @@ import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
 import { DirectoryContents } from "./DirectoryContents";
+import { FileFinderDialog } from "./FileFinderDialog";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
@@ -69,11 +70,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const pendingReveal = useRef<AbortController | null>(null);
   const [revealingFileId, setRevealingFileId] = useState<string | null>(null);
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string } | null>(null);
-  const [analysisFocusRevision, setAnalysisFocusRevision] = useState(0);
+  const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
+  const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
   const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
+  const [finderWorkspace, setFinderWorkspace] = useState<string | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
+  const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
+  const openFileFinder = useCallback(() => setFinderWorkspace(findWorkspace), [findWorkspace]);
   const siteId = site?.id;
   const pane = inspectorOpen && siteId ? inspectorBySite.get(siteId) ?? "contents" : null;
   const visit = typeof pane === "object" ? pane : null;
@@ -216,6 +221,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   useEffect(() => {
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
+      if (findWorkspace && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f"
+        && !(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable]"))) {
+        event.preventDefault();
+        openFileFinder();
+        return;
+      }
       if (event.key === "Escape" && (sitesOpen || inspectorView)) {
         event.preventDefault();
         const panel = event.target instanceof Element ? event.target.closest("[data-atlas-panel]") : null;
@@ -239,7 +250,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector]);
+  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, openFileFinder]);
 
   async function showFileInContents(file: StorageNode) {
     if (pendingReveal.current && !pendingReveal.current.signal.aborted) return;
@@ -273,12 +284,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     setRevealedRow(null);
     setInspectorBySite((saved) => new Map(saved).set(siteId, "details"));
     setInspectorOpen(true);
-    setAnalysisFocusRevision((revision) => revision + 1);
+    setAnalysisFocusRequested(true);
   }
 
-  async function showCopyInAtlas(match: FileContentMatch, signal: AbortSignal) {
+  async function showIndexedFileInAtlas(match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal) {
     const error = await state.jumpToContentMatch(match, signal);
-    if (error === null) showAnalysisDetails(match.site_id);
+    if (error === null) {
+      setFinderWorkspace(null);
+      showAnalysisDetails(match.site_id);
+    }
     return error;
   }
 
@@ -341,6 +355,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           siteCount: dashboard?.sites.length ?? 0,
           activeScans: state.activeTaskCount,
           stagedCount: dashboard?.staged.length ?? 0,
+          canFind: findWorkspace !== null,
+          onFind: openFileFinder,
           onScanAll: () => void state.scan(),
           onReview: () => state.setReviewOpen(true),
           onSettings: () => workspace.openManagement("workspaces"),
@@ -448,7 +464,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     onOpenFolder={state.openFolderExternally}
                     entries={directoryPage?.children ?? []}
                     selected={selected}
-                    focusRevision={analysisFocusRevision}
+                    focusRequested={analysisFocusRequested && inspectorView === "details"}
+                    onFocusHandled={finishAnalysisFocus}
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
@@ -470,7 +487,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
                         onReview={() => state.setReviewOpen(true)}
-                        onJumpDuplicate={showCopyInAtlas}
+                        onJumpDuplicate={showIndexedFileInAtlas}
                         onJumpFolder={showSimilarFolderInAtlas}
                       />
                     )}
@@ -521,6 +538,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           </div>
         </section>
       </main>
+      {finderWorkspace && finderWorkspace === findWorkspace && (
+        <FileFinderDialog
+          workspace={finderWorkspace} contentRevision={state.contentRevision}
+          onOpen={showIndexedFileInAtlas} onClose={() => setFinderWorkspace(null)}
+        />
+      )}
 
       {state.notice && !sourcesOpen && !state.reviewOpen && (
         <div className="atlas-alert" role="status">

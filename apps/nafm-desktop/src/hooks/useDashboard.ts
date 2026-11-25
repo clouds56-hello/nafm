@@ -1276,7 +1276,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [currentNavigationEntry]);
 
-  const jumpToContentMatch = useCallback(async (match: FileContentMatch, signal: AbortSignal): Promise<string | null> => {
+  const jumpToContentMatch = useCallback(async (match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal): Promise<string | null> => {
     const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal });
     return result.error;
   }, [revealFile]);

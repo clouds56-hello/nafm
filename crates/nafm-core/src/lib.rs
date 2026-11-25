@@ -16,11 +16,11 @@ pub use installer::AgentInstallation;
 pub use model::{
   AddSiteFolderRequest, DirectorySort, DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch,
   FileContentMatchStatus, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
-  HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted,
-  ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport,
-  StageCommitDryRun, StageHistoryReport, StageRemoveReport, StageResetReport, StageReviewGroup, StageWarning,
-  StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
-  StorageTree, StorageViewSnapshot,
+  HiddenPolicy, IndexedFileMatch, IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping,
+  ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus,
+  SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
+  StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal,
+  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 pub use onboarding::{CheckStatus, MappingPreview, PathCompletion, PreflightReport, SetupCheck};
 pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};

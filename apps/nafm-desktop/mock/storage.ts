@@ -9,6 +9,7 @@ import { checkWorkspace, compareText, getSite, getTree, numberArg, record, strin
 
 interface IndexedFile extends DuplicateFile {
   node_id: string;
+  name: string;
   content: string;
   kind: SiteKind;
   verified: boolean;
@@ -24,7 +25,7 @@ function indexedFiles(workspace: PreviewWorkspace) {
   function visit(node: StorageNode, site: SiteOverview, root: StorageNode) {
     if (node.kind === "file" && node.path) {
       files.push({
-        file_id: `tracked:${node.id}`, node_id: node.id, path: node.path, site_id: site.id, site_folder_id: root.id,
+        file_id: `tracked:${node.id}`, node_id: node.id, name: node.name, path: node.path, site_id: site.id, site_folder_id: root.id,
         size_bytes: node.total_bytes, modified_unix_nanos: (node.modified_unix_millis ?? 0) * 1_000_000, content: contentKey(node),
         kind: root.kind === "smb_root" ? "smb" : "local", verified: node.verified_file_count > 0,
       });
@@ -267,6 +268,27 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return makeChildren(model(args), args, query?.trim().toLowerCase());
   }
 
+  function searchIndexedFiles(args: CommandArgs) {
+    const workspace = current();
+    checkWorkspace(workspace, args.expected_workspace);
+    const { offset, limit } = paging(args);
+    if (typeof args.query !== "string") throw new Error("Invalid file search.");
+    const query = args.query.trim().toLowerCase();
+    const matches = query ? indexedFiles(workspace)
+      .filter((file) => file.name.toLowerCase().includes(query))
+      .map((file) => ({
+        file_id: file.file_id,
+        site_id: file.site_id,
+        site_name: getSite(workspace, file.site_id).name,
+        name: file.name,
+        path: file.path,
+        size_bytes: file.size_bytes,
+        verified: file.verified,
+      })) : [];
+    matches.sort((a, b) => compareText(a.site_name, b.site_name) || compareText(a.path, b.path) || compareText(a.file_id, b.file_id));
+    return { matches: matches.slice(offset, offset + limit), offset, limit, total_matches: matches.length };
+  }
+
   function openFolderIn(request: CommandArgs) {
     const workspace = current();
     checkWorkspace(workspace, request.workspace_name);
@@ -468,6 +490,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   return {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
-    children, snapshot, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
+    children, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
   };
 }

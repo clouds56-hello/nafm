@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
-import { RefreshIcon, WorkspaceIcon } from "../management/Icons";
+import { RefreshIcon, SearchIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
@@ -52,6 +52,8 @@ export interface AtlasToolbarProps {
     siteCount: number;
     activeScans: number;
     stagedCount: number;
+    canFind: boolean;
+    onFind: () => void;
     onScanAll: () => void;
     onReview: () => void;
     onSettings: () => void;
@@ -170,6 +172,12 @@ function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "acti
     >
       {(close) => (
         <>
+          <button
+            className="atlas-toolbar-panel-action atlas-compact-find" type="button" disabled={!actions.canFind}
+            aria-haspopup="dialog" onClick={() => { close(); actions.onFind(); }}
+          >
+            <SearchIcon /> Find files
+          </button>
           <button className="atlas-toolbar-panel-action" type="button" disabled={!actions.siteCount || actions.activeScans > 0} onClick={() => { close(); actions.onScanAll(); }}>
             <RefreshIcon />
             <span>Scan all</span>
@@ -229,6 +237,16 @@ export function AtlasToolbar({ workspace, navigation, map, actions, extension }:
       <FolderNavigation navigation={navigation} />
 
       <div className="atlas-toolbar-controls">
+        <button
+          className="atlas-toolbar-button atlas-find-files-trigger" type="button" disabled={!actions.canFind}
+          aria-label="Find files" aria-haspopup="dialog" aria-keyshortcuts="Control+F Meta+F"
+          title="Find files" onClick={(event) => {
+            event.currentTarget.focus({ preventScroll: true });
+            actions.onFind();
+          }}
+        >
+          <SearchIcon /><span className="atlas-toolbar-label">Find</span>
+        </button>
         {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
         <WorkspaceActions actions={actions} navigation={navigation} />
         {extension}

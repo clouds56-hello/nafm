@@ -251,6 +251,7 @@
 }
 
 .atlas-toolbar-compact-history { display: none; }
+.atlas-toolbar-panel-action.atlas-compact-find { display: none; }
 
 @media (max-width: 960px) {
   .atlas-toolbar { gap: 7px; }
@@ -259,6 +260,8 @@
 }
 
 @media (max-width: 760px) {
+  .atlas-toolbar-button.atlas-find-files-trigger { display: none; }
+  .atlas-toolbar-panel-action.atlas-compact-find { display: flex; }
   .atlas-toolbar {
     min-height: 47px;
     gap: 5px;

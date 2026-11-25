@@ -10,7 +10,8 @@ interface StorageDetailsProps {
   location: StorageLocation;
   entries: readonly StorageNode[];
   selected: StorageNode | null;
-  focusRevision: number;
+  focusRequested: boolean;
+  onFocusHandled: () => void;
   metric: HealthMetric | null;
   targetCompleteness: number;
   targetName: string | null;
@@ -47,16 +48,15 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  location, entries, selected, focusRevision, metric, targetCompleteness, targetName, onOpenFolder,
+  location, entries, selected, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
   onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
-  const previousFocusRevision = useRef(focusRevision);
   useEffect(() => {
-    if (previousFocusRevision.current === focusRevision) return;
-    previousFocusRevision.current = focusRevision;
+    if (!focusRequested) return;
     panelRef.current?.focus();
-  }, [focusRevision]);
+    onFocusHandled();
+  }, [focusRequested, onFocusHandled]);
 
   const { root: folder, breadcrumbs } = location;
   const node = selected ?? folder;

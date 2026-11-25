@@ -376,6 +376,105 @@ async fn file_content_matches_reports_not_hashed_and_rejects_untracked_site_path
 }
 
 #[tokio::test]
+async fn indexed_file_search_matches_names_across_published_sites() {
+  let fixture = Fixture::new().await;
+  let local = fixture.mkdir("local-archive");
+  let other = fixture.mkdir("other-archive");
+  fs::create_dir(local.join("Trailer references")).unwrap();
+  fs::write(local.join("Trailer references/notes.txt"), b"not a filename match").unwrap();
+  fs::write(local.join("One ΔTrailer.mov"), b"123").unwrap();
+  fs::write(local.join("Two trailer.mov"), b"1234").unwrap();
+  fs::write(local.join("Proof_100%.jpg"), b"proof").unwrap();
+  fs::write(other.join("Trailer.mov"), b"pending").unwrap();
+
+  // Register sources in the opposite order so the result order cannot rely on insertion order.
+  let pending = fixture.repo.create_site("Studio B").await.unwrap();
+  let ready = fixture.repo.create_site("Studio A").await.unwrap();
+  fixture
+    .add_site_folder(&pending.id, &other, HiddenPolicy::Include)
+    .await;
+  fixture.add_site_folder(&ready.id, &local, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&ready.id).await.unwrap();
+
+  let cancelled = Arc::new(AtomicBool::new(false));
+  let cancel_from_progress = cancelled.clone();
+  let scan = fixture
+    .repo
+    .scan_site_with_progress_and_cancellation(
+      &pending.id,
+      Some(Arc::new(move |progress| {
+        if progress.phase == nafm_core::ScanPhase::Hashing && progress.current_path.is_none() {
+          cancel_from_progress.store(true, Ordering::SeqCst);
+        }
+      })),
+      Some(Arc::new(move || cancelled.load(Ordering::SeqCst))),
+    )
+    .await;
+  assert!(matches!(scan, Err(NafmError::ScanCancelled)));
+
+  let first = fixture.repo.search_indexed_files(" TrAiLeR ", 0, 2).await.unwrap();
+  assert_eq!((first.offset, first.limit, first.total_matches), (0, 2, 3));
+  assert_eq!(
+    first.matches.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(),
+    ["One ΔTrailer.mov", "Two trailer.mov"]
+  );
+  assert!(
+    first
+      .matches
+      .iter()
+      .all(|file| file.verified && file.site_id == ready.id && file.site_name == "Studio A")
+  );
+  assert_eq!(first.matches[0].size_bytes, 3);
+  assert_eq!(
+    first.matches[0].path,
+    fs::canonicalize(local.join("One ΔTrailer.mov")).unwrap()
+  );
+
+  let next = fixture.repo.search_indexed_files("trailer", 2, 2).await.unwrap();
+  assert_eq!((next.offset, next.limit, next.total_matches), (2, 2, 3));
+  let pending_match = next.matches.first().unwrap();
+  assert_eq!(pending_match.site_id, pending.id);
+  assert_eq!(pending_match.name, "Trailer.mov");
+  assert!(!pending_match.verified);
+  let reveal = fixture
+    .repo
+    .storage_file_reveal(&pending_match.file_id, None, 5, 12, 6)
+    .await
+    .unwrap();
+  assert_eq!(reveal.selected_file.path.as_ref(), Some(&pending_match.path));
+
+  let unicode = fixture.repo.search_indexed_files("δtr", 0, 10).await.unwrap();
+  assert_eq!(unicode.total_matches, 1);
+  assert_eq!(unicode.matches[0].file_id, first.matches[0].file_id);
+
+  // Results come from the published index even when the source can no longer supply the file.
+  fs::remove_file(local.join("Proof_100%.jpg")).unwrap();
+  let literal = fixture.repo.search_indexed_files("_100%", 0, 10).await.unwrap();
+  assert_eq!(literal.total_matches, 1);
+  assert_eq!(literal.matches[0].name, "Proof_100%.jpg");
+  let blank = fixture.repo.search_indexed_files(" \t ", 0, 0).await.unwrap();
+  assert_eq!((blank.limit, blank.total_matches), (1, 0));
+  assert!(blank.matches.is_empty());
+  let past_end = fixture
+    .repo
+    .search_indexed_files("trailer", u64::MAX, u64::MAX)
+    .await
+    .unwrap();
+  assert_eq!(
+    (past_end.offset, past_end.limit, past_end.total_matches),
+    (u64::MAX, 200, 3)
+  );
+  assert!(past_end.matches.is_empty());
+
+  // Site configuration changes invalidate published inventory. Its old tracked rows are no longer findable.
+  let added = fixture.mkdir("new-root");
+  fixture.add_site_folder(&ready.id, &added, HiddenPolicy::Include).await;
+  let refreshed = fixture.repo.search_indexed_files("trailer", 0, 10).await.unwrap();
+  assert_eq!(refreshed.total_matches, 1);
+  assert_eq!(refreshed.matches[0].file_id, pending_match.file_id);
+}
+
+#[tokio::test]
 async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
   let fixture = Fixture::new().await;
   let source_root = fs::canonicalize(fixture.mkdir("reveal-source")).unwrap();
@@ -589,7 +688,7 @@ async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
     .await
     .unwrap();
   let target = repo.create_site("target").await.unwrap();
-  let selected_path = Path::new("smb://nas.example.test/share/Media/Camera/selected.mp4");
+  let selected_path = Path::new("smb://nas.example.test/share/Media/Camera/Selected%20Clip%25.mp4");
   insert_tracked_file(
     &repo,
     "smb-reveal",
@@ -611,8 +710,15 @@ async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
     Some("sibling-hash"),
   );
 
+  let search = repo.search_indexed_files("selected clip%", 0, 5).await.unwrap();
+  assert_eq!(search.total_matches, 1);
+  let found = &search.matches[0];
+  assert_eq!(found.file_id, "smb-reveal");
+  assert_eq!(found.name, "Selected Clip%.mp4");
+  assert_eq!(found.path, selected_path);
+
   let reveal = repo
-    .storage_file_reveal("smb-reveal", Some(&target.id), 5, 12, 6)
+    .storage_file_reveal(&found.file_id, Some(&target.id), 5, 12, 6)
     .await
     .unwrap();
 
@@ -635,6 +741,7 @@ async fn storage_file_reveal_preserves_smb_paths_and_cross_site_identity() {
   assert_eq!(reveal.page.offset, 0);
   assert_eq!(reveal.page.limit, 6);
   assert_eq!(reveal.page.total_children, 2);
+  assert_eq!(reveal.selected_file.name, found.name);
   assert_eq!(reveal.selected_file.path, Some(selected_path.to_path_buf()));
   assert_eq!(reveal.selected_file.kind, StorageNodeKind::File);
   assert!(

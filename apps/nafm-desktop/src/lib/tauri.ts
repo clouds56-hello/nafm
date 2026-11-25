@@ -20,6 +20,7 @@ import type {
   DirectorySort,
   FileContentMatchesPage,
   HiddenPolicy,
+  IndexedFileSearchPage,
   ManagementMutationResult,
   ManagementSnapshot,
   SavedConnection,
@@ -42,6 +43,10 @@ export function openFolderIn(request: FolderOpenRequest): Promise<string | null>
 
 export function findSimilarFolders(request: FolderSimilarityRequest): Promise<FolderSimilarityPage> {
   return invoke<FolderSimilarityPage>("find_similar_folders", { request });
+}
+
+export function searchIndexedFiles(expectedWorkspace: string, query: string, offset: number, limit: number): Promise<IndexedFileSearchPage> {
+  return invoke("search_indexed_files", { expected_workspace: expectedWorkspace, query, offset, limit });
 }
 
 export function completeRemotePath(request: PathCompletionRequest): Promise<PathCompletion> {

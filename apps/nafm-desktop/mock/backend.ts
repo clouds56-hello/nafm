@@ -234,6 +234,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     get_storage_location: storage.location,
     get_storage_children: storage.children,
     get_storage_view_snapshot: storage.snapshot,
+    search_indexed_files: storage.searchIndexedFiles,
     get_storage_file_reveal: storage.reveal,
     get_storage_node_reveal: storage.revealNode,
     open_folder_in: (args) => storage.openFolderIn(record(args.request)),
@@ -256,7 +257,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   registerPreviewIpc(async (command, payload) => {
     if (!Object.hasOwn(handlers, command)) throw new Error(`Unsupported preview command: ${command}`);
     const response = handlers[command](payload === undefined ? {} : record(payload));
-    if (scenario === "slow" && ["get_storage_view_snapshot", "get_storage_children", "get_storage_node_reveal"].includes(command)) {
+    if (scenario === "slow" && ["get_storage_view_snapshot", "get_storage_children", "get_storage_node_reveal", "search_indexed_files"].includes(command)) {
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }
     return response;

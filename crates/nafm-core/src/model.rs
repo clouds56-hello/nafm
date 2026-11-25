@@ -258,6 +258,25 @@ pub struct FileContentMatchesPage {
   pub limit: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IndexedFileMatch {
+  pub file_id: String,
+  pub site_id: String,
+  pub site_name: String,
+  pub name: String,
+  pub path: PathBuf,
+  pub size_bytes: u64,
+  pub verified: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IndexedFileSearchPage {
+  pub matches: Vec<IndexedFileMatch>,
+  pub total_matches: u64,
+  pub offset: u64,
+  pub limit: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct AddSiteFolderRequest {
   pub path: PathBuf,

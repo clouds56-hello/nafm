@@ -14,7 +14,7 @@ blake3.workspace = true
 chrono.workspace = true
 directories.workspace = true
 percent-encoding.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["functions"] }
 serde.workspace = true
 serde_json.workspace = true
 smb2.workspace = true

@@ -22,6 +22,10 @@ export function CloseIcon(props: IconProps) {
   return <IconBase {...props}><path d="m6 6 12 12M18 6 6 18" /></IconBase>;
 }
 
+export function SearchIcon(props: IconProps) {
+  return <IconBase {...props}><circle cx="10" cy="10" r="6" /><path d="m14.5 14.5 5 5" /></IconBase>;
+}
+
 export function WarningIcon(props: IconProps) {
   return <IconBase {...props}><path d="M10.3 4.1 2.7 18a2 2 0 0 0 1.8 3h15a2 2 0 0 0 1.8-3L13.7 4.1a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></IconBase>;
 }

@@ -16,11 +16,11 @@ use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
   AddSiteFolderRequest, DirectorySort, DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch,
-  FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping,
-  ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus,
-  SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal,
-  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, IndexedFileSearchPage, MissingContentGroup,
+  RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder,
+  SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport,
+  StageRemoveReport, StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage,
+  StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -28,6 +28,7 @@ use crate::remote::{
 };
 
 mod folder_similarity;
+mod indexed_file_search;
 
 type ScanProgressCallback = Arc<dyn Fn(&ScanProgress) + Send + Sync>;
 type ScanEventCallback = Arc<dyn Fn(&ScanEvent) + Send + Sync>;
@@ -1801,6 +1802,16 @@ impl Repository {
       let conn = open_connection(db_path)?;
       let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
       file_content_matches_page(&conn, &site.id, &path, offset, limit)
+    })
+    .await?
+  }
+
+  pub async fn search_indexed_files(&self, query: &str, offset: u64, limit: u64) -> Result<IndexedFileSearchPage> {
+    let db_path = self.db_path.clone();
+    let query = query.trim().to_lowercase();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || indexed_file_search::search(&conn, query, offset, limit))
     })
     .await?
   }
