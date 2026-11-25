@@ -63,11 +63,47 @@
 
 .atlas-analysis-reveal-button[aria-disabled="true"] { opacity: .65; }
 .atlas-analysis-reveal-error { margin: 0; color: #f3b2ba; line-height: 1.4; overflow-wrap: anywhere; }
+.atlas-comparison-picker { display: none; }
 
 @media (max-width: 540px) {
   .atlas-analysis-comparison[data-comparing] { grid-template-columns: minmax(0, 1fr); }
   .atlas-analysis-reveal-error { flex: 1 0 100%; }
   .atlas-analysis-footer:has(.atlas-analysis-reveal-button) { flex-wrap: wrap; gap: 7px; }
+  .atlas-analysis-choices { display: none; }
+
+  .atlas-comparison-picker {
+    position: relative;
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+    color: var(--atlas-muted);
+    font-size: 12px;
+  }
+  .atlas-comparison-picker select {
+    appearance: none;
+    width: 100%;
+    min-width: 0;
+    height: 44px;
+    padding-inline: 10px 32px;
+    border: 1px solid var(--atlas-border);
+    border-radius: 5px;
+    background: #181a29;
+    color: var(--atlas-ink);
+    font: inherit;
+    text-overflow: ellipsis;
+  }
+  .atlas-comparison-picker::after {
+    content: "";
+    position: absolute;
+    inset-inline-end: 14px;
+    bottom: 20px;
+    width: 6px;
+    height: 6px;
+    border: solid currentColor;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
 }
 
 @media (pointer: coarse) {

@@ -1,9 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const fileName = "Trailer master.mov";
 const sourcePath = "/demo/Studio Archive/Projects/Brand campaign/Trailer master.mov";
 const backupPath = "/demo/Studio Archive/Projects/Backup campaign/Trailer master.mov";
 const sharedPath = "smb://media.example.test/Studio/Campaign mirror/Trailer master.mov";
+const backupChoice = "Backup campaign · Studio archive";
+const sharedChoice = "Campaign mirror · Team share";
 
 function folderPath(page: Page) {
   return page.getByRole("navigation", { name: "Folder path" });
@@ -15,6 +17,10 @@ function currentFolder(page: Page) {
 
 function inspector(page: Page) {
   return page.getByRole("complementary", { name: "Inspector" });
+}
+
+function compareWith(dialog: Locator) {
+  return dialog.getByRole("combobox", { name: "Compare with", exact: true });
 }
 
 async function openBrandCampaign(page: Page) {
@@ -85,6 +91,9 @@ test("compare exact copies in place, then inspect their destination and return",
   await expect(currentFolder(page)).toHaveText("Brand campaign");
 
   await page.setViewportSize({ width: 500, height: 430 });
+  const picker = compareWith(dialog);
+  await expect(picker.locator("option:checked")).toHaveText(sharedChoice);
+  await expect(shared).toBeHidden();
   const body = dialog.locator(".atlas-analysis-body");
   const scrollTop = await body.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
@@ -100,21 +109,89 @@ test("compare exact copies in place, then inspect their destination and return",
   await expect(inspector(page)).toContainText(sharedPath);
 
   const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
-  await details.getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  const back = details.getByRole("button", { name: "Back to comparison", exact: true });
+  await back.press("Enter");
   await expect(dialog).toBeVisible();
   await expect(original).toContainText(sourcePath);
   await expect(match).toContainText(sharedPath);
-  await expect(shared).toHaveAttribute("aria-pressed", "true");
+  await expect(picker.locator("option:checked")).toHaveText(sharedChoice);
   await expect(show).toBeFocused();
   await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
   expect(await reads.jsonValue()).toEqual([0]);
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(back).toBeFocused();
+  await expect(details).toContainText(sharedPath);
+  await back.press("Enter");
+  await expect(original).toContainText(sourcePath);
+  await expect(match).toContainText(sharedPath);
+  await expect(picker.locator("option:checked")).toHaveText(sharedChoice);
+  await expect(show).toBeFocused();
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
+  expect(await reads.jsonValue()).toEqual([0]);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
   await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Brand campaign");
   await expect(inspector(page).getByRole("heading", { name: fileName, exact: true })).toBeVisible();
   await expect(inspector(page)).toContainText(sourcePath);
+});
+
+test.describe("compact Exact copies", () => {
+  test.use({ viewport: { width: 390, height: 580 }, hasTouch: true });
+
+  test("each Atlas visit keeps its comparison when choosing copies from the touch picker", async ({ page }) => {
+    await inspectOriginalFile(page);
+    const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+    const open = details.getByRole("button", { name: "Exact copies", exact: true });
+    const back = details.getByRole("button", { name: "Back to comparison", exact: true });
+    const dialog = page.getByRole("dialog", { name: "Exact copies", exact: true });
+    const original = dialog.getByRole("region", { name: "Selected file", exact: true });
+    const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
+    const picker = compareWith(dialog);
+    const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+    const close = dialog.getByRole("button", { name: "Close exact copies", exact: true });
+
+    await open.tap();
+    await expect(picker).toBeInViewport({ ratio: 0.99 });
+    await expect(picker.locator("option:checked")).toHaveText(backupChoice);
+    const target = (await picker.boundingBox())!;
+    expect(target.height).toBeGreaterThanOrEqual(44);
+    await picker.tap();
+    await picker.selectOption({ label: sharedChoice });
+    await expect(match).toContainText(sharedPath);
+    await show.tap();
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Campaign mirror");
+    await expect(details).toContainText(sharedPath);
+
+    await open.tap();
+    await expect(original).toContainText(sharedPath);
+    await picker.selectOption({ label: backupChoice });
+    await expect(match).toContainText(backupPath);
+    await show.tap();
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Backup campaign");
+
+    await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Campaign mirror");
+    await back.tap();
+    await expect(original).toContainText(sourcePath);
+    await expect(picker.locator("option:checked")).toHaveText(sharedChoice);
+    await expect(show).toBeFocused();
+    await close.tap();
+    await expect(dialog).toBeHidden();
+    await expect(back).toBeFocused();
+
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(currentFolder(page)).toHaveText("Backup campaign");
+    await back.tap();
+    await expect(original).toContainText(sharedPath);
+    await expect(picker.locator("option:checked")).toHaveText(backupChoice);
+    await expect(match).toContainText(backupPath);
+  });
 });
 
 test("the same file returns to the comparison or review that opened its Atlas visit", async ({ page }) => {
@@ -123,7 +200,7 @@ test("the same file returns to the comparison or review that opened its Atlas vi
   const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
   await details.getByRole("button", { name: "Exact copies", exact: true }).press("Enter");
   const comparison = page.getByRole("dialog", { name: "Exact copies", exact: true });
-  await comparison.getByRole("button", { name: /Backup campaign/ }).press("Enter");
+  await compareWith(comparison).selectOption({ label: backupChoice });
   await comparison.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
   await expect(comparison).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Backup campaign");
@@ -367,22 +444,38 @@ for (const chooseBackup of [false, true]) {
     const dialog = page.getByRole("dialog", { name: "Exact copies", exact: true });
     const shared = dialog.getByRole("button", { name: /^Team share.*Campaign mirror/ });
     const backup = dialog.getByRole("button", { name: /^Studio archive.*Backup campaign/ });
+    const picker = compareWith(dialog);
+    const choice = picker.locator("option:checked");
     const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
     const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
     const unavailable = dialog.getByRole("status").filter({ hasText: /selected copy is (?:temporarily )?unavailable/i });
     await page.clock.runFor(20);
-    await shared.press("Enter");
-    await expect(shared).toBeFocused();
-    await expect(shared).toHaveAttribute("aria-pressed", "true");
+    if (chooseBackup) {
+      await picker.focus();
+      await picker.selectOption({ label: sharedChoice });
+      await expect(picker).toBeFocused();
+      await expect(choice).toHaveText(sharedChoice);
+    } else {
+      await shared.press("Enter");
+      await expect(shared).toBeFocused();
+      await expect(shared).toHaveAttribute("aria-pressed", "true");
+    }
     await expect(match).toContainText(sharedPath);
 
     // Let the retained copy become unavailable while the mock publishes Team share's inventory.
     await page.clock.runFor(3_800);
     await expect(unavailable).toBeVisible();
     await expect(match).toContainText(sharedPath);
-    await expect(backup).toBeFocused();
-    await expect(backup).toBeInViewport({ ratio: 0.98 });
-    await expect(backup).toHaveAttribute("aria-pressed", "false");
+    if (chooseBackup) {
+      await expect(picker).toBeFocused();
+      await expect(picker).toBeInViewport({ ratio: 0.98 });
+      await expect(choice).toHaveText(`${sharedChoice} · Unavailable`);
+      await expect(choice).toHaveJSProperty("disabled", true);
+    } else {
+      await expect(backup).toBeFocused();
+      await expect(backup).toBeInViewport({ ratio: 0.98 });
+      await expect(backup).toHaveAttribute("aria-pressed", "false");
+    }
     await expect(show).toBeDisabled();
     await expect(show).toHaveAccessibleDescription("The selected copy is unavailable in the current results.");
     await show.press("Enter");
@@ -391,7 +484,8 @@ for (const chooseBackup of [false, true]) {
     expect(await reveals.jsonValue()).toEqual([]);
 
     if (chooseBackup) {
-      await backup.press("Enter");
+      await picker.focus();
+      await picker.selectOption({ label: backupChoice });
       await expect(match).toContainText(backupPath);
       await expect(show).toBeEnabled();
     } else {
@@ -399,9 +493,14 @@ for (const chooseBackup of [false, true]) {
     }
     await page.clock.runFor(2_500);
     await expect(unavailable).toBeHidden();
-    await expect(shared).toHaveAttribute("aria-pressed", chooseBackup ? "false" : "true");
-    await expect(backup).toBeFocused();
-    await expect(backup).toHaveAttribute("aria-pressed", chooseBackup ? "true" : "false");
+    if (chooseBackup) {
+      await expect(choice).toHaveText(backupChoice);
+      await expect(picker).toBeFocused();
+    } else {
+      await expect(shared).toHaveAttribute("aria-pressed", "true");
+      await expect(backup).toBeFocused();
+      await expect(backup).toHaveAttribute("aria-pressed", "false");
+    }
     await expect(match).toContainText(chooseBackup ? backupPath : sharedPath);
     await expect(show).toBeEnabled();
 

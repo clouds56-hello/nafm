@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefCallback, type RefObject } from "react";
 import { OpenInIcon } from "../../management/Icons";
 import "./analysis-comparison.css";
 
@@ -24,6 +24,40 @@ export function AnalysisLocation({ label, name, site, path, detail, unavailable,
       {path && <code>{path}</code>}
       {children}
     </section>
+  );
+}
+
+interface ComparisonPickerProps<Match> {
+  matches: Match[];
+  selected?: Match;
+  unavailable?: Match;
+  busy: boolean;
+  identify: (match: Match) => string;
+  label: (match: Match, unavailable?: boolean) => string;
+  onChoose: (match: Match) => void;
+  focusRef: RefCallback<HTMLSelectElement>;
+}
+
+export function ComparisonPicker<Match>({ matches, selected, unavailable, busy, identify, label, onChoose, focusRef }: ComparisonPickerProps<Match>) {
+  const displayed = selected ?? unavailable;
+  if (!displayed) return null;
+  const disabled = busy || matches.length === 0;
+  return (
+    <label className="atlas-comparison-picker">
+      Compare with
+      <select
+        ref={focusRef} data-comparison-choice aria-disabled={disabled || undefined} value={identify(displayed)}
+        onPointerDown={disabled ? (event) => event.preventDefault() : undefined}
+        onKeyDown={disabled ? (event) => { if (event.key !== "Tab" && event.key !== "Escape") event.preventDefault(); } : undefined}
+        onChange={disabled ? undefined : (event) => {
+          const match = matches.find((item) => identify(item) === event.currentTarget.value);
+          if (match) onChoose(match);
+        }}
+      >
+        {unavailable && <option value={identify(unavailable)} disabled>{label(unavailable, true)} · Unavailable</option>}
+        {matches.map((match) => <option key={identify(match)} value={identify(match)}>{label(match)}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -68,6 +102,39 @@ export function useRemovedComparisonFocus(results: RefObject<HTMLElement | null>
   }, []);
 
   useLayoutEffect(() => {
+    const area = results.current;
+    if (!area) return;
+    const compact = window.matchMedia("(max-width: 540px)");
+    let focusedChoice: HTMLElement | null = null;
+    function remember(event: FocusEvent) {
+      const target = event.target;
+      focusedChoice = target instanceof HTMLElement && target.matches("[data-comparison-choice]") ? target : null;
+    }
+    function forget(event: FocusEvent) {
+      // When CSS hides the control, the browser can blur it before the media change event.
+      if (focusedChoice === event.target && focusedChoice?.getClientRects().length) focusedChoice = null;
+    }
+    function switchControl() {
+      if (!area || !focusedChoice?.isConnected || focusedChoice.getClientRects().length) return;
+      const active = document.activeElement;
+      if (active !== focusedChoice && active !== document.body && active !== area.closest("dialog")) return;
+      const target = compact.matches ? area.querySelector<HTMLSelectElement>("select[data-comparison-choice]")
+        : area.querySelector<HTMLButtonElement>('[data-comparison-choice][aria-pressed="true"]')
+          ?? area.querySelector<HTMLButtonElement>('.atlas-analysis-choices [data-comparison-choice]');
+      (target ?? closeButton.current)?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    area.addEventListener("focusin", remember);
+    area.addEventListener("focusout", forget);
+    compact.addEventListener("change", switchControl);
+    return () => {
+      area.removeEventListener("focusin", remember);
+      area.removeEventListener("focusout", forget);
+      compact.removeEventListener("change", switchControl);
+    };
+  }, [results, closeButton]);
+
+  useLayoutEffect(() => {
     if (!removedFocus.current) return;
     removedFocus.current = false;
     if (document.activeElement !== document.body) return;
@@ -83,17 +150,30 @@ export function useRemovedComparisonFocus(results: RefObject<HTMLElement | null>
 export function useComparisonScroll(scrollTop: number | undefined, ready: boolean) {
   const results = useRef<HTMLElement>(null);
   const showButton = useRef<HTMLButtonElement>(null);
-  const pendingScroll = useRef<number | undefined>(undefined);
+  const pendingScroll = useRef<{ pane: HTMLElement; initialTop: number } | null>(null);
 
   useLayoutEffect(() => {
-    pendingScroll.current = scrollTop;
+    const pane = results.current?.closest<HTMLElement>(".atlas-analysis-body");
+    if (!pane || scrollTop === undefined) return;
+    const pending = { pane, initialTop: pane.scrollTop };
+    pendingScroll.current = pending;
+    const trackScroll = () => {
+      if (pendingScroll.current === pending && pane.scrollTop !== pending.initialTop) pendingScroll.current = null;
+    };
+    pane.addEventListener("scroll", trackScroll, { passive: true });
+    return () => {
+      pane.removeEventListener("scroll", trackScroll);
+      if (pendingScroll.current === pending) pendingScroll.current = null;
+    };
   }, [scrollTop]);
 
   useLayoutEffect(() => {
-    const pane = results.current?.closest(".atlas-analysis-body");
-    if (!ready || pendingScroll.current === undefined || !pane) return;
-    pane.scrollTop = pendingScroll.current;
-    pendingScroll.current = undefined;
+    const pending = pendingScroll.current;
+    if (!ready || scrollTop === undefined || !pending) return;
+    pendingScroll.current = null;
+    const { pane, initialTop } = pending;
+    if (pane.scrollTop !== initialTop) return;
+    pane.scrollTop = scrollTop;
     const close = pane.closest("dialog")?.querySelector<HTMLButtonElement>(".atlas-analysis-close");
     if (document.activeElement === close || document.activeElement === document.body) {
       (showButton.current ?? close)?.focus({ preventScroll: true });

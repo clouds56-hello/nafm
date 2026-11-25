@@ -90,7 +90,7 @@ interface NavigationEntry {
   inspection?: AtlasInspection | null;
 }
 
-export type AnalysisInspection = { kind: "analysis"; session: symbol };
+export type AnalysisInspection = { kind: "analysis" };
 type ReviewInspection = { kind: "review"; position: ReviewPosition };
 
 export type AtlasInspection =

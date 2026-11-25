@@ -5,7 +5,7 @@ import type { FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
 import { CheckIcon } from "../../management/Icons";
 import type { ScanSite, SiteVerification } from "../siteVerification";
 import { VerificationScanButton } from "../VerificationScanButton";
-import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, ComparisonPicker, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
@@ -104,7 +104,6 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
     if (page) onShown(match, { page, selected_id: folderKey(match), scroll_top: readScroll(), revision: contentRevision });
   });
   const busy = loading || Boolean(error) || navigation.opening;
-  const pickerDisabled = busy || !matches.length;
   const selectedKey = selected && folderKey(selected);
   const source = page?.source;
   const emptyFolder = source?.inventory_ready && source.file_count === 0;
@@ -147,31 +146,12 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
       )}
     >
       <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
-        {page && displayedMatch && (
-          <label className="atlas-folder-match-select">
-            Compare with
-            <select
-              ref={recoverRemovedFocus} data-comparison-choice aria-disabled={pickerDisabled || undefined} value={folderKey(displayedMatch)}
-              onPointerDown={pickerDisabled ? (event) => event.preventDefault() : undefined}
-              onKeyDown={pickerDisabled ? (event) => { if (event.key !== "Tab" && event.key !== "Escape") event.preventDefault(); } : undefined}
-              onChange={pickerDisabled ? undefined : (event) => {
-                const match = matches.find((candidate) => folderKey(candidate) === event.currentTarget.value);
-                if (match) chooseMatch(match);
-              }}
-            >
-              {unavailable && (
-                <option value={folderKey(unavailable)} disabled>
-                  {fileName(unavailable.folder.path)} · {unavailable.folder.site_name} · Unavailable
-                </option>
-              )}
-              {matches.map((match) => (
-                <option key={folderKey(match)} value={folderKey(match)}>
-                  {fileName(match.folder.path)} · {match.folder.site_name} · {percent(match.similarity, match.partial)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        {page && <ComparisonPicker
+          matches={matches} selected={selected} unavailable={missingMatch} busy={busy} identify={folderKey}
+          label={(match, missing) => [fileName(match.folder.path), match.folder.site_name,
+            !missing && percent(match.similarity, match.partial)].filter(Boolean).join(" · ")}
+          onChoose={chooseMatch} focusRef={recoverRemovedFocus}
+        />}
         <div className="atlas-analysis-comparison atlas-folder-comparison" data-comparing={displayedMatch ? "" : undefined}>
           <AnalysisLocation
             label="Selected folder" name={node.name} site={siteName} path={source?.path ?? node.path}
@@ -235,7 +215,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
               }}>Refresh results</button>
             </div>
             {matches.length > 0 && (
-              <ul className="atlas-analysis-list atlas-analysis-choices atlas-folder-match-list" aria-label="Matching folders">
+              <ul className="atlas-analysis-list atlas-analysis-choices" aria-label="Matching folders">
                 {matches.map((match) => {
                   const key = folderKey(match);
                   const same = match.identical_content && !match.partial;

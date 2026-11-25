@@ -40,27 +40,3 @@
 .atlas-folder-coverage-track > span { display: block; height: 100%; border-radius: inherit; background: var(--atlas-accent); }
 .atlas-folder-breakdown dd { font-size: 12px; }
 .atlas-folder-refresh { margin-inline-start: auto; }
-
-.atlas-folder-match-select { display: none; }
-
-@media (max-width: 540px) {
-  .atlas-folder-match-list { display: none; }
-  .atlas-folder-match-select {
-    display: grid;
-    min-width: 0;
-    gap: 4px;
-    color: var(--atlas-muted);
-    font-size: 12px;
-  }
-  .atlas-folder-match-select select {
-    width: 100%;
-    min-width: 0;
-    min-height: 38px;
-    padding-inline: 7px;
-    border: 1px solid var(--atlas-border);
-    border-radius: 5px;
-    background: #181a29;
-    color: var(--atlas-ink);
-    font: inherit;
-  }
-}

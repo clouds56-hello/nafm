@@ -5,7 +5,7 @@ import type { FileContentMatch, FileContentMatchesPage } from "../../lib/types";
 import { CheckIcon } from "../../management/Icons";
 import type { ScanSite, SiteVerification } from "../siteVerification";
 import { VerificationScanButton } from "../VerificationScanButton";
-import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, ComparisonPicker, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
 import { useAnalysisPage, type AnalysisPosition } from "./useAnalysisPage";
@@ -71,6 +71,16 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
   const scan = needsVerification ? verification?.action : undefined;
   const scanFailure = needsVerification && verification?.tone !== "active" ? scanError ?? verification?.failure : null;
 
+  function chooseCopy(match: FileContentMatch) {
+    choose(match);
+    navigation.clearError();
+  }
+
+  function copyLabel(match: FileContentMatch) {
+    const name = fileName(match.path);
+    return [containingFolder(match.path), name !== source.name && name, match.site_name].filter(Boolean).join(" · ");
+  }
+
   return (
     <AnalysisDialog
       title="Exact copies"
@@ -92,6 +102,16 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
       )}
     >
       <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
+        {page && <ComparisonPicker
+          matches={matches} selected={selected} unavailable={unavailable} busy={busy} identify={copyId}
+          label={(match) => {
+            const label = copyLabel(match);
+            const choices = unavailable ? [...matches, unavailable] : matches;
+            return choices.some((other) => other.file_id !== match.file_id && copyLabel(other) === label)
+              ? `${match.path} · ${match.site_name}` : label;
+          }}
+          onChoose={chooseCopy} focusRef={rememberFocus}
+        />}
         <div className="atlas-analysis-comparison" data-comparing={displayed ? "" : undefined}>
           <AnalysisLocation label="Selected file" name={source.name} site={source.site} path={source.path} detail={formatBytes(source.size)} />
           {displayed && (
@@ -138,10 +158,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
                         aria-pressed={selected === match}
                         aria-description={match.path}
                         aria-disabled={busy || undefined}
-                        onClick={busy ? undefined : () => {
-                          choose(match);
-                          navigation.clearError();
-                        }}
+                        onClick={busy ? undefined : () => chooseCopy(match)}
                       >
                         <span className="atlas-analysis-location">
                           <strong>{match.site_name}</strong>
