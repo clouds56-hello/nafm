@@ -101,6 +101,42 @@ test.describe("touch exploration", () => {
     await expect(inspector.getByRole("heading", { name: "Trailer master.mov" })).toBeVisible();
   });
 
+  test("touch preview dismisses and opens without closing Sites or Contents", async ({ page }) => {
+    const rail = page.getByRole("complementary", { name: "Sites" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const projects = arc(page, /^Projects,/);
+    const preview = page.getByRole("group", { name: "Preview of Projects" });
+    const open = preview.getByRole("button", { name: "Open folder" });
+
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+    await page.locator(".radial-atlas").scrollIntoViewIfNeeded();
+
+    await tapArc(page, /^Projects,/);
+    await open.focus();
+    await expect(open).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(preview).toBeHidden();
+    await expect(projects).toBeFocused();
+    await expect(rail).toBeVisible();
+    await expect(inspector).toBeVisible();
+
+    await tapArc(page, /^Projects,/);
+    await expect(preview).toBeVisible();
+    await currentFolder(page).tap();
+    await expect(preview).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await expect(rail).toBeVisible();
+    await expect(inspector).toBeVisible();
+
+    await tapArc(page, /^Projects,/);
+    await open.tap();
+    await expect(preview).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(rail).toBeVisible();
+    await expect(inspector.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  });
+
   test("returning from a file near the end restores the scrolled Contents sheet", async ({ page }) => {
     await page.setViewportSize({ width: 680, height: 320 });
     await page.getByRole("button", { name: "Contents & details" }).tap();

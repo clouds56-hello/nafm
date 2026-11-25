@@ -345,3 +345,8 @@
 }
 .atlas-sector-preview__dismiss { width: 36px; padding: 0; border: 0; background: transparent; color: var(--atlas-muted); }
 .atlas-sector-preview__dismiss svg { width: 17px; height: 17px; }
+
+@media (pointer: coarse) {
+  .atlas-sector-preview__open, .atlas-sector-preview__dismiss { min-height: 44px; }
+  .atlas-sector-preview__dismiss { width: 44px; }
+}

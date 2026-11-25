@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 import { fileName, formatBytes, formatShare } from "../lib/format";
 import { healthAriaDescription, isPerfectHealth, nodeHealthPresentation, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
@@ -35,6 +35,13 @@ interface SectorPreviewProps {
   targetCompleteness: number;
   onOpen: () => void;
   onClose: () => void;
+}
+
+function focusAction(event: MouseEvent<HTMLButtonElement>) {
+  if (event.button !== 0) return;
+  // Keep WebKit from focusing the map and dismissing the preview before the click.
+  event.preventDefault();
+  event.currentTarget.focus({ preventScroll: true });
 }
 
 export function PreviewSummary({ node, root, metric, score, awaitingInventory = false }: {
@@ -76,12 +83,20 @@ export function SectorPreview({ preview, sector, root, metric, targetCompletenes
       role={interactive ? "group" : undefined}
       aria-label={interactive ? `Preview of ${labelFor(node)}` : undefined}
       aria-hidden={interactive ? undefined : true}
+      onKeyDown={interactive ? (event) => {
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } : undefined}
     >
       <PreviewSummary node={node} root={root} metric={metric} score={score} />
       {interactive && (
         <>
-          <button type="button" className="atlas-sector-preview__open" onClick={onOpen}>{action}</button>
-          <button type="button" className="atlas-sector-preview__dismiss" aria-label="Dismiss preview" onClick={onClose}><CloseIcon /></button>
+          <button type="button" className="atlas-sector-preview__open" onMouseDown={focusAction} onClick={onOpen}>{action}</button>
+          <button type="button" className="atlas-sector-preview__dismiss" aria-label="Dismiss preview" onMouseDown={focusAction} onClick={onClose}>
+            <CloseIcon />
+          </button>
         </>
       )}
     </div>

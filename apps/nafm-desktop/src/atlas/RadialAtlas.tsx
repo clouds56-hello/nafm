@@ -60,18 +60,18 @@ export function RadialAtlas(props: RadialAtlasProps) {
       key={props.root.id}
       {...props}
       plotRef={plot}
-      onKeyboardNavigate={(control) => { lastControl.current = control; }}
+      onNavigateWithFocus={(control) => { lastControl.current = control; }}
     />
   );
 }
 
 interface RadialPlotProps extends RadialAtlasProps {
   plotRef: RefObject<HTMLElement | null>;
-  onKeyboardNavigate: (control: Element | null) => void;
+  onNavigateWithFocus: (control: Element | null) => void;
 }
 
 function RadialPlot({
-  root, parentName, canGoUp, onGoUp, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef, onKeyboardNavigate,
+  root, parentName, canGoUp, onGoUp, selectedId, firstScan, metric, targetCompleteness, onSelect, plotRef, onNavigateWithFocus,
 }: RadialPlotProps) {
   const descriptionId = useId();
   const gradientId = useId();
@@ -109,7 +109,7 @@ function RadialPlot({
       if (!(event.target instanceof Element) || !event.target.closest(".atlas-sector-preview, .radial-atlas__sector")) setPreview(null);
     }
     function escape(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
       event.preventDefault();
       setPreview(null);
     }
@@ -185,8 +185,8 @@ function RadialPlot({
         data-first-scan={awaitingInventory || undefined}
         tabIndex={-1}
         aria-describedby={descriptionId}
-        onKeyDownCapture={(event) => onKeyboardNavigate(event.target as Element)}
-        onPointerDownCapture={() => onKeyboardNavigate(null)}
+        onKeyDownCapture={(event) => onNavigateWithFocus(event.target as Element)}
+        onPointerDownCapture={() => onNavigateWithFocus(null)}
       >
         <figcaption id={descriptionId} className="radial-atlas__sr-only">
           {labelFor(root)}. {awaitingInventory ? "Awaiting first inventory." : (
@@ -310,7 +310,7 @@ function RadialPlot({
               }}
               aria-label={`Up to ${parentName}`} title={`Up to ${parentName}`}
               onClick={(event) => {
-                if (event.detail === 0) onKeyboardNavigate(event.currentTarget);
+                if (event.detail === 0) onNavigateWithFocus(event.currentTarget);
                 onGoUp();
               }}
             >
@@ -322,10 +322,16 @@ function RadialPlot({
       {preview && previewSector && (
         <SectorPreview
           preview={preview} sector={previewSector} root={root} metric={metric} targetCompleteness={targetCompleteness}
-          onClose={() => setPreview(null)}
+          onClose={() => {
+            sectorElement(previewSector.node.id)?.focus({ preventScroll: true });
+            setPreview(null);
+          }}
           onOpen={() => {
             const origin = sectorElement(previewSector.node.id);
-            if (origin) openSector(previewSector, origin);
+            if (!origin) return;
+            origin.focus({ preventScroll: true });
+            onNavigateWithFocus(origin);
+            openSector(previewSector, origin);
           }}
         />
       )}
