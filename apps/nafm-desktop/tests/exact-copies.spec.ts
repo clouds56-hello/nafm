@@ -243,7 +243,7 @@ test("the same file returns to the comparison or review that opened its Atlas vi
   await page.keyboard.press("Escape");
   await expect(review).toBeHidden();
   await expect(details).toContainText(backupPath);
-  await expect(details).toBeFocused();
+  await expect(backToReview).toBeFocused();
 });
 
 test("retrying unavailable exact copies keeps keyboard focus in the dialog", async ({ page }) => {

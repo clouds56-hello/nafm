@@ -63,7 +63,7 @@
 }
 
 .atlas-review-retained {
-  border-top: 1px solid var(--atlas-border);
+  border-bottom: 1px solid var(--atlas-border);
   background: #1a2028;
 }
 

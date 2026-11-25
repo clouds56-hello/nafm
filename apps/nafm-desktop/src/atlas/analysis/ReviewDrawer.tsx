@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefCallback, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type {
   CleanupPreview, CleanupPreviewInvalidation, DuplicateFile, ReviewPosition, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
@@ -54,11 +54,12 @@ interface ReviewFileProps {
   site?: string;
   warning?: string;
   disabled: boolean;
+  focusRef: RefCallback<HTMLButtonElement>;
   onRemove?: (file: DuplicateFile, button: HTMLButtonElement) => void;
   onInspect?: (file: DuplicateFile) => void;
 }
 
-function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: ReviewFileProps) {
+function ReviewFile({ file, site, warning, disabled, focusRef, onRemove, onInspect }: ReviewFileProps) {
   const name = fileName(file.path);
   const description = site ? `${site} · ${file.path}` : file.path;
   return (
@@ -75,7 +76,7 @@ function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: Revi
           <div className="atlas-review-file-buttons">
             {onInspect && (
               <button
-                type="button" data-review-inspect={file.file_id} aria-disabled={disabled || undefined}
+                ref={focusRef} type="button" data-review-inspect={file.file_id} aria-disabled={disabled || undefined}
                 aria-label={`Inspect ${name} in Atlas`} aria-description={description}
                 onClick={disabled ? undefined : (event) => {
                   event.currentTarget.focus({ preventScroll: true });
@@ -87,7 +88,7 @@ function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: Revi
             )}
             {onRemove && (
               <button
-                type="button" className="atlas-review-unstage" data-review-remove={file.file_id}
+                ref={focusRef} type="button" className="atlas-review-unstage" data-review-remove={file.file_id}
                 aria-disabled={disabled || undefined}
                 aria-label={`Remove ${name} from review`} aria-description={description}
                 onClick={disabled ? undefined : (event) => onRemove(file, event.currentTarget)}
@@ -176,6 +177,7 @@ function OpenReviewDrawer({
   const previewMessageId = useId();
   const verificationHeadingId = useId();
   const initialPosition = useRef(position);
+  const pendingReturn = useRef<{ body: HTMLElement; owner: HTMLElement; initialTop: number; moved: boolean } | null>(null);
   const previousPreview = useRef<CleanupPreview | null | undefined>(undefined);
   const navigation = useAnalysisNavigation(
     ({ file, position }: { file: DuplicateFile; position: ReviewPosition }, signal) => onInspect(file, signal, position),
@@ -194,11 +196,11 @@ function OpenReviewDrawer({
     };
   }, []);
 
-  const trackPreviewFocus = useCallback((section: HTMLElement | null) => {
-    if (!section) return;
+  const trackReviewFocus = useCallback((element: HTMLElement | null) => {
+    if (!element) return;
     return () => {
       const active = document.activeElement;
-      if (!active || !section.contains(active)) return;
+      if (active !== element) return;
       const attribute = active.hasAttribute("data-review-inspect") ? "data-review-inspect" : "data-review-remove";
       const fileId = active.getAttribute(attribute);
       queueMicrotask(() => {
@@ -206,45 +208,78 @@ function OpenReviewDrawer({
         const replacement = fileId ? results.current?.querySelector<HTMLButtonElement>(
           `[${attribute}="${CSS.escape(fileId)}"]`,
         ) : null;
-        if (replacement) replacement.focus();
-        else previewButton.current.focus({ preventScroll: true });
+        (replacement ?? previewButton.current).focus({ preventScroll: true });
+        replacement?.scrollIntoView({ block: "nearest", inline: "nearest" });
       });
     };
   }, []);
 
   const trackPreviewSummary = useCallback((section: HTMLElement | null) => {
     previewSummary.current = section;
-    const restoreFocus = trackPreviewFocus(section);
+    const restoreFocus = trackReviewFocus(section);
     return () => {
       previewSummary.current = null;
       restoreFocus?.();
     };
-  }, [trackPreviewFocus]);
+  }, [trackReviewFocus]);
 
-  useLayoutEffect(() => {
-    const saved = initialPosition.current;
-    if (!saved) return;
-    const button = results.current?.querySelector<HTMLButtonElement>(
+  function restoreInspectRow(body: HTMLElement, saved: ReviewPosition) {
+    const button = body.querySelector<HTMLButtonElement>(
       `[data-review-inspect="${CSS.escape(saved.file_id)}"]:not([aria-disabled="true"])`,
     );
-    const body = results.current?.closest(".atlas-analysis-body");
-    if (!button || !body) {
-      (previewSummary.current ?? previewButton.current)?.focus();
-      return;
-    }
-
+    if (!button) return false;
     body.scrollTop = saved.scroll_top;
     button.focus({ preventScroll: true });
     const bounds = body.getBoundingClientRect();
     const row = button.getBoundingClientRect();
     if (row.top < bounds.top || row.bottom > bounds.bottom) button.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
+  useLayoutEffect(() => {
+    const saved = initialPosition.current;
+    if (!saved) return;
+    const body = results.current?.closest<HTMLElement>(".atlas-analysis-body");
+    if (body && restoreInspectRow(body, saved)) return;
+    const owner = previewSummary.current ?? previewButton.current;
+    owner?.focus();
+    if (!body || !owner || (!loadingPreview && !stagingBusy)) return;
+
+    const pending = { body, owner, initialTop: body.scrollTop, moved: false };
+    pendingReturn.current = pending;
+    const dialog = body.closest("dialog");
+    const trackScroll = () => {
+      if (pendingReturn.current === pending && body.scrollTop !== pending.initialTop) pending.moved = true;
+    };
+    const trackFocus = (event: FocusEvent) => {
+      if (pendingReturn.current === pending && event.target !== owner) pending.moved = true;
+    };
+    body.addEventListener("scroll", trackScroll, { passive: true });
+    dialog?.addEventListener("focusin", trackFocus);
+    return () => {
+      body.removeEventListener("scroll", trackScroll);
+      dialog?.removeEventListener("focusin", trackFocus);
+      if (pendingReturn.current === pending) pendingReturn.current = null;
+    };
   }, []);
+
+  useLayoutEffect(() => {
+    const saved = initialPosition.current;
+    const pending = pendingReturn.current;
+    if (!saved || !pending || loadingPreview || stagingBusy) return;
+    pendingReturn.current = null;
+    // This preview finished while resuming an inspection. The saved row owns any automatic focus.
+    previousPreview.current = preview;
+    const focus = document.activeElement;
+    const ownsFocus = focus === pending.owner || (focus === document.body && !pending.owner.isConnected);
+    if (!pending.moved && ownsFocus && pending.body.scrollTop === pending.initialTop) restoreInspectRow(pending.body, saved);
+  }, [loadingPreview, stagingBusy, preview]);
 
   useEffect(() => {
     const previous = previousPreview.current;
     previousPreview.current = preview;
     const openingWithPreview = previous === undefined && !initialPosition.current;
-    if (preview && preview !== previous && (openingWithPreview || document.activeElement === previewButton.current)) {
+    if (preview && preview !== previous && !pendingReturn.current && (openingWithPreview || document.activeElement === previewButton.current)) {
       previewSummary.current?.focus();
     }
   }, [preview]);
@@ -295,6 +330,7 @@ function OpenReviewDrawer({
   }
   const readyPreview = effectiveReady && preview?.db_entry_count_stable ? preview : null;
   const groups = readyPreview?.review_groups ?? [];
+  const retainedCount = groups.reduce((count, group) => count + group.retained_files.length, 0);
   const groupedIds = new Set(groups.flatMap((group) => group.staged_file_ids));
   const ungrouped = staged.filter((file) => !groupedIds.has(file.file_id));
 
@@ -411,6 +447,7 @@ function OpenReviewDrawer({
                 <h3>Preview passed</h3>
                 <dl className="atlas-analysis-values">
                   <div><dt>Estimated space reclaimed</dt><dd>{formatBytes(readyPreview.staged_files.reduce((sum, file) => sum + file.size_bytes, 0))}</dd></div>
+                  <div><dt>Copies that would remain</dt><dd>{formatCount(retainedCount)}</dd></div>
                   <div><dt>Tracked files</dt><dd>{formatCount(readyPreview.tracked_file_count_before)} → {formatCount(readyPreview.tracked_file_count_after)}</dd></div>
                   <div><dt>Duplicate groups</dt><dd>{formatCount(readyPreview.duplicate_group_count_before)} → {formatCount(readyPreview.duplicate_group_count_after)}</dd></div>
                 </dl>
@@ -425,21 +462,22 @@ function OpenReviewDrawer({
         {groups.map((group) => {
           const removing = group.staged_file_ids.flatMap((id) => stagedById.get(id) ?? []);
           return (
-            <section className="atlas-review-group" key={group.group_id} aria-label="Exact copy group" ref={trackPreviewFocus}>
+            <section className="atlas-review-group" key={group.group_id} aria-label="Exact copy group">
+              <div className="atlas-review-retained">
+                <h3>Would remain</h3>
+                <ul className="atlas-review-files" aria-label="Would remain">
+                  {group.retained_files.map((file) => (
+                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
+                      disabled={busy} focusRef={trackReviewFocus} onInspect={inspectFile} />
+                  ))}
+                </ul>
+              </div>
               <div>
                 <h3>Staged for cleanup</h3>
                 <ul className="atlas-review-files" aria-label="Staged for cleanup">
                   {removing.map((file) => (
                     <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
-                      disabled={busy} onInspect={inspectFile} onRemove={removeFile} />
-                  ))}
-                </ul>
-              </div>
-              <div className="atlas-review-retained">
-                <h3>Would remain</h3>
-                <ul className="atlas-review-files" aria-label="Would remain">
-                  {group.retained_files.map((file) => (
-                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)} disabled={busy} onInspect={inspectFile} />
+                      disabled={busy} focusRef={trackReviewFocus} onInspect={inspectFile} onRemove={removeFile} />
                   ))}
                 </ul>
               </div>
@@ -456,7 +494,8 @@ function OpenReviewDrawer({
               return (
                 <ReviewFile
                   key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warningLabel}
-                  disabled={busy} onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={removeFile}
+                  disabled={busy} focusRef={trackReviewFocus}
+                  onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={removeFile}
                 />
               );
             })}

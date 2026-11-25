@@ -336,7 +336,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
 
   function closeReview() {
-    if (reviewReturn) setAnalysisFocusRequested(true);
     setReviewReturn(null);
     state.setReviewOpen(false);
   }

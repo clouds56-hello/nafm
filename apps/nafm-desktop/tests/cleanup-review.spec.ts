@@ -225,6 +225,79 @@ test("a delayed cleanup preview keeps focus on the control reached while waiting
   }
 });
 
+for (const action of ["Inspect", "Remove"] as const) {
+  test(`a fresh cleanup preview keeps the staged ${action} action focused after regrouping`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 580 });
+    await stageCopy(page, "Backup campaign");
+    await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await stageCopy(page, "Brand campaign");
+
+    await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    await sites.getByRole("button", { name: "Scan Field drive", exact: true }).press("Enter");
+    await expect(sites.getByRole("button", { name: "Stop scan of Field drive", exact: true })).toBeEnabled();
+    await sites.getByRole("button", { name: "Close sites", exact: true }).press("Enter");
+    await inspector(page).getByRole("button", { name: "Open review", exact: true }).press("Enter");
+
+    const dialog = review(page);
+    const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+    const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+    await previewButton.press("Enter");
+    await expect(preview).toContainText("184 GB");
+    await page.clock.runFor(5_700);
+    await expect(preview).toHaveCount(0);
+    await expect(dialog.getByText("Workspace inventory was refreshed. Run a new preview.", { exact: true })).toBeVisible();
+
+    const reply = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { pending: false, release };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "preview_cleanup") {
+          state.pending = true;
+          await gate;
+        }
+        return response;
+      };
+      return state;
+    });
+    const label = action === "Inspect" ? `Inspect ${fileName} in Atlas` : `Remove ${fileName} from review`;
+    const identity = action === "Inspect" ? "data-review-inspect" : "data-review-remove";
+    function actionIn(list: string) {
+      return dialog.getByRole("list", { name: list, exact: true }).getByRole("listitem").filter({ hasText: sourcePath })
+        .getByRole("button", { name: label, exact: true });
+    }
+
+    try {
+      await previewButton.press("Enter");
+      await expect.poll(() => reply.evaluate((state) => state.pending)).toBe(true);
+      const staged = actionIn("Staged copies");
+      const fileId = (await staged.getAttribute(identity))!;
+      await staged.focus();
+      await expect(staged).toBeFocused();
+      await reply.evaluate((state) => state.release());
+
+      await expect(preview).toContainText("184 GB");
+      await expect(staged).toHaveCount(0);
+      const regrouped = actionIn("Staged for cleanup");
+      await expect(regrouped).toHaveAttribute(identity, fileId);
+      await expect(regrouped).toBeFocused();
+      await expect(regrouped).toBeInViewport({ ratio: 0.99 });
+      await expect(regrouped).toBeEnabled();
+    } finally {
+      await reply.evaluate((state) => state.release());
+    }
+  });
+}
+
 test("an inventory refresh interrupts an in-progress cleanup check and allows a new preview", async ({ page }) => {
   await stageCopy(page, "Backup campaign");
   await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
@@ -477,6 +550,7 @@ test.describe("compact cleanup review inspection", () => {
   test.use({ viewport: { width: 390, height: 580 }, hasTouch: true });
 
   test("inspecting retained and staged copies returns to the same preview and row", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 350 });
     await stageCopy(page, "Backup campaign");
     await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
     await expect(currentFolder(page)).toHaveText("Projects");
@@ -501,6 +575,9 @@ test.describe("compact cleanup review inspection", () => {
     await dialog.getByRole("button", { name: "Preview cleanup", exact: true }).tap();
     const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
     await expect(preview).toContainText("184 GB");
+    await expect(preview.getByText("Copies that would remain", { exact: true }).locator("..").locator("dd")).toHaveText("1");
+    await expect(dialog.getByRole("region", { name: "Exact copy group", exact: true })
+      .getByRole("heading").first()).toHaveText("Would remain");
 
     const retained = inspectCopy(dialog, "Would remain", sharedPath);
     const body = dialog.locator(".atlas-analysis-body");
@@ -531,6 +608,88 @@ test.describe("compact cleanup review inspection", () => {
     await expect(preview.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
     expect(await requests.jsonValue()).toEqual(["preview_cleanup", "get_storage_file_reveal", "get_storage_file_reveal"]);
   });
+
+  for (const newer of ["none", "focus", "scroll"] as const) {
+    test(`a pending cleanup preview ${newer === "none" ? "restores the inspected row" : `yields to newer ${newer}`}`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 350 });
+      await stageCopy(page, "Backup campaign");
+      await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+      await expect(currentFolder(page)).toHaveText("Projects");
+      await stageCopy(page, "Brand campaign");
+      await inspector(page).getByRole("button", { name: "Open review", exact: true }).press("Enter");
+
+      const dialog = review(page);
+      const body = dialog.locator(".atlas-analysis-body");
+      const preview = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+      const checking = dialog.getByRole("button", { name: "Checking…", exact: true });
+      const close = dialog.getByRole("button", { name: "Close cleanup review", exact: true });
+      const passed = dialog.getByRole("heading", { name: "Preview passed", exact: true });
+      const retained = inspectCopy(dialog, "Would remain", sharedPath);
+      await preview.press("Enter");
+      await expect(passed).toBeVisible();
+      await retained.scrollIntoViewIfNeeded();
+      await retained.focus();
+      const savedScroll = await body.evaluate((element) => element.scrollTop);
+      expect(savedScroll).toBeGreaterThan(0);
+      await page.keyboard.press("Enter");
+      await expect(dialog).toBeHidden();
+      const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+      await expect(details).toContainText(sharedPath);
+      const back = details.getByRole("button", { name: "Back to review", exact: true });
+      await back.press("Enter");
+      await expect(retained).toBeFocused();
+
+      const hold = await page.evaluateHandle(() => {
+        const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+        };
+        const invoke = bridge.invoke.bind(bridge);
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const read = { pending: false, release };
+        bridge.invoke = async (command, args) => {
+          const response = await invoke(command, args);
+          if (command === "preview_cleanup") {
+            read.pending = true;
+            await gate;
+          }
+          return response;
+        };
+        return read;
+      });
+
+      try {
+        await preview.press("Enter");
+        await expect.poll(() => hold.evaluate((read) => read.pending)).toBe(true);
+        await expect(checking).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+        await expect(back).toBeFocused();
+        await page.keyboard.press("Enter");
+        await expect(checking).toBeFocused();
+        if (newer === "focus") await close.focus();
+        if (newer === "scroll") {
+          const initial = await body.evaluate((element) => element.scrollTop);
+          const bounds = (await body.boundingBox())!;
+          await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+          await page.mouse.wheel(0, initial > 24 ? -24 : 24);
+          await expect.poll(() => body.evaluate((element) => element.scrollTop)).not.toBe(initial);
+        }
+      } finally {
+        await hold.evaluate((read) => read.release());
+      }
+
+      await expect(passed).toBeVisible();
+      if (newer === "none") {
+        await expect(retained).toBeFocused();
+        await expect(retained).toBeInViewport({ ratio: 0.99 });
+        await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(savedScroll, 0);
+      } else {
+        await expect(newer === "focus" ? close : preview).toBeFocused();
+        if (newer === "scroll") expect(await body.evaluate((element) => element.scrollTop)).not.toBeCloseTo(savedScroll, 0);
+      }
+    });
+  }
 
   test("Atlas history restores the review row for each inspected copy", async ({ page }) => {
     await page.keyboard.press("ControlOrMeta+f");
