@@ -246,7 +246,7 @@
 }
 .atlas-directory-placeholder::after { width: 12%; }
 
-.atlas-inspector-pane:has(> .atlas-directory) {
+:is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body) {
   scrollbar-gutter: stable;
   scrollbar-width: auto;
   scrollbar-color: #676d94 var(--atlas-surface);
@@ -254,16 +254,16 @@
 
 /* A styled track keeps the desktop WebKit thumb available before the first scroll. */
 @supports selector(::-webkit-scrollbar) {
-  .atlas-inspector-pane:has(> .atlas-directory) { scrollbar-color: auto; }
-  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar { width: 12px; }
-  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-track { background: var(--atlas-surface); }
-  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-thumb {
+  :is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body) { scrollbar-color: auto; }
+  :is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body)::-webkit-scrollbar { width: 12px; }
+  :is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body)::-webkit-scrollbar-track { background: var(--atlas-surface); }
+  :is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body)::-webkit-scrollbar-thumb {
     min-height: 28px;
     border: 3px solid var(--atlas-surface);
     border-radius: 8px;
     background: #676d94;
   }
-  .atlas-inspector-pane:has(> .atlas-directory)::-webkit-scrollbar-thumb:hover { background: #9198c2; }
+  :is(.atlas-inspector-pane:has(> .atlas-directory), .atlas-file-finder .atlas-analysis-body)::-webkit-scrollbar-thumb:hover { background: #9198c2; }
 }
 
 .atlas-directory-entry {

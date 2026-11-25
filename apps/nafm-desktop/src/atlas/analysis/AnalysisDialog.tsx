@@ -10,13 +10,14 @@ interface AnalysisDialogProps {
   toolbar?: ReactNode;
   initialFocus?: RefObject<HTMLElement | null>;
   closeButtonRef?: RefObject<HTMLButtonElement | null>;
+  bodyRef?: RefObject<HTMLDivElement | null>;
   footer?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDialogElement>;
   onClose: () => void;
 }
 
 export function AnalysisDialog({
-  title, subtitle, drawer, className, children, toolbar, initialFocus, closeButtonRef, footer, onKeyDown, onClose,
+  title, subtitle, drawer, className, children, toolbar, initialFocus, closeButtonRef, bodyRef, footer, onKeyDown, onClose,
 }: AnalysisDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -64,7 +65,7 @@ export function AnalysisDialog({
           </button>
         </header>
         {toolbar}
-        <div className="atlas-analysis-body">{children}</div>
+        <div className="atlas-analysis-body" ref={bodyRef}>{children}</div>
         {footer && <footer className="atlas-analysis-footer">{footer}</footer>}
       </div>
     </dialog>

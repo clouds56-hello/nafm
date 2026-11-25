@@ -1,87 +1,141 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { searchIndexedFiles } from "../lib/tauri";
 import type { IndexedFileSearchResult } from "../lib/types";
 
-const PAGE_SIZE = 24;
-const firstPage = { offset: 0 };
+const PAGE_SIZE = 48;
+const MAX_CACHED_PAGES = 8;
+const MAX_CACHED_QUERIES = 12;
+const firstRow = { start: 0, end: 1 };
 
-export interface FinderSearchResult {
-  key: string;
-  request: typeof firstPage;
-  files: IndexedFileSearchResult[];
-  total: number;
-  next: number | null;
-  error: string | null;
+interface SearchRange {
+  start: number;
+  end: number;
 }
 
-export function useIndexedFileSearch(workspace: string, revision: number, initialQuery: string, cache: Map<string, FinderSearchResult>) {
-  const [query, setQuery] = useState(initialQuery);
+interface CachedSearch {
+  total: number;
+  pages: Map<number, IndexedFileSearchResult[]>;
+}
+
+export type FinderSearchCache = Map<string, CachedSearch>;
+
+function pageOffset(index: number) {
+  return Math.floor(index / PAGE_SIZE) * PAGE_SIZE;
+}
+
+function coveringPages(range: SearchRange, total: number | null): SearchRange {
+  const max = total ?? Infinity;
+  const start = pageOffset(Math.min(range.start, Math.max(0, max - 1)));
+  return { start, end: Math.min(range.end, max, start + MAX_CACHED_PAGES * PAGE_SIZE) };
+}
+
+function includesPage(range: SearchRange, offset: number) {
+  return range.start <= offset && offset < range.end;
+}
+
+function firstMissingPage(range: SearchRange, cached?: CachedSearch) {
+  for (let offset = range.start; offset < range.end; offset += PAGE_SIZE) {
+    if (!cached?.pages.has(offset)) return offset;
+  }
+  return null;
+}
+
+export function useIndexedFileSearch(
+  workspace: string,
+  revision: number,
+  initialQuery: string,
+  initialIndex: number,
+  cache: FinderSearchCache,
+) {
+  const [intent, setIntent] = useState(() => ({
+    query: initialQuery,
+    range: { start: initialIndex, end: initialIndex + 1 },
+  }));
+  const latest = useRef(intent);
+  const [, refreshCache] = useState(0);
+  const [failure, setFailure] = useState<{ key: string; offset: number; message: string } | null>(null);
+  const { query, range } = intent;
   const name = query.trim();
   const key = JSON.stringify([workspace, revision, name]);
-  const [requested, setRequested] = useState<{ key: string; request: typeof firstPage } | null>(null);
-  const [result, setResult] = useState<FinderSearchResult | null>(null);
-  const cached = cache.get(name) ?? null;
-  const request = requested?.key === key ? requested.request : cached?.request ?? firstPage;
-  const current = result?.key === key ? result : cached;
-  const settled = current?.request === request;
-  const loading = Boolean(name) && !settled;
-  const error = settled ? current.error : null;
+  const cached = cache.get(key);
+  const total = name ? cached?.total ?? null : 0;
+  const offset = firstMissingPage(coveringPages(range, total), cached);
+  const error = failure?.key === key && failure.offset === offset ? failure.message : null;
+  const loading = offset !== null && !error;
+  const initialRead = total === null;
 
   useEffect(() => {
-    if (!name || settled) return;
+    if (offset === null || error) return;
     let active = true;
+    // A thumb drag can cross distant windows before settling on one viewport.
     const timer = window.setTimeout(async () => {
+      const stillWanted = () => active && latest.current.query.trim() === name
+        && includesPage(coveringPages(latest.current.range, cache.get(key)?.total ?? null), offset);
+      if (!stillWanted()) return;
       try {
-        const { matches, offset, total_matches } = await searchIndexedFiles(workspace, name, request.offset, PAGE_SIZE);
-        if (!active) return;
-        if (offset !== request.offset) throw new Error("The search returned an unexpected page.");
-        const end = offset + matches.length;
-        setResult((previous) => {
-          const lastPage = previous?.key === key ? previous : cached;
-          const files = offset > 0 ? lastPage?.files ?? [] : [];
-          const seen = new Set(files.map((file) => file.file_id));
-          return {
-            key, request, files: [...files, ...matches.filter((file) => !seen.has(file.file_id))],
-            total: total_matches, next: matches.length > 0 && end < total_matches ? end : null, error: null,
-          };
-        });
+        const page = await searchIndexedFiles(workspace, name, offset, PAGE_SIZE);
+        if (!stillWanted()) return;
+        const count = page.total_matches;
+        if (page.offset !== offset || page.matches.length !== Math.min(PAGE_SIZE, Math.max(0, count - offset))) {
+          throw new Error("The search returned an unexpected page.");
+        }
+
+        const previous = cache.get(key);
+        // A changed result count can move rows between pages.
+        const pages = previous?.total === count ? new Map(previous.pages) : new Map<number, IndexedFileSearchResult[]>();
+        if (offset < count) pages.set(offset, page.matches);
+        const wanted = coveringPages(latest.current.range, count);
+        for (const start of pages.keys()) {
+          if (pages.size <= MAX_CACHED_PAGES) break;
+          if (start !== 0 && !includesPage(wanted, start)) pages.delete(start);
+        }
+        // Enter from the search field can still open the first result after scrolling.
+        if (pages.size > MAX_CACHED_PAGES) pages.delete(0);
+        cache.delete(key);
+        cache.set(key, { total: count, pages });
+        if (cache.size > MAX_CACHED_QUERIES) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
+        refreshCache((version) => version + 1);
       } catch (error) {
-        if (active) {
-          setResult((previous) => {
-            const previousPage = previous?.key === key ? previous : cached;
-            return {
-              key, request, files: previousPage?.files ?? [], total: previousPage?.total ?? 0,
-              next: previousPage?.next ?? null, error: error instanceof Error ? error.message : String(error),
-            };
-          });
+        if (stillWanted()) {
+          setFailure({ key, offset, message: error instanceof Error ? error.message : String(error) });
         }
       }
-    }, request === firstPage ? 160 : 0);
+    }, initialRead ? 160 : 55);
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [cached, key, name, request, settled, workspace]);
+  }, [cache, error, initialRead, key, name, offset, workspace]);
 
-  const next = current?.next;
-  const loadMore = useCallback(() => {
-    if (loading || error || next == null) return;
-    setRequested((previous) => previous?.key === key && previous.request.offset === next
-      ? previous : { key, request: { offset: next } });
-  }, [loading, error, key, next]);
+  const changeQuery = useCallback((text: string) => {
+    const current = latest.current;
+    if (current.query === text) return;
+    const nameChanged = text.trim() !== current.query.trim();
+    const next = { query: text, range: nameChanged ? firstRow : current.range };
+    latest.current = next;
+    setIntent(next);
+    if (nameChanged) setFailure(null);
+  }, []);
 
-  function changeQuery(text: string) {
-    setQuery(text);
-    if (text.trim() !== name) {
-      setRequested(null);
-      setResult(null);
-    }
-  }
+  const loadRange = useCallback((start: number, end: number) => {
+    const current = latest.current;
+    if (!name || current.query.trim() !== name || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    const range = { start: Math.max(0, Math.floor(start)), end: Math.max(1, Math.ceil(end)) };
+    if (range.start === current.range.start && range.end === current.range.end) return;
+    const next = { query: current.query, range };
+    latest.current = next;
+    setIntent(next);
+    setFailure((previous) => previous?.key === key && includesPage(coveringPages(range, total), previous.offset)
+      ? previous : null);
+  }, [key, name, total]);
 
-  return {
-    query, name, changeQuery, loading, error, files: current?.files ?? [], total: current?.total ?? 0, hasMore: next != null,
-    loadMore,
-    remember: () => { if (current && !current.error) cache.set(name, current); },
-    retry: () => setRequested({ key, request: { ...request } }),
-  };
+  const fileAt = useCallback((index: number) => {
+    const offset = pageOffset(index);
+    return cached?.pages.get(offset)?.[index - offset];
+  }, [cached]);
+
+  return { query, name, key, changeQuery, loading, error, total, fileAt, loadRange, retry: () => setFailure(null) };
 }

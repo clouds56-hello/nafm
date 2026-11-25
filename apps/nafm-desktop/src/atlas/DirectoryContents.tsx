@@ -321,7 +321,8 @@ export function DirectoryContents({
               if (!node) return <li key={index} style={style} className="atlas-directory-placeholder" aria-hidden="true" role="presentation" />;
               const isFile = node.kind === "file";
               return (
-                <li key={node.id} style={style} role="row" aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
+                <li key={node.id} style={style} role="row" data-virtual-row={index}
+                  aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
                   <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => {
                     setCursors((saved) => saved.get(contentsKey) === node.id ? saved : new Map(saved).set(contentsKey, node.id));
                   }}>

@@ -329,8 +329,8 @@ export interface FinderPosition {
   session: symbol;
   query: string;
   file_id: string;
-  scroll_top: number;
-  loaded_count: number;
+  row_index: number;
+  scroll_position: number | "end";
 }
 
 export interface ScanSelector {

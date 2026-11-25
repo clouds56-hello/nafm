@@ -10,11 +10,14 @@ interface ViewportOptions {
   reveal?: { index: number; onApplied: () => void };
   total: number;
   active: boolean;
+  rowHeightProperty?: string;
   scrollPane: RefObject<HTMLDivElement | null>;
   scrollPositions: Map<string, number | "end">;
 }
 
-export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, active, scrollPane, scrollPositions }: ViewportOptions) {
+export function useDirectoryViewport({
+  contentsKey, anchorIndex, reveal, total, active, rowHeightProperty = "--directory-row-height", scrollPane, scrollPositions,
+}: ViewportOptions) {
   const listRef = useRef<HTMLUListElement>(null);
   const [geometry, setGeometry] = useState({ key: "", first: 0, capacity: 8, rowHeight: 38, shift: 0 });
   const scale = useRef(1);
@@ -38,9 +41,9 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, 
       const maxTop = pane.scrollHeight - pane.clientHeight;
       const atEnd = maxTop > 0 && top >= maxTop - 1;
       scrollPositions.set(contentsKey, atEnd ? "end" : logicalTop / rowHeight);
-      const focusedRow = document.activeElement?.closest<HTMLElement>('[aria-rowindex]');
+      const focusedRow = document.activeElement?.closest<HTMLElement>("[data-virtual-row]");
       if (focusedRow && list.contains(focusedRow)) {
-        const index = Number(focusedRow.getAttribute("aria-rowindex")) - 1;
+        const index = Number(focusedRow.dataset.virtualRow);
         if (index < first - OVERSCAN || index > first + capacity + OVERSCAN) list.focus({ preventScroll: true });
       }
       setGeometry((old) => old.key === contentsKey && old.first === first && old.capacity === capacity
@@ -52,7 +55,7 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, 
       if (!pane.clientHeight) return;
       const oldHeight = rowHeight;
       const oldScale = scale.current;
-      rowHeight = Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height"));
+      rowHeight = Number.parseFloat(getComputedStyle(list).getPropertyValue(rowHeightProperty));
       const visibleRows = (pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight;
       capacity = Math.max(1, Math.ceil(visibleRows));
       const oldRange = physicalRange;
@@ -83,11 +86,12 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, 
       resize.disconnect();
       pane.removeEventListener("scroll", readPosition);
     };
-  }, [active, contentsKey, anchorIndex, reveal, scrollPane, scrollPositions, total]);
+  }, [active, contentsKey, anchorIndex, reveal, rowHeightProperty, scrollPane, scrollPositions, total]);
 
   const position = scrollPositions.get(contentsKey) ?? anchorIndex;
   const savedRow = position === "end" ? Math.max(0, total - geometry.capacity) : Math.floor(position);
-  const first = geometry.key === contentsKey ? geometry.first : savedRow;
+  const ready = geometry.key === contentsKey;
+  const first = ready ? geometry.first : savedRow;
   const start = Math.max(0, Math.min(first, total - 1) - OVERSCAN);
   const end = Math.min(total, first + geometry.capacity + OVERSCAN + 1);
   function scrollToRow(index: number) {
@@ -95,9 +99,9 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, 
     if (pane) pane.scrollTop = index * geometry.rowHeight / scale.current;
   }
   return {
-    listRef, start, end, first, capacity: geometry.capacity, ready: geometry.key === contentsKey,
-    trackHeight: `min(${MAX_TRACK_HEIGHT}px, calc(${total} * var(--directory-row-height)))`,
-    rowTop: (index: number) => index * geometry.rowHeight - geometry.shift,
+    listRef, start, end, first, capacity: geometry.capacity, ready,
+    trackHeight: `min(${MAX_TRACK_HEIGHT}px, calc(${total} * var(${rowHeightProperty})))`,
+    rowTop: (index: number) => ready ? index * geometry.rowHeight - geometry.shift : `calc(${index} * var(${rowHeightProperty}))`,
     scrollToRow,
   };
 }

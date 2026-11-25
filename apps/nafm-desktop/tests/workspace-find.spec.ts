@@ -195,6 +195,118 @@ test("Find files restores a late result and its scroll position while Atlas Back
   await expect(result(dialog, /Proof 095\.jpg/i)).toHaveCount(0);
 });
 
+test("Find files can seek across hundreds of matches and return to the inspected result", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 750 });
+  await page.goto("/mock/?scenario=large");
+  const offsets = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { query?: string; offset?: number }) => Promise<unknown> };
+    };
+    const reads: number[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = (command, args) => {
+      if (command === "search_indexed_files" && args.query?.toLowerCase() === ".tif") {
+        reads.push(Number(args.offset ?? 0));
+      }
+      return invoke(command, args);
+    };
+    return reads;
+  });
+
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+  const dialog = finder(page);
+  const input = query(dialog);
+  const search = "  .tIf  ";
+  const first = result(dialog, /^Botanical study 0016\.tif/);
+  const last = result(dialog, /^Print masters\.tif/);
+  const previous = result(dialog, /^Studio session 3977\.tif/);
+  const pane = dialog.locator(".atlas-analysis-body");
+  const matches = dialog.getByRole("list", { name: "Matching files", exact: true });
+  await input.fill(search);
+  await expect(dialog.getByRole("status").filter({ hasText: "802 matches" })).toBeVisible();
+  await expect(first).toBeInViewport();
+  await expect(last).toHaveCount(0);
+  const rowHeight = (await first.boundingBox())!.height;
+  const trackHeight = await pane.evaluate((body) => body.scrollHeight);
+  expect(trackHeight).toBeGreaterThan(802 * rowHeight * 0.95);
+
+  await pane.evaluate((body) => { body.scrollTop = body.scrollHeight; });
+  await expect(last).toBeInViewport({ ratio: 0.99 });
+  const soughtOffsets = await offsets.jsonValue();
+  expect(soughtOffsets[0]).toBe(0);
+  expect(soughtOffsets.some((offset) => offset >= 700)).toBe(true);
+  expect(soughtOffsets.filter((offset) => offset > 100 && offset < 700)).toEqual([]);
+  expect(await matches.getByRole("button").count()).toBeLessThan(100);
+  expect(await pane.evaluate((body) => body.scrollHeight)).toBe(trackHeight);
+
+  await last.focus();
+  await page.keyboard.press("Home");
+  await expect(first).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 0.99 });
+  const savedScroll = await pane.evaluate((body) => body.scrollTop);
+  await last.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page).getByRole("heading", { name: "Print masters.tif", exact: true })).toBeVisible();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(search);
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 0.99 });
+  expect(await pane.evaluate((body) => body.scrollTop)).toBeCloseTo(savedScroll, 0);
+  await page.keyboard.press("ArrowUp");
+  await expect(previous).toBeFocused();
+});
+
+test("Home supersedes a pending Finder End jump without losing focus", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  const distantRead = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { query?: string; offset?: number }) => Promise<unknown> };
+    };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      if (read.pending || command !== "search_indexed_files" || args.query !== ".tif" || Number(args.offset) < 700) {
+        return invoke(command, args);
+      }
+      read.pending = true;
+      const page = await invoke(command, args);
+      await gate;
+      requestAnimationFrame(() => { read.replied = true; });
+      return page;
+    };
+    return read;
+  });
+
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  const input = query(dialog);
+  const first = result(dialog, /^Botanical study 0016\.tif/);
+  const second = result(dialog, /^Botanical study 0046\.tif/);
+  await input.fill(".tif");
+  await expect(first).toBeInViewport();
+  await input.press("ArrowDown");
+  await expect(first).toBeFocused();
+
+  try {
+    await page.keyboard.press("End");
+    await expect.poll(() => distantRead.evaluate((read) => read.pending)).toBe(true);
+    await page.keyboard.press("Home");
+    await expect(first).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(second).toBeFocused();
+  } finally {
+    await distantRead.evaluate((read) => read.release());
+  }
+  await expect.poll(() => distantRead.evaluate((read) => read.replied)).toBe(true);
+  await expect(second).toBeFocused();
+  await expect(second).toBeInViewport();
+});
+
 test("Find files restores the search that opened each inspected result in Atlas history", async ({ page }) => {
   await page.goto("/mock/");
   await page.getByRole("button", { name: "Find files", exact: true }).click();
