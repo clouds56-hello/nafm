@@ -10,6 +10,7 @@ import {
   getStorageNodeReveal,
   getStorageViewSnapshot,
   loadDashboard,
+  moveStageHistory,
   onScanTaskEvent,
   openFolderIn,
   previewCleanup,
@@ -48,6 +49,8 @@ import type {
   ScanTask,
   ScanTaskEvent,
   SiteOverview,
+  StageHistoryRequest,
+  StageHistoryState,
   StorageNode,
   StorageChildrenPage,
   StorageDirectoryFilter,
@@ -257,6 +260,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const finalAnalysisRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalAnalysisRefreshSitesRef = useRef<Set<string>>(new Set());
   const cleanupPreviewRequestRef = useRef(0);
+  const stagingInProgress = useRef(false);
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
 
@@ -1467,20 +1471,63 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     return result.location;
   }, [revealFile]);
 
-  const updateStaged = useCallback((update: DuplicateFile[] | ((files: DuplicateFile[]) => DuplicateFile[])) => {
+  const updateStaged = useCallback((update: (files: DuplicateFile[]) => DuplicateFile[], history: StageHistoryState) => {
     invalidateCleanupPreview();
     const current = dashboardRef.current;
     if (!current) return;
+    dashboardRequestRef.current += 1;
+    setLoading(false);
     const next = {
       ...current,
-      staged: typeof update === "function" ? update(current.staged) : update,
+      staged: update(current.staged),
+      stage_history: history,
     };
     dashboardRef.current = next;
     setDashboard(next);
   }, [invalidateCleanupPreview]);
 
+  const applyStagingReport = useCallback((report: CleanupPreview) => {
+    const current = dashboardRef.current;
+    if (!current) return;
+    const next = {
+      ...current,
+      staged: report.staged_files,
+      staged_hashes_pending: report.hashes_pending,
+      staged_cleanup_ready: report.cleanup_ready,
+      staged_warnings: report.warnings,
+      staged_verification_blockers: report.verification_blockers,
+      stage_history: report.stage_history,
+    };
+    dashboardRef.current = next;
+    setDashboard(next);
+  }, []);
+
+  const runStageMutation = useCallback(async (
+    mutate: (workspace: string) => Promise<void>, onError: (message: string) => void,
+  ) => {
+    if (stagingInProgress.current) return false;
+    const workspace = workspaceNameRef.current;
+    if (!workspace) {
+      onError("Workspace is still loading.");
+      return false;
+    }
+    stagingInProgress.current = true;
+    setStagingBusy(true);
+    try {
+      await mutate(workspace);
+      return workspaceNameRef.current === workspace;
+    } catch (error) {
+      if (workspaceNameRef.current === workspace) onError(errorMessage(error));
+      return false;
+    } finally {
+      stagingInProgress.current = false;
+      setStagingBusy(false);
+    }
+  }, []);
+
   const stageSelected = useCallback(async () => {
-    if (!activeSelectedNode?.path || healthMetric !== "space_health") return;
+    const path = activeSelectedNode?.path;
+    if (!path || healthMetric !== "space_health") return;
     const selectedSite = dashboardRef.current?.sites.find(
       (site) => site.id === selectedSiteRef.current,
     ) ?? null;
@@ -1488,18 +1535,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setNotice("Hashes are pending. Duplicate staging will resume when analysis is ready.");
       return;
     }
-    setStagingBusy(true);
-    setNotice(null);
-    try {
-      const workspaceName = workspaceNameRef.current;
-      if (!workspaceName) throw new Error("Workspace is still loading.");
-      const report = await stagePath(activeSelectedNode.path, workspaceName);
+    await runStageMutation(async (workspace) => {
+      setNotice(null);
+      const report = await stagePath(path, workspace);
+      if (workspaceNameRef.current !== workspace) return;
       const additions = report.staged_files;
       updateStaged((current) => {
         const byId = new Map(current.map((file) => [file.file_id, file]));
         additions.forEach((file) => byId.set(file.file_id, file));
         return [...byId.values()];
-      });
+      }, report.stage_history);
       if (report.warnings.length > 0) {
         const kept = report.warnings.filter((warning) => warning.reason === "would_remove_last_copy").length;
         const other = report.warnings.length - kept;
@@ -1509,34 +1554,39 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         ].filter(Boolean);
         setNotice(notes.join(" "));
       }
-    } catch (stageError) {
-      setNotice(errorMessage(stageError));
-    } finally {
-      setStagingBusy(false);
-    }
-  }, [activeSelectedNode, healthMetric, updateStaged]);
+    }, setNotice);
+  }, [activeSelectedNode, healthMetric, runStageMutation, updateStaged]);
 
   const removeStaged = useCallback(async (path: string) => {
-    setStagingBusy(true);
-    setReviewError(null);
-    try {
-      const workspaceName = workspaceNameRef.current;
-      if (!workspaceName) throw new Error("Workspace is still loading.");
-      const report = await unstagePath(path, workspaceName);
+    await runStageMutation(async (workspace) => {
+      setReviewError(null);
+      const report = await unstagePath(path, workspace);
+      if (workspaceNameRef.current !== workspace) return;
       const removed = new Set(report.removed_files.map((file) => file.file_id));
-      updateStaged((current) => current.filter((file) => !removed.has(file.file_id)));
-      void reloadDashboard();
-    } catch (unstageError) {
-      setReviewError(errorMessage(unstageError));
-    } finally {
-      setStagingBusy(false);
+      updateStaged((current) => current.filter((file) => !removed.has(file.file_id)), report.stage_history);
+      await reloadDashboard();
+    }, setReviewError);
+  }, [reloadDashboard, runStageMutation, updateStaged]);
+
+  const stepStageHistory = useCallback((request: StageHistoryRequest) => runStageMutation(async (workspace) => {
+    setReviewError(null);
+    invalidateCleanupPreview();
+    try {
+      const report = await moveStageHistory(workspace, request);
+      if (workspaceNameRef.current !== workspace) return;
+      dashboardRequestRef.current += 1;
+      setLoading(false);
+      applyStagingReport(report);
+    } catch (error) {
+      if (workspaceNameRef.current === workspace) await reloadDashboard();
+      throw error;
     }
-  }, [reloadDashboard, updateStaged]);
+  }, setReviewError), [applyStagingReport, invalidateCleanupPreview, reloadDashboard, runStageMutation]);
 
   const runPreview = useCallback(async () => {
     const currentDashboard = dashboardRef.current;
     const workspace = workspaceNameRef.current;
-    if (!workspace || !currentDashboard?.staged.length) return;
+    if (!workspace || !currentDashboard?.staged.length || stagingInProgress.current) return;
     if (currentDashboard && !currentDashboard.staged_cleanup_ready) {
       setReviewError(currentDashboard.staged_hashes_pending > 0
         ? "Hashes are pending for staged copies. Finish hashing before running the cleanup safety check."
@@ -1552,19 +1602,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       const report = await previewCleanup(workspace);
       if (cleanupPreviewRequestRef.current !== requestId || workspaceNameRef.current !== workspace) return;
       setPreview(report);
-      const current = dashboardRef.current;
-      if (current) {
-        const next = {
-          ...current,
-          staged: report.staged_files,
-          staged_hashes_pending: report.hashes_pending,
-          staged_cleanup_ready: report.cleanup_ready,
-          staged_warnings: report.warnings,
-          staged_verification_blockers: report.verification_blockers,
-        };
-        dashboardRef.current = next;
-        setDashboard(next);
-      }
+      applyStagingReport(report);
     } catch (previewError) {
       if (cleanupPreviewRequestRef.current === requestId) {
         setReviewError(errorMessage(previewError));
@@ -1572,7 +1610,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     } finally {
       if (cleanupPreviewRequestRef.current === requestId) setPreviewLoading(false);
     }
-  }, []);
+  }, [applyStagingReport]);
 
   const activeSite = dashboard?.sites.find((site) => site.id === activeSiteId) ?? null;
   const coverageTargetSite = dashboard?.sites.find((site) => site.id === coverageTargetSiteId) ?? null;
@@ -1681,6 +1719,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     stagingBusy,
     stageSelected,
     removeStaged,
+    stepStageHistory,
     isSelectedStaged,
     reviewOpen,
     setReviewOpen,
@@ -1744,6 +1783,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     forwardHistory.length,
     stageSelected,
     stagingBusy,
+    stepStageHistory,
     treeError,
     treeLoading,
     goBack,

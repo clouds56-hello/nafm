@@ -125,6 +125,9 @@
   row-gap: 8px;
 }
 
+.atlas-review-history { display: flex; align-items: center; gap: 4px; }
+.atlas-cleanup-review .atlas-review-history button { min-width: 44px; text-align: center; }
+
 .atlas-review-inspect-error {
   flex: 0 0 100%;
   margin: 0;

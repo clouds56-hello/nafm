@@ -46,7 +46,7 @@ test.beforeEach(async ({ page }) => {
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
-test("cleanup review shows the one remaining copy and refreshes after a removal", async ({ page }) => {
+test("cleanup review can undo and redo a removal before running a fresh preview", async ({ page }) => {
   await stageCopy(page, "Backup campaign");
   await folderPath(page).getByRole("button", { name: "Projects", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Projects");
@@ -58,6 +58,26 @@ test("cleanup review shows the one remaining copy and refreshes after a removal"
   await expect(dialog).toBeVisible();
   const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
   const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+  const undo = dialog.getByRole("button", { name: "Undo staging change", exact: true });
+  const redo = dialog.getByRole("button", { name: "Redo staging change", exact: true });
+  await expect(undo).toBeEnabled();
+  await expect(redo).toBeDisabled();
+
+  const calls = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { request?: { direction: string } }) => Promise<unknown> };
+    };
+    const watched = new Set(["preview_cleanup", "stage_path", "unstage_path", "move_stage_history"]);
+    const requests: string[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = (command, args) => {
+      if (watched.has(command)) {
+        requests.push(command === "move_stage_history" ? `${command} ${args.request?.direction}` : command);
+      }
+      return invoke(command, args);
+    };
+    return requests;
+  });
   await previewButton.click();
 
   await expect(preview).toBeFocused();
@@ -78,15 +98,96 @@ test("cleanup review shows the one remaining copy and refreshes after a removal"
   await expect(retained).toContainText(sharedPath);
 
   await staged.getByRole("listitem").filter({ hasText: sourcePath })
-    .getByRole("button", { name: `Remove ${fileName} from review`, exact: true }).click();
+    .getByRole("button", { name: `Remove ${fileName} from review`, exact: true }).press("Enter");
   await expect(preview).toBeHidden();
   await expect(dialog.getByText(sourcePath, { exact: true })).toHaveCount(0);
   await expect(dialog.getByText(backupPath, { exact: true })).toBeVisible();
+  await expect(undo).toBeFocused();
+  await expect(undo).toBeEnabled();
+  await expect(redo).toBeDisabled();
+  expect(await calls.jsonValue()).toEqual(["preview_cleanup", "unstage_path"]);
+
+  await page.keyboard.press("Enter");
+  const stagedCopies = dialog.getByRole("list", { name: "Staged copies", exact: true });
+  await expect(stagedCopies).toContainText(sourcePath);
+  await expect(stagedCopies).toContainText(backupPath);
+  await expect(redo).toBeEnabled();
+  await expect(preview).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  expect(await calls.jsonValue()).toEqual(["preview_cleanup", "unstage_path", "move_stage_history undo"]);
+
+  await previewButton.click();
+  await expect(preview).toContainText("184 GB");
+  await expect(retained.getByRole("listitem")).toHaveCount(1);
+  await expect(retained).toContainText(sharedPath);
+
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect(redo).toBeFocused();
+  await expect(redo).toBeDisabled();
+  await expect(preview).toBeHidden();
+  await expect(stagedCopies).toContainText(backupPath);
+  await expect(dialog.getByText(sourcePath, { exact: true })).toHaveCount(0);
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  expect(await calls.jsonValue()).toEqual([
+    "preview_cleanup", "unstage_path", "move_stage_history undo", "preview_cleanup", "move_stage_history redo",
+  ]);
+
   await previewButton.click();
   await expect(preview).toContainText("92 GB");
   await expect(retained.getByRole("listitem")).toHaveCount(2);
   await expect(retained).toContainText(sourcePath);
   await expect(retained).toContainText(sharedPath);
+});
+
+test("cleanup review refreshes staging when a newer change invalidates an undo", async ({ page }) => {
+  await stageCopy(page, "Backup campaign");
+  await folderPath(page).getByRole("button", { name: "Projects", exact: true }).click();
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await stageCopy(page, "Brand campaign");
+
+  const dialog = review(page);
+  await inspector(page).getByRole("button", { name: "Open review", exact: true }).click();
+  const undo = dialog.getByRole("button", { name: "Undo staging change", exact: true });
+  const redo = dialog.getByRole("button", { name: "Redo staging change", exact: true });
+  const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+  const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+  await expect(undo).toBeEnabled();
+  await previewButton.click();
+  await expect(preview).toContainText("184 GB");
+
+  await page.evaluate((path) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let pendingExternalChange = true;
+    bridge.invoke = async (command, args) => {
+      if (command === "move_stage_history" && pendingExternalChange) {
+        pendingExternalChange = false;
+        await invoke("unstage_path", { path, expectedWorkspace: args.expectedWorkspace });
+      }
+      return invoke(command, args);
+    };
+  }, backupPath);
+
+  await undo.press("Enter");
+  await expect(dialog.getByRole("alert")).toContainText(/(?:stag|history).*chang/i);
+  await expect(preview).toBeHidden();
+  const staged = dialog.getByRole("list", { name: "Staged copies", exact: true });
+  await expect(staged.getByRole("listitem")).toHaveCount(1);
+  await expect(staged).toContainText(sourcePath);
+  await expect(staged).not.toContainText(backupPath);
+  await expect(undo).toBeFocused();
+  await expect(undo).toBeEnabled();
+  await expect(redo).toBeDisabled();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+
+  await page.keyboard.press("Enter");
+  await expect(staged).toContainText(sourcePath);
+  await expect(staged).toContainText(backupPath);
+  await expect(redo).toBeEnabled();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(preview).toBeHidden();
 });
 
 test("pending hashes block a previously eligible cleanup preview", async ({ page }) => {

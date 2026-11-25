@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nafm_core::{StageAddReport, StageCommitDryRun, StageRemoveReport};
+use nafm_core::{StageAddReport, StageCommitDryRun, StageHistoryRequest, StageRemoveReport};
 use tauri::State;
 
 use crate::state::AppState;
@@ -41,6 +41,20 @@ pub async fn preview_cleanup(
   let repository = state.repository_for(&expected_workspace).await?;
   repository
     .stage_commit_dry_run()
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn move_stage_history(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  request: StageHistoryRequest,
+) -> Result<StageCommitDryRun, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&expected_workspace).await?;
+  repository
+    .move_stage_history(request)
     .await
     .map_err(|error| error.to_string())
 }

@@ -392,12 +392,16 @@ pub enum StageWarningReason {
 pub struct StageAddReport {
   pub staged_files: Vec<DuplicateFile>,
   pub warnings: Vec<StageWarning>,
+  #[serde(default)]
+  pub stage_history: StageHistoryState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StageRemoveReport {
   pub removed_files: Vec<DuplicateFile>,
   pub warnings: Vec<StageWarning>,
+  #[serde(default)]
+  pub stage_history: StageHistoryState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -409,6 +413,27 @@ pub struct StageResetReport {
 pub struct StageHistoryReport {
   pub applied: bool,
   pub restored_files: Vec<DuplicateFile>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StageHistoryState {
+  pub snapshot_id: String,
+  pub undo_snapshot_id: Option<String>,
+  pub redo_snapshot_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageHistoryDirection {
+  Undo,
+  Redo,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StageHistoryRequest {
+  pub direction: StageHistoryDirection,
+  pub expected_snapshot_id: String,
+  pub target_snapshot_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -430,6 +455,8 @@ pub struct StageCommitDryRun {
   pub hashes_pending: u64,
   pub cleanup_ready: bool,
   pub warnings: Vec<StageWarning>,
+  #[serde(default)]
+  pub stage_history: StageHistoryState,
   /// Sites to verify before checking the affected staged files again.
   #[serde(default)]
   pub verification_blockers: Vec<StageVerificationBlocker>,

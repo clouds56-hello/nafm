@@ -181,6 +181,7 @@ export interface Dashboard {
   staged_cleanup_ready: boolean;
   staged_warnings: StageWarning[];
   staged_verification_blockers: StageVerificationBlocker[];
+  stage_history: StageHistoryState;
   last_updated_at: string;
 }
 
@@ -433,11 +434,27 @@ export interface StageVerificationBlocker {
 export interface StageAddReport {
   staged_files: DuplicateFile[];
   warnings: StageWarning[];
+  stage_history: StageHistoryState;
 }
 
 export interface StageRemoveReport {
   removed_files: DuplicateFile[];
   warnings: StageWarning[];
+  stage_history: StageHistoryState;
+}
+
+export interface StageHistoryState {
+  snapshot_id: string;
+  undo_snapshot_id: string | null;
+  redo_snapshot_id: string | null;
+}
+
+export type StageHistoryDirection = "undo" | "redo";
+
+export interface StageHistoryRequest {
+  direction: StageHistoryDirection;
+  expected_snapshot_id: string;
+  target_snapshot_id: string;
 }
 
 export interface CleanupPreview {
@@ -446,6 +463,7 @@ export interface CleanupPreview {
   cleanup_ready: boolean;
   warnings: StageWarning[];
   verification_blockers: StageVerificationBlocker[];
+  stage_history: StageHistoryState;
   tracked_file_count_before: number;
   tracked_file_count_after: number;
   duplicate_group_count_before: number;

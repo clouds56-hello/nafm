@@ -32,6 +32,8 @@ pub enum NafmError {
   TrackedFileNotFound(String),
   #[error("no stage history available for {0}")]
   StageHistoryUnavailable(&'static str),
+  #[error("The staged list changed. Review the updated list before using Undo or Redo.")]
+  StageHistoryChanged,
   #[error("site name cannot be empty")]
   EmptySiteName,
   #[error("cache path has no parent directory: {0}")]

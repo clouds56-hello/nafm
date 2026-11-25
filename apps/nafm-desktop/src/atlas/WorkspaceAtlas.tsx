@@ -815,6 +815,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           cleanupReady={dashboard.staged_cleanup_ready}
           warnings={dashboard.staged_warnings}
           verificationBlockers={dashboard.staged_verification_blockers}
+          stageHistory={dashboard.stage_history}
           verificationForSite={(id) => {
             const blockedSite = dashboard.sites.find((item) => item.id === id);
             return blockedSite ? siteVerification(blockedSite, { ...verificationScanState(id), verificationRequired: true }) : undefined;
@@ -828,6 +829,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           onClose={closeReview}
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
+          onHistoryStep={state.stepStageHistory}
           onInspect={state.jumpToContentMatch}
           onInspected={(file, position) => {
             setReviewInspection({ workspace: dashboard.workspace_name, siteId: file.site_id, path: file.path, position, returning: false });

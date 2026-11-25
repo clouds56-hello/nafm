@@ -1,6 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
-import type { CleanupPreview, DuplicateFile, SiteOverview, StageVerificationBlocker, StageWarning, StageWarningReason } from "../../lib/types";
+import type {
+  CleanupPreview, DuplicateFile, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
+  StageVerificationBlocker, StageWarning, StageWarningReason,
+} from "../../lib/types";
 import type { ScanSite, SiteVerification } from "../siteVerification";
 import { VerificationScanButton } from "../VerificationScanButton";
 import { AnalysisDialog } from "./AnalysisDialog";
@@ -21,6 +24,7 @@ interface ReviewDrawerProps {
   warnings: StageWarning[];
   verificationBlockers: readonly StageVerificationBlocker[];
   verificationForSite: (id: string) => SiteVerification | undefined;
+  stageHistory: StageHistoryState;
   preview: CleanupPreview | null;
   loadingPreview: boolean;
   stagingBusy?: boolean;
@@ -30,6 +34,7 @@ interface ReviewDrawerProps {
   onPreview: () => void;
   onScanSite: ScanSite;
   onRemove: (path: string) => void;
+  onHistoryStep: (request: StageHistoryRequest) => Promise<boolean>;
   onInspect: (file: DuplicateFile, signal: AbortSignal) => Promise<string | null>;
   onInspected: (file: DuplicateFile, position: ReviewPosition) => void;
 }
@@ -47,7 +52,7 @@ interface ReviewFileProps {
   site?: string;
   warning?: string;
   disabled: boolean;
-  onRemove?: (path: string) => void;
+  onRemove?: (file: DuplicateFile, button: HTMLButtonElement) => void;
   onInspect?: (file: DuplicateFile) => void;
 }
 
@@ -80,9 +85,9 @@ function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: Revi
             )}
             {onRemove && (
               <button
-                type="button" className="atlas-review-unstage" disabled={disabled}
+                type="button" className="atlas-review-unstage" aria-disabled={disabled || undefined}
                 aria-label={`Remove ${name} from review`} aria-description={description}
-                onClick={() => onRemove(file.path)}
+                onClick={disabled ? undefined : (event) => onRemove(file, event.currentTarget)}
               >
                 Remove from review
               </button>
@@ -142,6 +147,7 @@ function OpenReviewDrawer({
   warnings,
   verificationBlockers,
   verificationForSite,
+  stageHistory,
   preview,
   loadingPreview,
   stagingBusy,
@@ -151,12 +157,17 @@ function OpenReviewDrawer({
   onPreview,
   onScanSite,
   onRemove,
+  onHistoryStep,
   onInspect,
   onInspected,
 }: Omit<ReviewDrawerProps, "open">) {
   const results = useRef<HTMLDivElement>(null);
   const previewButton = useRef<HTMLButtonElement>(null);
   const previewSummary = useRef<HTMLElement>(null);
+  const undoButton = useRef<HTMLButtonElement>(null);
+  const redoButton = useRef<HTMLButtonElement>(null);
+  const removalFocus = useRef<{ id: string; button: HTMLButtonElement } | null>(null);
+  const [historyAnnouncement, setHistoryAnnouncement] = useState("");
   const blockedMessageId = useId();
   const verificationHeadingId = useId();
   const initialPosition = useRef(position);
@@ -166,6 +177,17 @@ function OpenReviewDrawer({
     onClose,
     ({ file, position }) => onInspected(file, position),
   );
+
+  const trackHistoryFocus = useCallback((controls: HTMLDivElement | null) => {
+    if (!controls) return;
+    return () => {
+      if (!controls.contains(document.activeElement)) return;
+      const fallback = previewButton.current;
+      queueMicrotask(() => {
+        if (fallback?.isConnected && document.activeElement === document.body) fallback.focus({ preventScroll: true });
+      });
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const saved = initialPosition.current;
@@ -191,6 +213,19 @@ function OpenReviewDrawer({
     previousPreview.current = preview;
   }, [preview]);
 
+  useLayoutEffect(() => {
+    const removal = removalFocus.current;
+    if (!removal) return;
+    if (staged.some((file) => file.file_id === removal.id)) {
+      if (!stagingBusy) removalFocus.current = null;
+      return;
+    }
+    removalFocus.current = null;
+    if (document.activeElement === document.body || document.activeElement === removal.button) {
+      (undoButton.current ?? previewButton.current)?.focus({ preventScroll: true });
+    }
+  }, [staged, stagingBusy]);
+
   const totalBytes = staged.reduce((sum, file) => sum + file.size_bytes, 0);
   const pending = Math.max(hashesPending, preview?.hashes_pending ?? 0);
   const blockedWarnings = preview && !preview.cleanup_ready ? preview.warnings : warnings;
@@ -202,6 +237,8 @@ function OpenReviewDrawer({
   const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0 && activeBlockers.length === 0;
   const busy = Boolean(loadingPreview || stagingBusy || navigation.opening);
   const canPreview = staged.length > 0 && effectiveReady && !busy;
+  const undoSnapshot = stageHistory?.undo_snapshot_id;
+  const redoSnapshot = stageHistory?.redo_snapshot_id;
   const blockedPaths = new Map(blockedWarnings.map(({ path, reason }) => [path, reason]));
   const siteNames = new Map(sites.map((site) => [site.id, site.name]));
   const verificationSites = activeBlockers.flatMap(({ siteId, files }) => {
@@ -220,16 +257,54 @@ function OpenReviewDrawer({
     void navigation.show({ file, position: { file_id: file.file_id, scroll_top: body?.scrollTop ?? 0 } });
   }
 
+  function removeFile(file: DuplicateFile, button: HTMLButtonElement) {
+    button.focus({ preventScroll: true });
+    removalFocus.current = { id: file.file_id, button };
+    onRemove(file.path);
+  }
+
+  async function stepHistory(direction: StageHistoryDirection) {
+    const target = direction === "undo" ? undoSnapshot : redoSnapshot;
+    if (!target || busy) return;
+    (direction === "undo" ? undoButton : redoButton).current?.focus({ preventScroll: true });
+    setHistoryAnnouncement("");
+    if (await onHistoryStep({ direction, expected_snapshot_id: stageHistory.snapshot_id, target_snapshot_id: target })) {
+      setHistoryAnnouncement(direction === "undo" ? "Staging change undone." : "Staging change redone.");
+    }
+  }
+
+  function handleHistoryKeys(event: KeyboardEvent<HTMLDialogElement>) {
+    if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey || event.nativeEvent.isComposing) return;
+    if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
+    const key = event.key.toLowerCase();
+    if (key === "z" || (key === "y" && event.ctrlKey && !event.shiftKey)) {
+      event.preventDefault();
+      void stepHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+    }
+  }
+
   return (
     <AnalysisDialog
       title="Cleanup review"
       className="atlas-cleanup-review"
       drawer
       onClose={navigation.close}
+      onKeyDown={handleHistoryKeys}
       footer={
         <>
           {navigation.error && <p className="atlas-review-inspect-error" role="alert">{navigation.error}</p>}
-          <span role={navigation.opening ? "status" : undefined}>{navigation.opening ? "Opening file…" : "Preview only"}</span>
+          {navigation.opening && <span role="status">Opening file…</span>}
+          {(undoSnapshot || redoSnapshot) ? (
+            <div ref={trackHistoryFocus} className="atlas-review-history" role="group" aria-label="Staging history">
+              <button ref={undoButton} type="button" aria-label="Undo staging change"
+                aria-keyshortcuts="Meta+Z Control+Z"
+                aria-disabled={busy || !undoSnapshot || undefined} onClick={() => void stepHistory("undo")}>Undo</button>
+              <button ref={redoButton} type="button" aria-label="Redo staging change"
+                aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z Control+Y"
+                aria-disabled={busy || !redoSnapshot || undefined} onClick={() => void stepHistory("redo")}>Redo</button>
+            </div>
+          ) : !navigation.opening && <span>Preview only</span>}
+          <span className="atlas-scan-announcement" role="status">{historyAnnouncement}</span>
           <button
             type="button" className="atlas-analysis-primary" ref={previewButton}
             onClick={canPreview ? onPreview : undefined} aria-disabled={!canPreview || undefined}
@@ -304,7 +379,7 @@ function OpenReviewDrawer({
                 <ul className="atlas-review-files" aria-label="Staged for cleanup">
                   {removing.map((file) => (
                     <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
-                      disabled={busy} onInspect={inspectFile} onRemove={onRemove} />
+                      disabled={busy} onInspect={inspectFile} onRemove={removeFile} />
                   ))}
                 </ul>
               </div>
@@ -329,7 +404,7 @@ function OpenReviewDrawer({
               return (
                 <ReviewFile
                   key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warningLabel}
-                  disabled={busy} onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={onRemove}
+                  disabled={busy} onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={removeFile}
                 />
               );
             })}

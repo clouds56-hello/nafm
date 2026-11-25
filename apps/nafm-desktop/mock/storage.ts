@@ -1,6 +1,6 @@
 import type {
   CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
-  SiteKind, SiteOverview, StageAddReport, StageRemoveReport, StageWarning, StorageChildrenPage, StorageDirectoryFilter,
+  SiteKind, SiteOverview, StageAddReport, StageHistoryState, StageRemoveReport, StageWarning, StorageChildrenPage, StorageDirectoryFilter,
   StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
 import { DEFAULT_DIRECTORY_SORT } from "../src/lib/types";
@@ -37,6 +37,28 @@ function indexedFiles(workspace: PreviewWorkspace) {
     getTree(workspace, site.id).children.forEach((root) => visit(root, site, root));
   }
   return files;
+}
+
+function stageHistory(workspace: PreviewWorkspace, indexed: ReadonlyMap<string, IndexedFile>): StageHistoryState {
+  const { snapshots, current_index } = workspace.stage_history;
+  const currentIds = new Set([...workspace.staged.keys()].filter((id) => indexed.has(id)));
+  const differs = ({ file_ids }: (typeof snapshots)[number]) => {
+    const liveIds = file_ids.filter((id) => indexed.has(id));
+    return liveIds.length !== currentIds.size || liveIds.some((id) => !currentIds.has(id));
+  };
+  // Deleted files no longer distinguish historical copies from the current selection.
+  const undo = snapshots.slice(0, current_index).reverse().find(differs);
+  const redo = snapshots.slice(current_index + 1).find(differs);
+  return { snapshot_id: snapshots[current_index].id, undo_snapshot_id: undo?.id ?? null, redo_snapshot_id: redo?.id ?? null };
+}
+
+function recordStageSnapshot(workspace: PreviewWorkspace) {
+  const history = workspace.stage_history;
+  const index = history.current_index + 1;
+  history.snapshots.splice(index, history.snapshots.length - index, {
+    id: String(history.next_id++), file_ids: [...workspace.staged.keys()],
+  });
+  history.current_index = index;
 }
 
 function byContent(files: IndexedFile[]) {
@@ -445,7 +467,8 @@ export function createStorageApi(current: () => PreviewWorkspace) {
         staged.push(entry);
       }
     }
-    return { staged_files: staged, warnings };
+    if (staged.length) recordStageSnapshot(workspace);
+    return { staged_files: staged, warnings, stage_history: stageHistory(workspace, new Map(files.map((file) => [file.file_id, file]))) };
   }
 
   function unstage(args: CommandArgs): StageRemoveReport {
@@ -454,12 +477,39 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     const path = stringArg(args.path, "file or folder path");
     const removed = [...workspace.staged.values()].filter((file) => matchesPath(file.path, path));
     removed.forEach((file) => workspace.staged.delete(file.file_id));
-    return { removed_files: removed, warnings: removed.length ? [] : [{ path, reason: "not_staged" }] };
+    if (removed.length) recordStageSnapshot(workspace);
+    const indexed = new Map(indexedFiles(workspace).map((file) => [file.file_id, file]));
+    return {
+      removed_files: removed, warnings: removed.length ? [] : [{ path, reason: "not_staged" }], stage_history: stageHistory(workspace, indexed),
+    };
   }
 
-  function cleanup(): CleanupPreview {
+  function moveStageHistory(args: CommandArgs): CleanupPreview {
     const workspace = current();
+    checkWorkspace(workspace, args.expectedWorkspace);
+    const { direction, expected_snapshot_id, target_snapshot_id } = record(args.request);
+    if ((direction !== "undo" && direction !== "redo") || typeof expected_snapshot_id !== "string" || typeof target_snapshot_id !== "string") {
+      throw new Error("Invalid stage history request.");
+    }
     const files = indexedFiles(workspace);
+    const indexed = new Map(files.map((file) => [file.file_id, file]));
+    const currentHistory = stageHistory(workspace, indexed);
+    const target = direction === "undo" ? currentHistory.undo_snapshot_id : currentHistory.redo_snapshot_id;
+    if (currentHistory.snapshot_id !== expected_snapshot_id || target !== target_snapshot_id) {
+      throw new Error("The staged list changed. Review the updated list before using Undo or Redo.");
+    }
+
+    const history = workspace.stage_history;
+    history.current_index = history.snapshots.findIndex(({ id }) => id === target);
+    workspace.staged.clear();
+    for (const id of history.snapshots[history.current_index].file_ids) {
+      const file = indexed.get(id);
+      if (file) workspace.staged.set(id, duplicateFile(file));
+    }
+    return cleanup(workspace, files);
+  }
+
+  function cleanup(workspace = current(), files = indexedFiles(workspace)): CleanupPreview {
     const duplicateGroups = (selected: IndexedFile[]) => [...byContent(readyFiles(workspace, selected)).values()].filter((group) => group.length > 1);
     const staged = [...workspace.staged.values()];
     const before = duplicateGroups(files);
@@ -515,6 +565,7 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return {
       staged_files: staged, hashes_pending: pending,
       cleanup_ready: ready, warnings,
+      stage_history: stageHistory(workspace, fileById),
       verification_blockers: [...verificationBySite].sort(([left], [right]) => compareText(left, right))
         .map(([site_id, fileIds]) => ({ site_id, staged_file_ids: [...fileIds].sort(compareText) })),
       tracked_file_count_before: files.length, tracked_file_count_after: remaining.length,
@@ -543,6 +594,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   return {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
-    children, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, cleanup, siteInventory,
+    children, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, moveStageHistory, cleanup, siteInventory,
   };
 }

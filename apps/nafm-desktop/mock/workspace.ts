@@ -3,6 +3,11 @@ import type {
 } from "../src/lib/types";
 import { buildFolder, createFixtures, INVENTORY_DATE, type PreviewScenario } from "./fixtures";
 
+interface StageSnapshot {
+  id: string;
+  file_ids: string[];
+}
+
 export interface PreviewWorkspace {
   name: string;
   sites: Map<string, SiteOverview>;
@@ -11,6 +16,7 @@ export interface PreviewWorkspace {
   machines: Map<string, RemoteMachine>;
   mappings: Map<string, RemotePathMapping>;
   staged: Map<string, DuplicateFile>;
+  stage_history: { snapshots: StageSnapshot[]; current_index: number; next_id: number };
 }
 
 export function makeWorkspace(name: string, scenario: PreviewScenario): PreviewWorkspace {
@@ -28,6 +34,7 @@ export function makeWorkspace(name: string, scenario: PreviewScenario): PreviewW
   return {
     name, sites: new Map(sites.map((site) => [site.id, site])), trees, folders,
     machines: new Map(), mappings: new Map(), staged: new Map(),
+    stage_history: { snapshots: [{ id: "1", file_ids: [] }], current_index: 0, next_id: 2 },
   };
 }
 

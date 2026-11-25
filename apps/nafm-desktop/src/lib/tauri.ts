@@ -28,6 +28,7 @@ import type {
   ScanTaskEvent,
   ScanSelector,
   StageAddReport,
+  StageHistoryRequest,
   StageRemoveReport,
   StorageChildrenPage,
   StorageDirectoryFilter,
@@ -341,6 +342,10 @@ export function unstagePath(path: string, expectedWorkspace: string): Promise<St
 
 export function previewCleanup(expectedWorkspace: string): Promise<CleanupPreview> {
   return invoke<CleanupPreview>("preview_cleanup", { expectedWorkspace });
+}
+
+export function moveStageHistory(expectedWorkspace: string, request: StageHistoryRequest): Promise<CleanupPreview> {
+  return invoke<CleanupPreview>("move_stage_history", { expectedWorkspace, request });
 }
 
 export function onScanTaskEvent(handler: (event: ScanTaskEvent) => void): Promise<UnlistenFn> {

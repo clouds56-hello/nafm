@@ -8,8 +8,8 @@ use std::time::Duration;
 use nafm_core::{
   AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, DirectorySortField,
   FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent,
-  SiteFolderKind, SiteHashStatus, SortDirection, StageVerificationBlocker, StageWarningReason, StorageDirectoryFilter,
-  StorageNodeKind,
+  SiteFolderKind, SiteHashStatus, SortDirection, StageHistoryDirection, StageHistoryRequest, StageVerificationBlocker,
+  StageWarningReason, StorageDirectoryFilter, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -4355,6 +4355,126 @@ async fn stage_redo_is_cleared_by_new_mutation_after_undo() {
 
   assert!(fixture.repo().stage_redo().await.is_err());
   assert_eq!(fixture.stage_paths().await, BTreeSet::from([alpha_one, gamma_one]));
+}
+
+#[tokio::test]
+async fn guarded_stage_history_move_serializes_concurrent_requests() {
+  let fixture = build_stage_matrix_fixture().await;
+  let repo = fixture.repo();
+  let alpha = fixture.path("alpha", "one.txt");
+  let beta = fixture.path("beta", "one.txt");
+  let first = repo.stage_add_path(&alpha).await.unwrap().stage_history;
+  let second = repo.stage_add_path(&beta).await.unwrap().stage_history;
+  let request = StageHistoryRequest {
+    direction: StageHistoryDirection::Undo,
+    expected_snapshot_id: second.snapshot_id.clone(),
+    target_snapshot_id: second.undo_snapshot_id.unwrap(),
+  };
+
+  let (left, right) = tokio::join!(
+    repo.move_stage_history(request.clone()),
+    repo.move_stage_history(request)
+  );
+  let restored = match (left, right) {
+    (Ok(report), Err(NafmError::StageHistoryChanged)) | (Err(NafmError::StageHistoryChanged), Ok(report)) => report,
+    other => panic!("expected one successful move and one stale request, got {other:?}"),
+  };
+  assert_eq!(restored.stage_history.snapshot_id, first.snapshot_id);
+  assert_eq!(restored.staged_files.len(), 1);
+  assert_eq!(restored.staged_files[0].path, alpha);
+  assert!(restored.cleanup_ready);
+  assert_eq!(
+    restored.stage_history.redo_snapshot_id.as_ref(),
+    Some(&second.snapshot_id)
+  );
+
+  let redone = repo
+    .move_stage_history(StageHistoryRequest {
+      direction: StageHistoryDirection::Redo,
+      expected_snapshot_id: restored.stage_history.snapshot_id,
+      target_snapshot_id: second.snapshot_id,
+    })
+    .await
+    .unwrap();
+  assert_eq!(redone.staged_files.len(), 2);
+  assert_eq!(fixture.stage_paths().await, BTreeSet::from([alpha, beta]));
+}
+
+#[tokio::test]
+async fn guarded_stage_history_move_checks_the_neighbor_after_a_branch_changes() {
+  let fixture = build_stage_matrix_fixture().await;
+  let repo = fixture.repo();
+  let alpha = fixture.path("alpha", "one.txt");
+  repo.stage_add_path(&alpha).await.unwrap();
+  repo.stage_add_path(&fixture.path("beta", "one.txt")).await.unwrap();
+  repo.stage_undo().await.unwrap();
+  let old = repo.stage_commit_dry_run().await.unwrap().stage_history;
+
+  repo.stage_add_path(&fixture.path("gamma", "one.txt")).await.unwrap();
+  repo.stage_undo().await.unwrap();
+  let branched = repo.stage_commit_dry_run().await.unwrap().stage_history;
+  assert_eq!(old.snapshot_id, branched.snapshot_id);
+  assert_ne!(old.redo_snapshot_id, branched.redo_snapshot_id);
+  let failed = repo
+    .move_stage_history(StageHistoryRequest {
+      direction: StageHistoryDirection::Redo,
+      expected_snapshot_id: old.snapshot_id,
+      target_snapshot_id: old.redo_snapshot_id.unwrap(),
+    })
+    .await;
+  assert!(matches!(failed, Err(NafmError::StageHistoryChanged)));
+  assert_eq!(fixture.stage_paths().await, BTreeSet::from([alpha]));
+}
+
+#[tokio::test]
+async fn guarded_stage_history_move_skips_equivalent_snapshots_after_scan_deletions() {
+  let fixture = build_stage_matrix_fixture().await;
+  let repo = fixture.repo();
+  let alpha = fixture.path("alpha", "one.txt");
+  let beta = fixture.path("beta", "one.txt");
+  let empty = repo.stage_commit_dry_run().await.unwrap().stage_history;
+  repo.stage_add_path(&alpha).await.unwrap();
+  let before_scan = repo.stage_add_path(&beta).await.unwrap().stage_history;
+
+  fs::remove_file(beta).unwrap();
+  repo.scan_site("docs").await.unwrap();
+  let current = repo.stage_commit_dry_run().await.unwrap();
+  assert_eq!(current.stage_history.snapshot_id, before_scan.snapshot_id);
+  assert_eq!(
+    current.stage_history.undo_snapshot_id.as_ref(),
+    Some(&empty.snapshot_id)
+  );
+  assert_eq!(current.staged_files.len(), 1);
+  assert_eq!(current.staged_files[0].path, alpha);
+  let failed = repo
+    .move_stage_history(StageHistoryRequest {
+      direction: StageHistoryDirection::Undo,
+      expected_snapshot_id: before_scan.snapshot_id,
+      target_snapshot_id: before_scan.undo_snapshot_id.unwrap(),
+    })
+    .await;
+  assert!(matches!(failed, Err(NafmError::StageHistoryChanged)));
+
+  let restored = repo
+    .move_stage_history(StageHistoryRequest {
+      direction: StageHistoryDirection::Undo,
+      expected_snapshot_id: current.stage_history.snapshot_id,
+      target_snapshot_id: empty.snapshot_id,
+    })
+    .await
+    .unwrap();
+  assert!(restored.staged_files.is_empty());
+  let redone = repo
+    .move_stage_history(StageHistoryRequest {
+      direction: StageHistoryDirection::Redo,
+      expected_snapshot_id: restored.stage_history.snapshot_id,
+      target_snapshot_id: restored.stage_history.redo_snapshot_id.unwrap(),
+    })
+    .await
+    .unwrap();
+  assert_eq!(redone.staged_files.len(), 1);
+  assert_eq!(redone.staged_files[0].path, alpha);
+  assert!(redone.stage_history.redo_snapshot_id.is_none());
 }
 
 #[tokio::test]

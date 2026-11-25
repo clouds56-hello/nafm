@@ -18,10 +18,11 @@ use crate::model::{
   AddSiteFolderRequest, DirectorySort, DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch,
   FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, IndexedFileSearchPage, MissingContentGroup,
   RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder,
-  SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport,
-  StageRemoveReport, StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason,
-  StorageChildrenPage, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
-  StorageTree, StorageViewSnapshot,
+  SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun,
+  StageHistoryDirection, StageHistoryReport, StageHistoryRequest, StageHistoryState, StageRemoveReport,
+  StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason, StorageChildrenPage,
+  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
+  StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -1887,7 +1888,7 @@ impl Repository {
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       let (canonical_path, is_remote) = normalize_user_location(&path)?;
-      stage_add_path(&conn, &canonical_path, is_remote)
+      with_immediate_transaction(&conn, || stage_add_path(&conn, &canonical_path, is_remote))
     })
     .await?
   }
@@ -1907,7 +1908,7 @@ impl Repository {
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       let (canonical_path, is_remote) = normalize_user_location(&path)?;
-      stage_remove_path(&conn, &canonical_path, is_remote)
+      with_immediate_transaction(&conn, || stage_remove_path(&conn, &canonical_path, is_remote))
     })
     .await?
   }
@@ -1916,7 +1917,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      stage_reset(&conn)
+      with_immediate_transaction(&conn, || stage_reset(&conn))
     })
     .await?
   }
@@ -1925,7 +1926,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      stage_undo(&conn)
+      with_immediate_transaction(&conn, || step_stage_history(&conn, StageHistoryDirection::Undo))
     })
     .await?
   }
@@ -1934,7 +1935,27 @@ impl Repository {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      stage_redo(&conn)
+      with_immediate_transaction(&conn, || step_stage_history(&conn, StageHistoryDirection::Redo))
+    })
+    .await?
+  }
+
+  pub async fn move_stage_history(&self, request: StageHistoryRequest) -> Result<StageCommitDryRun> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_immediate_transaction(&conn, || {
+        let current = current_stage_snapshot_id(&conn)?;
+        if current.to_string() != request.expected_snapshot_id {
+          return Err(NafmError::StageHistoryChanged);
+        }
+        let target = stage_history_neighbor(&conn, current, request.direction, true)?;
+        let Some(target) = target.filter(|id| id.to_string() == request.target_snapshot_id) else {
+          return Err(NafmError::StageHistoryChanged);
+        };
+        restore_stage_snapshot(&conn, target)?;
+        stage_commit_dry_run_snapshot(&conn)
+      })
     })
     .await?
   }
@@ -2057,7 +2078,7 @@ impl Repository {
       ensure_agent_installation_column(&conn)?;
       migrate_scan_schema(&conn)?;
       backfill_site_scan_state(&conn)?;
-      initialize_stage_history(&conn)?;
+      with_immediate_transaction(&conn, || initialize_stage_history(&conn))?;
       Ok(())
     })
     .await?
@@ -3560,6 +3581,7 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path, is_remote: bool) -> 
           return Ok(StageAddReport {
             staged_files: Vec::new(),
             warnings: Vec::new(),
+            stage_history: stage_history_state(conn)?,
           });
         }
         return Err(NafmError::TrackedPathNotFound(canonical_path.to_path_buf()));
@@ -3642,6 +3664,7 @@ fn stage_add_path(conn: &Connection, canonical_path: &Path, is_remote: bool) -> 
   Ok(StageAddReport {
     staged_files: staged_now,
     warnings,
+    stage_history: stage_history_state(conn)?,
   })
 }
 
@@ -3701,6 +3724,7 @@ fn stage_remove_path(conn: &Connection, canonical_path: &Path, is_remote: bool) 
   Ok(StageRemoveReport {
     removed_files,
     warnings,
+    stage_history: stage_history_state(conn)?,
   })
 }
 
@@ -3716,48 +3740,24 @@ fn stage_reset(conn: &Connection) -> Result<StageResetReport> {
   Ok(StageResetReport { removed_files })
 }
 
-fn stage_undo(conn: &Connection) -> Result<StageHistoryReport> {
-  let current_snapshot_id = current_stage_snapshot_id(conn)?;
-  let previous_snapshot_id = conn
-    .query_row(
-      "select id from stage_snapshots where id < ?1 order by id desc limit 1",
-      params![current_snapshot_id],
-      |row| row.get::<_, i64>(0),
-    )
-    .optional()?;
-  let Some(previous_snapshot_id) = previous_snapshot_id else {
-    return Err(NafmError::StageHistoryUnavailable("undo"));
+fn step_stage_history(conn: &Connection, direction: StageHistoryDirection) -> Result<StageHistoryReport> {
+  let current = current_stage_snapshot_id(conn)?;
+  let command = match direction {
+    StageHistoryDirection::Undo => "undo",
+    StageHistoryDirection::Redo => "redo",
   };
-  restore_stage_snapshot(conn, previous_snapshot_id)
-}
-
-fn stage_redo(conn: &Connection) -> Result<StageHistoryReport> {
-  let current_snapshot_id = current_stage_snapshot_id(conn)?;
-  let next_snapshot_id = conn
-    .query_row(
-      "select id from stage_snapshots where id > ?1 order by id asc limit 1",
-      params![current_snapshot_id],
-      |row| row.get::<_, i64>(0),
-    )
-    .optional()?;
-  let Some(next_snapshot_id) = next_snapshot_id else {
-    return Err(NafmError::StageHistoryUnavailable("redo"));
-  };
-  restore_stage_snapshot(conn, next_snapshot_id)
+  let target =
+    stage_history_neighbor(conn, current, direction, false)?.ok_or(NafmError::StageHistoryUnavailable(command))?;
+  restore_stage_snapshot(conn, target)?;
+  let restored_files = list_staged_files(conn)?.into_iter().map(|record| record.file).collect();
+  Ok(StageHistoryReport {
+    applied: true,
+    restored_files,
+  })
 }
 
 fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
-  conn.execute_batch("begin deferred transaction")?;
-  match stage_commit_dry_run_snapshot(conn) {
-    Ok(report) => {
-      conn.execute_batch("commit")?;
-      Ok(report)
-    }
-    Err(error) => {
-      let _ = conn.execute_batch("rollback");
-      Err(error)
-    }
-  }
+  with_deferred_transaction(conn, || stage_commit_dry_run_snapshot(conn))
 }
 
 fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun> {
@@ -3909,6 +3909,7 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     hashes_pending,
     cleanup_ready,
     warnings,
+    stage_history: stage_history_state(conn)?,
     verification_blockers,
     tracked_file_count_before,
     tracked_file_count_after,
@@ -3998,7 +3999,7 @@ fn record_stage_snapshot(conn: &Connection, mutation_kind: StageMutationKind) ->
   Ok(snapshot_id)
 }
 
-fn restore_stage_snapshot(conn: &Connection, snapshot_id: i64) -> Result<StageHistoryReport> {
+fn restore_stage_snapshot(conn: &Connection, snapshot_id: i64) -> Result<()> {
   conn.execute("delete from stage_entries", [])?;
   let now = Utc::now();
   conn.execute(
@@ -4012,14 +4013,57 @@ fn restore_stage_snapshot(conn: &Connection, snapshot_id: i64) -> Result<StageHi
     "update stage_state set current_snapshot_id = ?1 where singleton = 1",
     params![snapshot_id],
   )?;
-  let restored_files = list_staged_files(conn)?
-    .into_iter()
-    .map(|record| record.file)
-    .collect::<Vec<_>>();
-  Ok(StageHistoryReport {
-    applied: true,
-    restored_files,
+  Ok(())
+}
+
+fn stage_history_state(conn: &Connection) -> Result<StageHistoryState> {
+  let current = current_stage_snapshot_id(conn)?;
+  let undo = stage_history_neighbor(conn, current, StageHistoryDirection::Undo, true)?;
+  let redo = stage_history_neighbor(conn, current, StageHistoryDirection::Redo, true)?;
+  Ok(StageHistoryState {
+    snapshot_id: current.to_string(),
+    undo_snapshot_id: undo.map(|id| id.to_string()),
+    redo_snapshot_id: redo.map(|id| id.to_string()),
   })
+}
+
+fn stage_history_neighbor(
+  conn: &Connection,
+  current: i64,
+  direction: StageHistoryDirection,
+  distinct_files: bool,
+) -> Result<Option<i64>> {
+  let (comparison, order) = match direction {
+    StageHistoryDirection::Undo => ("<", "desc"),
+    StageHistoryDirection::Redo => (">", "asc"),
+  };
+  // Inventory changes can cascade a file out of multiple snapshots, leaving identical staged sets.
+  let distinct_filter = if distinct_files {
+    "and (
+       exists (
+         select 1 from stage_snapshot_files saved
+         where saved.snapshot_id = snapshot.id
+           and not exists (select 1 from stage_entries live where live.file_id = saved.file_id)
+       ) or exists (
+         select 1 from stage_entries live
+         where not exists (
+           select 1 from stage_snapshot_files saved
+           where saved.snapshot_id = snapshot.id and saved.file_id = live.file_id
+         )
+       )
+     )"
+  } else {
+    ""
+  };
+  let sql = format!(
+    "select snapshot.id from stage_snapshots snapshot
+     where snapshot.id {comparison} ?1 {distinct_filter}
+     order by snapshot.id {order} limit 1"
+  );
+  conn
+    .query_row(&sql, params![current], |row| row.get(0))
+    .optional()
+    .map_err(Into::into)
 }
 
 fn current_stage_snapshot_id(conn: &Connection) -> Result<i64> {

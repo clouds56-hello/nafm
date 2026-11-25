@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from "react";
 import "./analysis.css";
 
 interface AnalysisDialogProps {
@@ -11,10 +11,13 @@ interface AnalysisDialogProps {
   initialFocus?: RefObject<HTMLElement | null>;
   closeButtonRef?: RefObject<HTMLButtonElement | null>;
   footer?: ReactNode;
+  onKeyDown?: KeyboardEventHandler<HTMLDialogElement>;
   onClose: () => void;
 }
 
-export function AnalysisDialog({ title, subtitle, drawer, className, children, toolbar, initialFocus, closeButtonRef, footer, onClose }: AnalysisDialogProps) {
+export function AnalysisDialog({
+  title, subtitle, drawer, className, children, toolbar, initialFocus, closeButtonRef, footer, onKeyDown, onClose,
+}: AnalysisDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const localCloseRef = useRef<HTMLButtonElement>(null);
@@ -41,6 +44,7 @@ export function AnalysisDialog({ title, subtitle, drawer, className, children, t
       ref={dialogRef}
       className={["atlas-analysis-dialog", drawer && "is-drawer", className].filter(Boolean).join(" ")}
       aria-labelledby={titleId}
+      onKeyDown={onKeyDown}
       onCancel={(event) => {
         event.preventDefault();
         onClose();
