@@ -235,13 +235,13 @@ button:disabled { cursor: default; }
   }
 }
 
-@media (max-width: 879px) {
+@media (width < 880px) {
   .atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
     width: min(100%, clamp(550px, 100dvh - 145px, 820px));
   }
 }
 
-@media (min-width: 761px) {
+@media (min-width: 880px) {
   .atlas-visualization {
     grid-template-columns: var(--atlas-sites-column, 0px) minmax(0, 1fr) var(--atlas-inspector-column, 0px);
   }
@@ -266,15 +266,18 @@ button:disabled { cursor: default; }
 
 @media (max-width: 760px) {
   .atlas-main { padding: 8px; }
+
+  .atlas-chart-well > :is(.radial-atlas, .atlas-empty-orbit) {
+    width: min(100%, clamp(200px, calc(100dvh - 82px), 560px));
+  }
+}
+
+@media (width < 880px) {
   .atlas-shell > .atlas-toolbar { position: sticky; top: 0; }
 
   .atlas-visualization {
     grid-template-rows: auto auto auto;
     align-content: start;
-  }
-
-  .atlas-chart-well > :is(.radial-atlas, .atlas-empty-orbit) {
-    width: min(100%, clamp(200px, calc(100dvh - 82px), 560px));
   }
 
   .atlas-panels:has(> [data-atlas-panel]) {
@@ -297,7 +300,7 @@ button:disabled { cursor: default; }
   }
 }
 
-@media (min-width: 500px) and (max-width: 760px) {
+@media (500px <= width < 880px) {
   .atlas-visualization[data-sites-open][data-inspector-open] .atlas-panels {
     grid-template-columns: minmax(190px, .8fr) minmax(0, 1.2fr);
   }
@@ -323,7 +326,7 @@ button:disabled { cursor: default; }
 
 .atlas-alert button { flex: none; white-space: nowrap; }
 
-@media (max-width: 760px) {
+@media (width < 880px) {
   .atlas-shell[data-overlay-open] .atlas-alert { top: calc(var(--atlas-toolbar-height, 54px) + 8px); bottom: auto; }
 }
 

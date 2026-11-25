@@ -133,7 +133,7 @@
 }
 .atlas-inspector-pane > .atlas-directory { border-top: 0; }
 
-@media (max-width: 760px) {
+@media (width < 880px) {
   .atlas-inspector.atlas-inspector-drawer {
     max-height: min(58vh, 400px);
     max-height: min(58dvh, 400px);

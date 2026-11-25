@@ -127,7 +127,8 @@
   position: absolute;
   inset: 0;
   display: grid;
-  grid-template-columns: 30%;
+  /* The 36% dial tapers above and below the name. */
+  grid-template-columns: minmax(0, 32%);
   place-content: center;
   justify-items: center;
   gap: clamp(2px, .65cqw, 5px);
@@ -137,6 +138,7 @@
 
 .radial-atlas__kind,
 .radial-atlas__detail,
+.radial-atlas__compact-detail,
 .radial-atlas__size > span {
   font-family: var(--atlas-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
@@ -181,11 +183,15 @@
 }
 
 .radial-atlas__name,
-.radial-atlas__detail {
+.radial-atlas__detail,
+.radial-atlas__compact-detail {
+  display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .radial-atlas__name {
@@ -195,11 +201,13 @@
   line-height: 1.15;
 }
 
-.radial-atlas__detail {
+.radial-atlas__detail, .radial-atlas__compact-detail {
   color: #c1c4d8;
   font-size: clamp(11px, 2cqw, 14px);
   line-height: 1.2;
 }
+
+.radial-atlas__compact-detail { display: none; }
 
 .radial-atlas__up {
   display: inline-flex;
@@ -222,21 +230,15 @@
 .radial-atlas[data-first-scan] .radial-atlas__reading { grid-template-columns: 40%; gap: clamp(3px, .85cqw, 7px); }
 .radial-atlas[data-first-scan] .radial-atlas__name { color: #c1c4d8; font-weight: 550; }
 
-@container (min-width: 520px) {
-  .radial-atlas:not([data-first-scan]) .radial-atlas__name {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
-}
-
 @container (max-width: 455px) {
-  .radial-atlas__reading { grid-template-columns: 32%; }
+  .radial-atlas__reading { grid-template-columns: minmax(0, 33%); }
   .radial-atlas__kind { letter-spacing: 0; text-transform: none; }
   .radial-atlas__kind:not([data-metric]) { display: none; }
-  .radial-atlas__detail { font-family: inherit; }
+  .radial-atlas__detail, .radial-atlas__compact-detail { font-family: inherit; }
+  .radial-atlas:not([data-first-scan]) .radial-atlas__detail { max-width: min(100%, 28cqw); }
+}
+
+@container (max-width: 520px) {
   .radial-atlas__up {
     position: absolute;
     bottom: 0;
@@ -248,7 +250,26 @@
   .radial-atlas__up-qualifier { display: none; }
 }
 @container (max-width: 340px) {
-  .radial-atlas__reading:has(.radial-atlas__kind[data-metric]) { grid-template-columns: 30%; gap: 1px; }
+  .radial-atlas__reading:has(.radial-atlas__kind[data-metric]) { grid-template-columns: minmax(0, 32%); gap: 1px; }
+  .radial-atlas__kind { font-family: inherit; }
+  .radial-atlas__detail[data-compact-evidence] { display: none; }
+  .radial-atlas__compact-detail { display: -webkit-box; }
+}
+
+@container (max-width: 275px) {
+  .radial-atlas__reading:has(.radial-atlas__kind[data-metric]) :is(.radial-atlas__detail, .radial-atlas__compact-detail) {
+    position: absolute;
+    inset: auto 0 0 auto;
+    max-width: calc(100% - 60px);
+    font-size: 10px;
+    text-align: end;
+    white-space: nowrap;
+  }
+}
+
+@container (max-width: 260px) {
+  .radial-atlas__name { font-size: 12px; }
+  .radial-atlas__detail, .radial-atlas__compact-detail { font-size: 10px; }
 }
 .radial-atlas__scan-status { font-size: clamp(15px, 3.8cqw, 29px); font-weight: 580; line-height: 1.1; letter-spacing: -.035em; }
 .radial-atlas__scan-action {

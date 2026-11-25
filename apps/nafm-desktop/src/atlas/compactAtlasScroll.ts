@@ -1,4 +1,4 @@
-const compactAtlas = "(max-width: 760px)";
+const compactAtlas = "(width < 880px)";
 
 export function revealInCompactAtlas(element: Element | null) {
   if (element && window.matchMedia(compactAtlas).matches) {

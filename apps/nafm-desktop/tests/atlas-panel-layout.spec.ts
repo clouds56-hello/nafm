@@ -151,3 +151,46 @@ test.describe("desktop Atlas panels", () => {
     expect((await bounds(details)).left).toBeGreaterThanOrEqual(contentsOnly.right - 1);
   });
 });
+
+test("tablet panels leave room for curved labels and stay open as the chart reflows", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 700 });
+  await page.goto("/mock/");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+
+  const rail = sites(page);
+  const details = inspector(page);
+  const originalPlot = await bounds(chart(page));
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+
+  async function expectPanelsBelowChart() {
+    await expect(rail).toBeVisible();
+    await expect(details).toBeVisible();
+    const plot = await bounds(chart(page));
+    const sitePanel = await bounds(rail);
+    const contentsPanel = await bounds(details);
+    expect(plot.width).toBeGreaterThanOrEqual(500);
+    expect(plot.width).toBeCloseTo(originalPlot.width, 0);
+    expect(sitePanel.top).toBeGreaterThanOrEqual(plot.bottom - 1);
+    expect(contentsPanel.top).toBeCloseTo(sitePanel.top, 0);
+    expect(contentsPanel.left).toBeGreaterThanOrEqual(sitePanel.right - 1);
+  }
+
+  await expectPanelsBelowChart();
+  await expect(atlas(page).getByRole("button", { name: /^Projects,/ }).locator(".radial-atlas__label text")).toBeVisible();
+  await details.getByRole("grid").getByRole("button", { name: /^Projects\b/ }).click();
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expectPanelsBelowChart();
+
+  await page.setViewportSize({ width: 1080, height: 700 });
+  const desktopPlot = await bounds(chart(page));
+  expect((await bounds(rail)).right).toBeLessThanOrEqual(desktopPlot.left + 1);
+  expect((await bounds(details)).left).toBeGreaterThanOrEqual(desktopPlot.right - 1);
+
+  await page.setViewportSize({ width: 820, height: 700 });
+  await expectPanelsBelowChart();
+  await rail.getByRole("button", { name: "Open Field drive in Atlas" }).click();
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await expect(details.getByRole("heading", { name: "Field drive", exact: true })).toBeVisible();
+  await expectPanelsBelowChart();
+});

@@ -241,7 +241,7 @@
 
 .atlas-site-rail-empty { margin: 13px 14px 15px; color: var(--atlas-muted); font-size: 12px; }
 
-@media (max-width: 760px) {
+@media (width < 880px) {
   .atlas-site-rail {
     max-height: min(36vh, 264px);
     max-height: min(36dvh, 264px);

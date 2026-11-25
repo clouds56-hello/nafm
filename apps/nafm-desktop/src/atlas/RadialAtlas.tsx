@@ -102,6 +102,7 @@ function RadialPlot({
   const size = formattedSize.slice(0, unitStart);
   const unit = formattedSize.slice(unitStart + 1);
   const scoreText = rootScore && formatHealthScore(rootScore);
+  const hasCompactEvidence = root.file_count > 0 && metric === "coverage_health" && rootScore?.state === "partial";
 
   useEffect(() => {
     if (preview?.input !== "touch") return;
@@ -218,7 +219,7 @@ function RadialPlot({
             {ORIENTATIONS.map(({ start, end }, index) => (
               <line key={index} x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="radial-atlas__tick--major" />
             ))}
-            <circle className="radial-atlas__dial" cx={CENTER} cy={CENTER} r={awaitingInventory ? 150 : 102} fill={`url(#${gradientId})`} />
+            <circle className="radial-atlas__dial" cx={CENTER} cy={CENTER} r={awaitingInventory ? 150 : 108} fill={`url(#${gradientId})`} />
             {firstScan?.requestId !== undefined && !firstScan.stopping && (
               <circle className="radial-atlas__scan-sweep" cx={CENTER} cy={CENTER} r={RINGS[1].radius} pathLength="100" />
             )}
@@ -296,7 +297,11 @@ function RadialPlot({
                 {rootScore && isPerfectHealth(rootScore) && <CheckIcon className="atlas-score-check" />}
               </strong>
               <span className="radial-atlas__name" aria-hidden="true" title={labelFor(root)}>{labelFor(root)}</span>
-              {caption && <span className="radial-atlas__detail" aria-hidden="true" title={caption}>{caption}</span>}
+              {caption && (
+                <span className="radial-atlas__detail" data-compact-evidence={hasCompactEvidence || undefined}
+                  aria-hidden="true" title={caption}>{caption}</span>
+              )}
+              {hasCompactEvidence && <span className="radial-atlas__compact-detail" aria-hidden="true" title={caption ?? undefined}>Verified only</span>}
             </>
           )}
           {parentName !== undefined && (
