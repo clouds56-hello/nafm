@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { searchIndexedFiles } from "../lib/tauri";
 import type { IndexedFileSearchResult } from "../lib/types";
 
@@ -16,6 +16,7 @@ interface SearchIntent {
   query: string;
   range: SearchRange;
   anchorFileId?: string;
+  preferredIndex?: number;
 }
 
 interface CachedSearch {
@@ -25,12 +26,26 @@ interface CachedSearch {
 
 export type FinderSearchCache = Map<string, CachedSearch>;
 
+export interface FinderRefresh {
+  key: string;
+  previousIndex: number;
+  index: number;
+  previousTotal: number | null;
+  total: number;
+  missingFile: boolean;
+}
+
 function searchKey(workspace: string, revision: number, name: string) {
   return JSON.stringify([workspace, revision, name]);
 }
 
 function pageOffset(index: number) {
   return Math.floor(index / PAGE_SIZE) * PAGE_SIZE;
+}
+
+function cachedFile(cached: CachedSearch | undefined, index: number) {
+  const offset = pageOffset(index);
+  return cached?.pages.get(offset)?.[index - offset];
 }
 
 function coveringPages(range: SearchRange, total: number | null): SearchRange {
@@ -57,39 +72,55 @@ export function useIndexedFileSearch(
   initialIndex: number,
   cache: FinderSearchCache,
   initialFileId?: string,
+  onRefresh?: (update: FinderRefresh) => boolean | void,
 ) {
   const [intent, setIntent] = useState<SearchIntent>(() => {
-    const start = pageOffset(initialIndex);
     const cached = cache.get(searchKey(workspace, revision, initialQuery.trim()));
-    const knownFile = cached?.pages.get(start)?.[initialIndex - start];
     return {
       query: initialQuery,
       range: { start: initialIndex, end: initialIndex + 1 },
-      anchorFileId: knownFile?.file_id === initialFileId ? undefined : initialFileId,
+      anchorFileId: cachedFile(cached, initialIndex)?.file_id === initialFileId ? undefined : initialFileId,
     };
   });
   const latest = useRef(intent);
+  const refreshContext = useRef({ revision, onRefresh });
+  const [displayedRevision, setDisplayedRevision] = useState(revision);
   const [, refreshCache] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState<number | null>();
   const [failure, setFailure] = useState<{ key: string; offset: number; message: string } | null>(null);
-  const { query, range, anchorFileId } = intent;
+  const { query, range, anchorFileId: initialAnchor } = intent;
   const name = query.trim();
-  const key = searchKey(workspace, revision, name);
-  const cached = cache.get(key);
-  const total = name ? cached?.total ?? null : 0;
-  const offset = name && anchorFileId ? pageOffset(range.start) : firstMissingPage(coveringPages(range, total), cached);
-  const error = failure?.key === key && failure.offset === offset ? failure.message : null;
+  const key = JSON.stringify([workspace, name]);
+  const requestKey = searchKey(workspace, revision, name);
+  const requested = cache.get(requestKey);
+  const visible = cache.get(searchKey(workspace, displayedRevision, name)) ?? requested;
+  const total = name ? visible?.total ?? null : 0;
+  const refreshing = Boolean(name && visible && !initialAnchor && displayedRevision !== revision);
+  const previousIndex = refreshing ? intent.preferredIndex ?? range.start : initialAnchor ? range.start : 0;
+  const anchorFileId = initialAnchor ?? (refreshing ? cachedFile(visible, previousIndex)?.file_id : undefined);
+  const requestedTotal = name ? requested?.total ?? null : 0;
+  const offset = name && (anchorFileId || refreshing)
+    ? pageOffset(previousIndex) : firstMissingPage(coveringPages(range, requestedTotal), requested);
+  const error = failure?.key === requestKey && failure.offset === offset ? failure.message : null;
   const loading = offset !== null && !error;
-  const initialRead = total === null;
+  const initialRead = requestedTotal === null && !refreshing;
+
+  useLayoutEffect(() => {
+    refreshContext.current = { revision, onRefresh };
+  }, [revision, onRefresh]);
 
   useEffect(() => {
     if (offset === null || error) return;
     let active = true;
     // A thumb drag can cross distant windows before settling on one viewport.
     const timer = window.setTimeout(async () => {
-      const stillWanted = () => active && latest.current.query.trim() === name
-        && latest.current.anchorFileId === anchorFileId
-        && (Boolean(anchorFileId) || includesPage(coveringPages(latest.current.range, cache.get(key)?.total ?? null), offset));
+      const stillWanted = () => {
+        const current = latest.current;
+        return active && refreshContext.current.revision === revision && current.query.trim() === name
+          && current.anchorFileId === initialAnchor
+          && (refreshing ? (current.preferredIndex ?? current.range.start) === previousIndex
+            : Boolean(initialAnchor) || includesPage(coveringPages(current.range, cache.get(requestKey)?.total ?? null), offset));
+      };
       if (!stillWanted()) return;
       try {
         const page = await searchIndexedFiles(workspace, name, offset, PAGE_SIZE, anchorFileId);
@@ -103,12 +134,17 @@ export function useIndexedFileSearch(
           throw new Error("The search returned an unexpected page.");
         }
 
-        const previous = cache.get(key);
+        const target = index ?? Math.min(previousIndex, Math.max(0, count - 1));
+        if (refreshing && refreshContext.current.onRefresh?.({
+          key, previousIndex, index: target, previousTotal: total, total: count,
+          missingFile: Boolean(anchorFileId && index === undefined),
+        }) === false) return;
+
+        const previous = cache.get(requestKey);
         // A changed result count can move rows between pages.
         const pages = previous?.total === count ? new Map(previous.pages) : new Map<number, IndexedFileSearchResult[]>();
         if (page.offset < count) pages.set(page.offset, page.matches);
-        const target = index ?? Math.min(latest.current.range.start, Math.max(0, count - 1));
-        const nextRange = anchorFileId ? { start: target, end: target + 1 } : latest.current.range;
+        const nextRange = initialAnchor || refreshing ? { start: target, end: target + 1 } : latest.current.range;
         const wanted = coveringPages(nextRange, count);
         for (const start of pages.keys()) {
           if (pages.size <= MAX_CACHED_PAGES) break;
@@ -116,23 +152,24 @@ export function useIndexedFileSearch(
         }
         // Enter from the search field can still open the first result after scrolling.
         if (pages.size > MAX_CACHED_PAGES) pages.delete(0);
-        cache.delete(key);
-        cache.set(key, { total: count, pages });
+        cache.delete(requestKey);
+        cache.set(requestKey, { total: count, pages });
         if (cache.size > MAX_CACHED_QUERIES) {
           const oldest = cache.keys().next().value;
           if (oldest !== undefined) cache.delete(oldest);
         }
-        if (anchorFileId) {
-          const next = { query: latest.current.query, range: nextRange };
+        setDisplayedRevision(revision);
+        if (initialAnchor || refreshing) {
+          const next = { query: latest.current.query, range: nextRange, preferredIndex: target };
           latest.current = next;
-          setAnchorIndex(index ?? null);
+          if (initialAnchor) setAnchorIndex(index ?? null);
           setIntent(next);
         } else {
           refreshCache((version) => version + 1);
         }
       } catch (error) {
         if (stillWanted()) {
-          setFailure({ key, offset, message: error instanceof Error ? error.message : String(error) });
+          setFailure({ key: requestKey, offset, message: error instanceof Error ? error.message : String(error) });
         }
       }
     }, initialRead ? 160 : 55);
@@ -140,7 +177,8 @@ export function useIndexedFileSearch(
       active = false;
       window.clearTimeout(timer);
     };
-  }, [anchorFileId, cache, error, initialRead, key, name, offset, workspace]);
+  }, [anchorFileId, cache, error, initialAnchor, initialRead, key, name, offset, previousIndex,
+    refreshing, requestKey, revision, total, workspace]);
 
   const changeQuery = useCallback((text: string) => {
     const current = latest.current;
@@ -150,29 +188,29 @@ export function useIndexedFileSearch(
     latest.current = next;
     setIntent(next);
     setAnchorIndex(undefined);
-    if (nameChanged || current.anchorFileId) setFailure(null);
-  }, []);
+    if (nameChanged || current.anchorFileId) {
+      setFailure(null);
+      setDisplayedRevision(revision);
+    }
+  }, [revision]);
 
-  const loadRange = useCallback((start: number, end: number) => {
+  const loadRange = useCallback((start: number, end: number, preferredIndex?: number) => {
     const current = latest.current;
     if (!name || current.anchorFileId || current.query.trim() !== name
       || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
     const range = { start: Math.max(0, Math.floor(start)), end: Math.max(1, Math.ceil(end)) };
-    if (range.start === current.range.start && range.end === current.range.end) return;
-    const next = { query: current.query, range };
+    if (range.start === current.range.start && range.end === current.range.end && preferredIndex === current.preferredIndex) return;
+    const next = { query: current.query, range, preferredIndex };
     latest.current = next;
     setIntent(next);
-    setFailure((previous) => previous?.key === key && includesPage(coveringPages(range, total), previous.offset)
+    setFailure((previous) => previous?.key === requestKey && includesPage(coveringPages(range, total), previous.offset)
       ? previous : null);
-  }, [key, name, total]);
+  }, [name, requestKey, total]);
 
-  const fileAt = useCallback((index: number) => {
-    const offset = pageOffset(index);
-    return cached?.pages.get(offset)?.[index - offset];
-  }, [cached]);
+  const fileAt = useCallback((index: number) => cachedFile(visible, index), [visible]);
 
   return {
     query, name, key, changeQuery, loading, error, total, fileAt, loadRange, retry: () => setFailure(null),
-    locatingFile: Boolean(anchorFileId), anchorIndex,
+    locatingFile: Boolean(initialAnchor), anchorIndex, refreshing,
   };
 }

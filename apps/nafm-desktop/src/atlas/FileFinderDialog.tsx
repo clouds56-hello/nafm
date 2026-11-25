@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import type { FinderPosition, IndexedFileSearchResult } from "../lib/types";
 import { OpenInIcon, SearchIcon } from "../management/Icons";
@@ -6,7 +6,7 @@ import { AnalysisDialog } from "./analysis/AnalysisDialog";
 import { AnalysisError } from "./analysis/AnalysisPageControls";
 import { useAnalysisNavigation } from "./analysis/useAnalysisNavigation";
 import { useDirectoryViewport } from "./useDirectoryViewport";
-import { useIndexedFileSearch, type FinderSearchCache } from "./useIndexedFileSearch";
+import { useIndexedFileSearch, type FinderRefresh, type FinderSearchCache } from "./useIndexedFileSearch";
 import "./file-finder.css";
 
 interface FileFinderProps {
@@ -26,8 +26,8 @@ interface FinderChoice {
 }
 
 export function FileFinder({ open, ...props }: FileFinderProps) {
-  const { workspace, session, contentRevision } = props;
-  const cache = useMemo<FinderSearchCache>(() => new Map(), [workspace, session, contentRevision]);
+  const { workspace, session } = props;
+  const cache = useMemo<FinderSearchCache>(() => new Map(), [workspace, session]);
   if (!open) return null;
   return <FileFinderDialog {...props} cache={cache} />;
 }
@@ -37,11 +37,15 @@ interface FileFinderDialogProps extends Omit<FileFinderProps, "open"> {
 }
 
 function FileFinderDialog({ workspace, contentRevision, session, position, cache, onOpen, onOpened, onClose }: FileFinderDialogProps) {
-  const search = useIndexedFileSearch(workspace, contentRevision, position?.query ?? "", position?.row_index ?? 0, cache, position?.file_id);
+  const search = useIndexedFileSearch(
+    workspace, contentRevision, position?.query ?? "", position?.row_index ?? 0, cache, position?.file_id, receiveRefresh,
+  );
   const total = search.locatingFile ? 0 : search.total ?? 0;
   const input = useRef<HTMLInputElement>(null);
   const scrollPane = useRef<HTMLDivElement>(null);
   const [scrollPositions] = useState(() => new Map<string, number | "end">(position ? [[search.key, position.scroll_position]] : []));
+  const [refreshReveal, setRefreshReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
+  const [missingRefreshKey, setMissingRefreshKey] = useState<string | null>(null);
   const anchorApplied = useRef(false);
   const restoredIndex = search.anchorIndex ?? Math.min(position?.row_index ?? 0, Math.max(0, total - 1));
 
@@ -58,10 +62,11 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
   const viewport = useDirectoryViewport({
     contentsKey: search.key, anchorIndex: 0, total, active: total > 0, scrollPane, scrollPositions,
     rowHeightProperty: "--finder-row-height",
+    reveal: refreshReveal?.key === search.key ? refreshReveal : undefined,
   });
   const { listRef, first, start, end, ready, capacity } = viewport;
   const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null);
-  const pendingFocus = useRef<{ key: string; index: number | null; scrollTop: number } | null>(null);
+  const pendingFocus = useRef<{ key: string; index: number | null; scrollTop: number | null } | null>(null);
   const restoring = useRef<FinderPosition | null>(null);
   const navigation = useAnalysisNavigation(
     ({ file, position }: FinderChoice, signal) => onOpen(file, signal, position),
@@ -74,9 +79,16 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     restoring.current = position;
   }, [position]);
 
-  useEffect(() => {
-    if (ready && end > start) search.loadRange(start, end);
-  }, [ready, start, end, search.loadRange]);
+  useLayoutEffect(() => {
+    if (!ready || end <= start) return;
+    const list = listRef.current;
+    const active = document.activeElement;
+    const pending = active === list && pendingFocus.current?.key === search.key ? pendingFocus.current.index : null;
+    const row = active?.closest<HTMLElement>("[data-virtual-row]");
+    const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : null;
+    const preferred = pending ?? focusedIndex ?? first;
+    search.loadRange(start, end, preferred >= start && preferred < end ? preferred : first);
+  }, [ready, first, start, end, cursor, listRef, search.key, search.refreshing, search.loadRange]);
 
   useLayoutEffect(() => {
     const saved = restoring.current;
@@ -113,7 +125,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     if (!ready) return;
     const target = pending.index ?? first;
     if (target < start || target >= end) {
-      if (scrollPane.current?.scrollTop !== pending.scrollTop) pendingFocus.current = null;
+      if (pending.scrollTop !== null && scrollPane.current?.scrollTop !== pending.scrollTop) pendingFocus.current = null;
       return;
     }
     const row = listRef.current?.querySelector<HTMLButtonElement>(`[data-virtual-row="${target}"] button`);
@@ -122,6 +134,43 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
       row.focus({ preventScroll: true });
     }
   }, [ready, first, start, end, search.key, search.fileAt, listRef]);
+
+  function receiveRefresh({ key, previousIndex, index, previousTotal, total, missingFile }: FinderRefresh) {
+    const list = listRef.current;
+    const active = document.activeElement;
+    const row = active?.closest<HTMLElement>("[data-virtual-row]");
+    const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : null;
+    const pending = active === list && pendingFocus.current?.key === key ? pendingFocus.current : null;
+    const newerIndex = pending?.index ?? focusedIndex;
+    if (newerIndex !== null && newerIndex !== previousIndex) {
+      const insideViewport = newerIndex >= start && newerIndex < end;
+      search.loadRange(insideViewport ? start : newerIndex, insideViewport ? end : newerIndex + 1, newerIndex);
+      return false;
+    }
+    const ownsFocusedRow = focusedIndex === previousIndex;
+    setMissingRefreshKey(missingFile && ownsFocusedRow ? key : null);
+
+    if (!total) {
+      pendingFocus.current = null;
+      if (ownsFocusedRow || active === list) input.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    if (ownsFocusedRow && (index !== previousIndex || missingFile)) {
+      list?.focus({ preventScroll: true });
+      pendingFocus.current = { key, index, scrollTop: null };
+    } else if (pending) {
+      pendingFocus.current = { key, index, scrollTop: null };
+    }
+
+    if (index !== previousIndex || total !== previousTotal) {
+      const saved = scrollPositions.get(key) ?? first;
+      const keepEnd = saved === "end" && previousTotal !== null && total - index <= previousTotal - previousIndex;
+      const next = keepEnd ? "end" : Math.max(0, (saved === "end" ? first : saved) + index - previousIndex);
+      scrollPositions.set(key, next);
+      setRefreshReveal({ key, index, onApplied: () => setRefreshReveal(null) });
+    }
+  }
 
   const entries = Array.from({ length: Math.max(0, end - start) }, (_, offset) => {
     const index = start + offset;
@@ -194,10 +243,11 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     search.retry();
   }
 
+  const matches = search.name && search.total !== null ? `${formatCount(total)} ${total === 1 ? "match" : "matches"}` : "";
   const status = navigation.opening ? "Opening file…"
     : search.locatingFile ? search.loading ? "Locating previous result…" : ""
       : search.loading && search.total === null ? "Searching…"
-        : search.name && search.total !== null ? `${formatCount(total)} ${total === 1 ? "match" : "matches"}` : "";
+        : matches;
 
   return (
     <AnalysisDialog
@@ -213,6 +263,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
               onChange={(event) => {
                 restoring.current = null;
                 const text = event.currentTarget.value;
+                setMissingRefreshKey(null);
                 if (text.trim() !== search.name || search.locatingFile) {
                   pendingFocus.current = null;
                   scrollPositions.clear();
@@ -243,7 +294,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
             />
           </div>
           <span className="atlas-finder-count" role="status">{status}</span>
-          {search.anchorIndex === null && (
+          {(search.anchorIndex === null || missingRefreshKey === search.key) && (
             <span className="atlas-finder-feedback atlas-finder-count" role="status">The previous file is no longer in these results.</span>
           )}
           {search.error && <div className="atlas-finder-feedback">

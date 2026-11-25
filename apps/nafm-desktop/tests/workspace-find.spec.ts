@@ -396,6 +396,94 @@ test("Back to results follows the same file after its search rank changes", asyn
   await expect(dialog.locator('[aria-posinset="13"] button')).toBeFocused();
 });
 
+test("an index refresh keeps a distant Finder result focused while the dialog is open", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  const refresh = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let publish!: () => void;
+    let complete!: () => void;
+    const publishing = new Promise<void>((resolve) => { publish = resolve; });
+    const completing = new Promise<void>((resolve) => { complete = resolve; });
+    const state = {
+      publish, complete, published: false, completed: false,
+      reads: [] as { reply_offset: number | null; after_completion: boolean }[],
+    };
+    bridge.invoke = async (command, args) => {
+      if (command === "plugin:event|emit" && args.event === "task://scan/events") {
+        const event = args.payload as { site_id: string | null; kind: string; phase: string | null; scope: string };
+        if (event.site_id === "field-drive" && event.kind === "progress"
+          && (event.phase === "hashing" || event.phase === "finalizing")) {
+          await publishing;
+          state.published = true;
+        }
+        if (event.kind === "completed" && (event.site_id === "field-drive" || event.scope === "task")) {
+          await completing;
+          if (event.site_id === "field-drive") state.completed = true;
+        }
+      }
+      if (!state.published || command !== "search_indexed_files" || String(args.query).toLowerCase() !== ".tif") {
+        return invoke(command, args);
+      }
+      const read = { reply_offset: null as number | null, after_completion: state.completed };
+      state.reads.push(read);
+      const response = await invoke(command, args);
+      read.reply_offset = (response as IndexedFileSearchPage).offset;
+      return response;
+    };
+    return state;
+  });
+
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("complementary", { name: "Sites", exact: true })
+    .getByRole("button", { name: "Scan Field drive", exact: true }).click();
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  const input = query(dialog);
+  const pane = dialog.locator(".atlas-analysis-body");
+  const resultsRegion = dialog.getByRole("region", { name: "File search results" });
+  const first = result(dialog, /^Botanical study 0016\.tif/);
+  const last = result(dialog, /^Print masters\.tif/);
+  const searchText = "  .tIf  ";
+  await input.fill(searchText);
+  await expect(first).toBeInViewport();
+  await input.press("ArrowDown");
+  await page.keyboard.press("End");
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 0.99 });
+  const savedScroll = await pane.evaluate((body) => body.scrollTop);
+  expect(savedScroll).toBeGreaterThan(0);
+
+  try {
+    await refresh.evaluate((state) => state.publish());
+    await expect.poll(() => refresh.evaluate((state) => state.published
+      && state.reads.some((read) => read.reply_offset !== null))).toBe(true);
+    await expect(resultsRegion).not.toHaveAttribute("aria-busy", "true");
+    await expect(last).toBeFocused();
+    await expect(last).toBeInViewport({ ratio: 0.99 });
+    await expect(input).toHaveValue(searchText);
+    expect(await pane.evaluate((body) => body.scrollTop)).toBe(savedScroll);
+
+    await refresh.evaluate((state) => state.complete());
+    await expect.poll(() => refresh.evaluate((state) => state.completed
+      && state.reads.some((read) => read.after_completion && read.reply_offset !== null))).toBe(true);
+    await expect(resultsRegion).not.toHaveAttribute("aria-busy", "true");
+    await expect(last).toBeFocused();
+    await expect(last).toBeInViewport({ ratio: 0.99 });
+    await expect(input).toHaveValue(searchText);
+    expect(await pane.evaluate((body) => body.scrollTop)).toBe(savedScroll);
+  } finally {
+    await refresh.evaluate((state) => { state.publish(); state.complete(); });
+  }
+  const offsets = await refresh.evaluate((state) => state.reads.flatMap(({ reply_offset }) => reply_offset === null ? [] : [reply_offset]));
+  expect(offsets.every((offset) => offset >= 700)).toBe(true);
+  await page.keyboard.press("ArrowUp");
+  await expect(result(dialog, /^Studio session 3977\.tif/)).toBeFocused();
+});
+
 test("Find files restores the search that opened each inspected result in Atlas history", async ({ page }) => {
   await page.goto("/mock/");
   await page.getByRole("button", { name: "Find files", exact: true }).click();
