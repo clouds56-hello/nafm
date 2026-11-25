@@ -12,6 +12,7 @@ interface AtlasInspectorProps {
   initialView: InspectorView;
   siteId: string;
   inspection: AtlasInspection | null;
+  openedFile: RefObject<AtlasInspection | null>;
   contentsPane: RefObject<HTMLDivElement | null>;
   fileOpen: boolean;
   folderName?: string;
@@ -47,7 +48,7 @@ function focusContentsRow(pane: HTMLDivElement) {
 }
 
 export function AtlasInspector({
-  view, initialView, siteId, inspection, contentsPane, fileOpen, folderName, detailsKey, origin,
+  view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, folderName, detailsKey, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -76,13 +77,18 @@ export function AtlasInspector({
     const file = screen === "file" ? detailsKey : null;
     const changedFile = file !== null && file !== previous.file;
     previousView.current = { screen, siteId, file, inspection };
+    const openedHere = inspection !== null && openedFile.current === inspection;
+    if (openedHere) openedFile.current = null;
     const active = document.activeElement;
+    const focusedOutside = active && active !== document.body && !drawer.current?.contains(active);
     const inspectingFile = screen === "file" || previous.screen === "file";
     // Atlas history owns focus when entering or leaving a result inspected in the map.
     const inspectionHistory = previous.screen && screen && !inspectingFile && previous.inspection !== inspection;
+    const restoringFile = screen === "file" && previous.inspection !== inspection && !openedHere;
+    const leavingFile = previous.screen === "file" && screen === "contents" && previous.inspection !== inspection;
     if ((previous.screen === screen && !changedFile)
       || inspectionHistory
-      || (previous.siteId !== siteId && active && active !== document.body && !drawer.current?.contains(active))) return;
+      || (focusedOutside && (previous.siteId !== siteId || restoringFile || leavingFile))) return;
     if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
@@ -99,7 +105,7 @@ export function AtlasInspector({
       origin.current = null;
     }
     enterList.current = false;
-  }, [screen, siteId, inspection, detailsKey, contentsPane, origin]);
+  }, [screen, siteId, inspection, openedFile, detailsKey, contentsPane, origin]);
 
   if (!view) {
     return (

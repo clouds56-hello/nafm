@@ -77,6 +77,7 @@ interface NavigationEntry {
   limit: number;
   anchor_offset: number;
   selected_node_id: string;
+  selected_file?: StorageNode;
   sort: DirectorySort;
   atlas_group?: true;
   inspection?: AtlasInspection | null;
@@ -84,7 +85,8 @@ interface NavigationEntry {
 
 export type AtlasInspection =
   | { kind: "finder"; position: FinderPosition }
-  | { kind: "analysis" };
+  | { kind: "analysis" }
+  | { kind: "file" };
 
 interface AtlasSelection {
   node: StorageNode;
@@ -184,13 +186,13 @@ function withDirectorySort(entry: NavigationEntry, sort: DirectorySort): Navigat
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
-  const previousSearch = left.inspection?.kind === "finder" ? left.inspection.position : null;
-  const nextSearch = right.inspection?.kind === "finder" ? right.inspection.position : null;
-  const sameInspection = left.inspection?.kind === "analysis" || right.inspection?.kind === "analysis"
-    ? left.inspection === right.inspection
-    : previousSearch?.session === nextSearch?.session
-      && previousSearch?.query === nextSearch?.query
-      && previousSearch?.file_id === nextSearch?.file_id;
+  const previous = left.inspection;
+  const next = right.inspection;
+  const sameInspection = previous?.kind === "finder" && next?.kind === "finder"
+    ? previous.position.session === next.position.session
+      && previous.position.query === next.position.query
+      && previous.position.file_id === next.position.file_id
+    : (previous ?? null) === (next ?? null);
   return left.site_id === right.site_id
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
@@ -415,6 +417,7 @@ export function useDashboard(
       sort: currentPage?.sort ?? DEFAULT_DIRECTORY_SORT,
       atlas_group: currentPage?.atlas_group,
       selected_node_id: selected?.node.id ?? currentLocation.root.id,
+      selected_file: selected?.node.kind === "file" ? selected.node : undefined,
       inspection: selected?.inspection,
     };
   }, []);
@@ -422,7 +425,7 @@ export function useDashboard(
   const loadFolderLocation = useCallback(async function loadFolderLocation(
     entry: NavigationEntry,
     historyAction: "push" | "switch" | "back" | "forward" | "reset" | "preserve",
-    { silent = false, signal, onError, action, retrying = false, anchor }: LocationLoadOptions = {},
+    { silent = false, signal, onError, action, retrying = false, anchor: requestedAnchor }: LocationLoadOptions = {},
   ): Promise<LocationLoadResult> {
     const workspace = workspaceNameRef.current;
     if (!workspace) return "failed";
@@ -432,6 +435,9 @@ export function useDashboard(
     pendingRangeRef.current = null;
     setLoadingMoreChildren(false);
     const previousEntry = currentNavigationEntry();
+    // Filtered and nested files can be outside the saved directory window and radial tree.
+    const restoring = historyAction === "switch" || historyAction === "back" || historyAction === "forward";
+    const anchor = requestedAnchor ?? (restoring && entry.selected_file ? inspectFileAnchor(entry.selected_file.id) : undefined);
     const ownsRequest = () => locationRequestRef.current === requestId
       && childrenRequestRef.current === childrenRequestId
       && workspaceNameRef.current === workspace;
@@ -494,7 +500,7 @@ export function useDashboard(
       if (inspectedFileId && inspectedFileId !== selectedId) return "superseded";
       const indexedSelection = snapshot.inspected_file?.id === selectedId ? snapshot.inspected_file
         : findNode(nextLocation.root, selectedId) ?? page.children.find((child) => child.id === selectedId);
-      const lastSelected = selectionRef.current?.node;
+      const lastSelected = preserved?.node ?? entry.selected_file;
       const unavailableFile = !indexedSelection && inspectedFileId === lastSelected?.id && lastSelected.kind === "file"
         ? lastSelected : null;
       const selection = indexedSelection ?? unavailableFile ?? nextLocation.root;
@@ -1218,7 +1224,9 @@ export function useDashboard(
     }
   }, []);
 
-  const selectNode = useCallback((node: StorageNode, onGroupArrival?: DirectoryAnchorLoad["onArrival"]) => {
+  const selectNode = useCallback((node: StorageNode, {
+    inspection, onGroupArrival,
+  }: { inspection?: AtlasInspection; onGroupArrival?: DirectoryAnchorLoad["onArrival"] } = {}) => {
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     if (node.kind === "file") {
@@ -1238,7 +1246,7 @@ export function useDashboard(
         childrenLoadingRef.current = false;
         setChildrenLoading(false);
       }
-      selectLocationNode(node);
+      selectLocationNode(node, inspection);
       return;
     }
     const group = node.kind === "smaller_items" ? /^smaller_items:(\d+):(.+)$/.exec(node.id) : null;
@@ -1473,7 +1481,9 @@ export function useDashboard(
       const selectedIndex = reveal.page.children.findIndex((child) => child.id === reveal.selected_file.id);
       if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
       const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
-      const inspection = destination.kind === "match" ? destination.inspection : previousEntry?.inspection;
+      const previousInspection = previousEntry?.inspection;
+      const inspection = destination.kind === "match" ? destination.inspection
+        : previousInspection?.kind === "file" ? null : previousInspection;
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,

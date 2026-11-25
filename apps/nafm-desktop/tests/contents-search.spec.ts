@@ -114,6 +114,80 @@ test("Contents finds distant entries and returns from Details to the same filter
   await expect(first).toHaveAccessibleName(/^Studio portraits/);
 });
 
+for (const route of ["Sites", "Atlas history"] as const) {
+  test(`returning through ${route} restores distant filtered file Details and Contents`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    const contents = await openPhotoLibrary(page, "large");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const openField = sites.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
+    const openStudio = sites.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+    const path = page.getByRole("navigation", { name: "Folder path" });
+    const previous = path.getByRole("button", { name: "Previous location", exact: true });
+    const next = path.getByRole("button", { name: "Next location", exact: true });
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const backToContents = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+
+    const filter = searchInput(contents);
+    const query = "  hArBoR SuRvEy  ";
+    const rank = 440;
+    const fileName = "Harbor survey 2431.jpg";
+    const file = entry(contents, /^Harbor survey 2431\.jpg/);
+    const heading = inspector.getByRole("heading", { name: fileName, exact: true });
+    const grid = contents.getByRole("grid");
+    await searchButton(contents).press("Enter");
+    await filter.fill(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    await expect(file).toHaveCount(0);
+    const height = await grid.evaluate((list) =>
+      Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (rank - 4) * height);
+    await expect(file).toBeInViewport({ ratio: 0.99 });
+    const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scrollTop).toBeGreaterThan(0);
+
+    await file.press("Enter");
+    await expect(heading).toBeVisible();
+    await expect(backToContents).toBeVisible();
+    await openField.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Field drive");
+
+    if (route === "Sites") {
+      await page.getByRole("region", { name: "Circular storage map" })
+        .getByRole("button", { name: /^Drone imagery,/ }).press("Enter");
+      await expect(currentFolder(page)).toHaveText("Drone imagery");
+      await searchButton(contents).press("Enter");
+      await filter.fill("survey");
+      await expect(grid).toHaveAttribute("aria-rowcount", "1");
+      await expect(entry(contents, /^Headland survey\.dng/)).toBeVisible();
+    }
+
+    const returnToStudio = route === "Sites" ? openStudio : previous;
+    await returnToStudio.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(heading).toBeVisible();
+    await expect(backToContents).toBeVisible();
+    await expect(returnToStudio).toBeFocused();
+
+    if (route === "Atlas history") {
+      await next.press("Enter");
+      await expect(currentFolder(page)).toHaveText("Field drive");
+      await previous.press("Enter");
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(heading).toBeVisible();
+      await expect(backToContents).toBeVisible();
+    }
+
+    await backToContents.press("Enter");
+    await expect(sites).toBeVisible();
+    await expect(filter).toHaveValue(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollTop);
+    await expect(file).toBeInViewport({ ratio: 0.99 });
+    await expect(file).toBeFocused();
+  });
+}
+
 test("Show in Contents keeps the folder search and reveals a late match", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
   const search = searchInput(contents);

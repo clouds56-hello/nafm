@@ -667,6 +667,29 @@ test.describe("compact file Details during a rescan", () => {
     await expect(nearby).toBeInViewport({ ratio: 0.99 });
     expect(await contents.evaluate((pane) => pane.scrollTop)).toBeGreaterThan(scrollPosition - 100);
   });
+
+  test("returning to a site explains that the inspected file is no longer indexed", async ({ page }) => {
+    const { details, contents, grid, back, fileId, scrollPosition } = await openLateFile(page, false);
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    await sites.getByRole("button", { name: "Open Field drive in Atlas", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Field drive");
+    const scan = await observeRescan(page, fileId, "removed");
+    await scan.evaluate((read) => read.start());
+
+    const studio = sites.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+    await studio.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(details.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+    await expect(details.getByRole("status").filter({ hasText: "This file is no longer in the index." })).toBeVisible();
+    await expect(details.getByRole("button", { name: "Exact copies", exact: true })).toBeHidden();
+    await expect(studio).toBeFocused();
+
+    await back.press("Enter");
+    await expect(grid).toHaveAttribute("aria-rowcount", "99");
+    await expect(grid.locator(":focus[data-entry-id]")).toBeInViewport({ ratio: 0.99 });
+    expect(await contents.evaluate((pane) => pane.scrollTop)).toBeGreaterThan(scrollPosition - 100);
+  });
 });
 
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {

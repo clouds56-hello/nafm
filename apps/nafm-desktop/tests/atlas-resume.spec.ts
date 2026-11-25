@@ -323,6 +323,88 @@ test("closing Settings after unregistering its site focuses Workspace actions be
   await expect(actions).toBeFocused();
 });
 
+test("compact history restores a filtered file inspection after leaving its folder or site", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  await openFolder(page, "Photo Library");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+
+  const rail = sites(page);
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const proof = grid.getByRole("button", { name: /^Proof 096\.jpg/ });
+  const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+  const heading = inspector.getByRole("heading", { name: "Proof 096.jpg", exact: true });
+  const query = "  pRoOf  ";
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  await contents.getByRole("searchbox", { name: "Find in folder", exact: true }).fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(proof).toBeInViewport();
+  const scrollPosition = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scrollPosition).toBeGreaterThan(0);
+  await proof.press("Enter");
+  await expect(back).toBeFocused();
+
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await expect(contents.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(heading).toBeVisible();
+  await expect(back).toBeFocused();
+  await expect(back).toBeInViewport({ ratio: 0.99 });
+
+  await back.press("Alt+ArrowUp");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  const replay = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (!read.pending && command === "get_storage_view_snapshot" && args.nodeId === "site_folder:studio-archive:1") {
+        read.pending = true;
+        await gate;
+      }
+      return response;
+    };
+    return read;
+  });
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  try {
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect.poll(() => replay.evaluate((read) => read.pending)).toBe(true);
+    await actions.focus();
+  } finally {
+    await replay.evaluate((read) => read.release());
+  }
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(heading).toBeVisible();
+  await expect(actions).toBeFocused();
+
+  const field = rail.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
+  await field.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(heading).toBeVisible();
+  await expect(field).toBeFocused();
+
+  await back.press("ArrowLeft");
+  await expect(contents.getByRole("searchbox", { name: "Find in folder", exact: true })).toHaveValue(query);
+  await expect(proof).toBeFocused();
+  await expect(proof).toBeInViewport();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollPosition);
+  await expect(rail).toBeVisible();
+});
+
 test("a missing folder falls back to the remembered site's root", async ({ page }) => {
   await seedLocation(page, "field-drive", "site_folder:field-drive:0/No longer indexed");
   await page.goto("/mock/");
