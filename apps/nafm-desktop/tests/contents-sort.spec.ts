@@ -280,3 +280,50 @@ test("Contents previews match the atlas colors across ordering and health modes"
   await expect(tip).toBeVisible();
   await expect(tip).toContainText(/space health/i);
 });
+
+test("compact Contents previews leave nearby rows readable and scrollable", async ({ page }) => {
+  const viewport = { width: 390, height: 750 };
+  await page.setViewportSize(viewport);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+  await contents.getByRole("button", { name: /^Photo Library/ }).click();
+  await expect(contents.getByRole("grid", { name: "Photo Library entries" })).toHaveAttribute("aria-rowcount", "4096");
+
+  const portraits = contents.getByRole("button", { name: /^Studio portraits/ });
+  const editorial = contents.getByRole("button", { name: /^Editorial/ });
+  const tooltip = page.getByRole("tooltip");
+  const scrollPosition = () => contents.evaluate((pane) => ({ pane: pane.scrollTop, page: window.scrollY }));
+  const expectClearInspector = () => expect.poll(async () => {
+    const [card, drawer] = await Promise.all([tooltip.boundingBox(), inspector.boundingBox()]);
+    if (!card || !drawer) return false;
+    const right = card.x + card.width;
+    const bottom = card.y + card.height;
+    const withinViewport = card.x >= 0 && card.y >= 0 && right <= viewport.width && bottom <= viewport.height;
+    const outsideInspector = right <= drawer.x || card.x >= drawer.x + drawer.width
+      || bottom <= drawer.y || card.y >= drawer.y + drawer.height;
+    return withinViewport && outsideInspector;
+  }, { message: "The Contents preview fits on screen without covering the inspector" }).toBe(true);
+
+  await portraits.hover();
+  await expect(tooltip).toContainText("Studio portraits");
+  await expect(portraits).toHaveAccessibleDescription(/Studio portraits/);
+  await expectClearInspector();
+
+  await editorial.hover();
+  await expect(tooltip).toContainText("Editorial");
+  const before = await scrollPosition();
+  await page.mouse.wheel(0, 180);
+  await expect.poll(async () => (await scrollPosition()).pane).toBeGreaterThan(before.pane);
+  await expect(tooltip).toBeHidden();
+  expect((await scrollPosition()).page).toBeCloseTo(before.page, 0);
+
+  await contents.evaluate((pane) => { pane.scrollTop = 0; });
+  await portraits.press("ArrowDown");
+  await expect(editorial).toBeFocused();
+  await expect(tooltip).toContainText("Editorial");
+  await expect(editorial).toHaveAccessibleDescription(/Editorial/);
+  await expectClearInspector();
+});

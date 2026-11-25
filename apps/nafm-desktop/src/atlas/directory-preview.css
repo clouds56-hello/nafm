@@ -2,7 +2,7 @@
   color: var(--entry-color, var(--atlas-accent));
   background: color-mix(in srgb, currentColor 18%, transparent);
 }
-.atlas-directory-entry[data-entry-id]:is(:focus-visible, :hover) {
+.atlas-directory-entry[data-entry-id]:is(:focus-visible, :hover, [aria-describedby]) {
   background: color-mix(in srgb, var(--entry-color) 11%, var(--atlas-surface));
 }
 .atlas-directory-entry[aria-describedby] .atlas-directory-chevron { color: var(--entry-color); }
@@ -15,6 +15,7 @@
   position: fixed;
   z-index: 12;
   display: grid;
+  box-sizing: border-box;
   gap: 10px;
   width: min(270px, calc(100vw - 16px));
   max-height: calc(100dvh - 16px);

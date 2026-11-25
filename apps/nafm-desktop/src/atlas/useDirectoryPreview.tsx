@@ -60,8 +60,9 @@ interface RowPreview {
   input: "pointer" | "keyboard";
 }
 
-function DirectoryHoverCard({ anchor, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave }: {
+function DirectoryHoverCard({ anchor, pane, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave }: {
   anchor: HTMLButtonElement;
+  pane: HTMLDivElement;
   node: StorageNode;
   root: StorageNode;
   metric: HealthMetric | null;
@@ -76,21 +77,32 @@ function DirectoryHoverCard({ anchor, node, root, metric, score, awaitingInvento
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!card) return;
+    const inspector = pane.closest(".atlas-inspector-drawer") ?? pane;
     const position = () => {
       const row = anchor.getBoundingClientRect();
-      const { width, height } = card.getBoundingClientRect();
+      const panel = inspector.getBoundingClientRect();
       const gap = 8;
+      const viewportHeight = window.innerHeight;
+      const { width } = card.getBoundingClientRect();
       const maxX = document.documentElement.clientWidth - width - gap;
-      const maxY = window.innerHeight - height - gap;
-      let x = row.left - width - gap;
-      let y = row.top + (row.height - height) / 2;
-      if (x < gap) {
-        x = row.right + gap;
-        if (x > maxX) {
-          x = row.left;
-          y = row.bottom + gap <= maxY ? row.bottom + gap : row.top - height - gap;
-        }
+      const left = panel.left - width - gap;
+      const right = panel.right + gap;
+      let x = row.left;
+      let y: number;
+      if (left >= gap || right <= maxX) {
+        card.style.maxHeight = "";
+        x = left >= gap ? left : right;
+        y = row.top + (row.height - card.getBoundingClientRect().height) / 2;
+      } else {
+        // Compact layouts need a clear scroll surface and unobstructed inspector controls.
+        const top = Math.min(viewportHeight, panel.top);
+        const bottom = Math.max(0, panel.bottom);
+        const above = top - 2 * gap;
+        const below = viewportHeight - bottom - 2 * gap;
+        card.style.maxHeight = `${Math.max(0, above, below)}px`;
+        y = above >= below ? top - gap - card.getBoundingClientRect().height : bottom + gap;
       }
+      const maxY = viewportHeight - card.getBoundingClientRect().height - gap;
       card.style.left = `${Math.max(gap, Math.min(maxX, x))}px`;
       card.style.top = `${Math.max(gap, Math.min(maxY, y))}px`;
     };
@@ -98,6 +110,7 @@ function DirectoryHoverCard({ anchor, node, root, metric, score, awaitingInvento
     const observer = new ResizeObserver(position);
     observer.observe(card);
     observer.observe(anchor);
+    observer.observe(inspector);
     window.addEventListener("resize", position);
     document.addEventListener("scroll", position, true);
     return () => {
@@ -105,7 +118,7 @@ function DirectoryHoverCard({ anchor, node, root, metric, score, awaitingInvento
       window.removeEventListener("resize", position);
       document.removeEventListener("scroll", position, true);
     };
-  }, [anchor]);
+  }, [anchor, pane]);
 
   return createPortal(
     <div ref={cardRef} id={id} className="atlas-directory-preview" role="tooltip"
@@ -126,10 +139,17 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   const [preview, setPreview] = useState<RowPreview | null>(null);
   const keyboardStep = useRef(false);
   const closeTimer = useRef<number | undefined>(undefined);
+  const switchTimer = useRef<number | undefined>(undefined);
   const branchColor = useMemo(() => root && directoryBranchColors(root), [root]);
-  const cancelClose = useCallback(() => window.clearTimeout(closeTimer.current), []);
-  const close = useCallback(() => { cancelClose(); setPreview(null); }, [cancelClose]);
-  const leave = () => { cancelClose(); closeTimer.current = window.setTimeout(close, 120); };
+  const cancelTimers = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    window.clearTimeout(switchTimer.current);
+  }, []);
+  const close = useCallback(() => { cancelTimers(); setPreview(null); }, [cancelTimers]);
+  const leave = () => {
+    cancelTimers();
+    closeTimer.current = window.setTimeout(close, 250);
+  };
   const entry = preview && entries?.find((node) => node.id === preview.nodeId);
   const shown = active && entry && preview?.key === contentsKey ? preview : null;
 
@@ -137,7 +157,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   useLayoutEffect(() => {
     if (preview && (!shown || !preview.anchor.isConnected || preview.anchor.dataset.entryId !== preview.nodeId)) close();
   });
-  useEffect(() => cancelClose, [cancelClose]);
+  useEffect(() => cancelTimers, [cancelTimers]);
   useEffect(() => {
     if (!shown) return;
     const pane = scrollPane.current;
@@ -157,6 +177,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
         const row = shown.anchor.getBoundingClientRect();
         if (row.bottom > top && row.top < bounds.bottom) return;
       }
+      cancelTimers();
       setPreview((current) => current === shown ? null : current);
     };
     window.addEventListener("keydown", dismissKey, true);
@@ -169,7 +190,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
       document.removeEventListener("focusin", dismissOutside, true);
       pane?.removeEventListener("scroll", handleScroll);
     };
-  }, [shown, scrollPane, close]);
+  }, [shown, scrollPane, close, cancelTimers]);
 
   function colorFor(node: StorageNode, score: HealthPresentation | null) {
     return score?.color ?? branchColor?.(node) ?? "var(--atlas-muted)";
@@ -178,7 +199,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   function bind(node: StorageNode) {
     const score = metric ? nodeHealthPresentation(node, metric, targetCompleteness) : null;
     const open = (anchor: HTMLButtonElement, input: RowPreview["input"]) => {
-      cancelClose();
+      cancelTimers();
       if (active && !(shown?.nodeId === node.id && shown.input === input)) setPreview({ nodeId: node.id, input, anchor, key: contentsKey });
     };
     return {
@@ -187,10 +208,17 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
       onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => {
         if (event.pointerType !== "touch" && !event.buttons) {
           keyboardStep.current = false;
-          open(event.currentTarget, "pointer");
+          const anchor = event.currentTarget;
+          if (shown?.input === "pointer" && shown.nodeId !== node.id) {
+            // Let the pointer cross intervening rows on its way to the card.
+            cancelTimers();
+            switchTimer.current = window.setTimeout(() => open(anchor, "pointer"), 100);
+          } else {
+            open(anchor, "pointer");
+          }
         }
       },
-      onPointerLeave: () => { if (shown?.input === "pointer" && shown.nodeId === node.id) leave(); },
+      onPointerLeave: () => { if (shown?.input === "pointer") leave(); },
       onPointerDown: () => { keyboardStep.current = false; close(); },
       onKeyDownCapture: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -209,9 +237,10 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   }
 
   const score = entry && metric ? nodeHealthPresentation(entry, metric, targetCompleteness) : null;
-  const card = root && shown && entry ? (
-    <DirectoryHoverCard anchor={shown.anchor} node={entry} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory}
-      color={colorFor(entry, score)} id={id} onEnter={cancelClose} onLeave={leave} />
+  const pane = scrollPane.current;
+  const card = root && shown && entry && pane ? (
+    <DirectoryHoverCard anchor={shown.anchor} pane={pane} node={entry} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory}
+      color={colorFor(entry, score)} id={id} onEnter={cancelTimers} onLeave={leave} />
   ) : null;
   return { bind, card };
 }
