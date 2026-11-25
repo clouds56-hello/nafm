@@ -339,7 +339,11 @@ test.describe("compact Coverage options", () => {
 
   test("a pending target keeps picker focus and Escape closes only Map options", async ({ page }) => {
     const { sites, contents } = await coverWithPanels(page);
-    await sites.getByRole("button", { name: "Add site", exact: true }).press("Enter");
+    await contents.locator('[aria-rowindex="1"] [data-entry-id]').press("Home");
+    const preview = page.getByRole("tooltip");
+    await expect(preview).toBeVisible();
+    await sites.getByRole("button", { name: "Add site", exact: true }).tap({ timeout: 2_000 });
+    await expect(preview).toBeHidden();
     await addSite(page, "Backup archive", "/demo/Backup");
 
     const trigger = page.getByRole("button", { name: "Map options", exact: true });

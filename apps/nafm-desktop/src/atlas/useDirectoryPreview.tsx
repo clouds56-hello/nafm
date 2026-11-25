@@ -60,8 +60,9 @@ interface RowPreview {
   input: "pointer" | "keyboard";
 }
 
-function DirectoryHoverCard({ anchor, pane, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave }: {
+function DirectoryHoverCard({ anchor, input, pane, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave }: {
   anchor: HTMLButtonElement;
+  input: RowPreview["input"];
   pane: HTMLDivElement;
   node: StorageNode;
   root: StorageNode;
@@ -121,7 +122,7 @@ function DirectoryHoverCard({ anchor, pane, node, root, metric, score, awaitingI
   }, [anchor, pane]);
 
   return createPortal(
-    <div ref={cardRef} id={id} className="atlas-directory-preview" role="tooltip"
+    <div ref={cardRef} id={id} className="atlas-directory-preview" role="tooltip" data-input={input}
       style={{ "--branch-color": color } as CSSProperties} onPointerEnter={onEnter} onPointerLeave={onLeave}>
       <PreviewSummary node={node} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory} />
       <dl className="atlas-directory-preview__facts">
@@ -239,7 +240,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   const score = entry && metric ? nodeHealthPresentation(entry, metric, targetCompleteness) : null;
   const pane = scrollPane.current;
   const card = root && shown && entry && pane ? (
-    <DirectoryHoverCard anchor={shown.anchor} pane={pane} node={entry} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory}
+    <DirectoryHoverCard anchor={shown.anchor} input={shown.input} pane={pane} node={entry} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory}
       color={colorFor(entry, score)} id={id} onEnter={cancelTimers} onLeave={leave} />
   ) : null;
   return { bind, card };
