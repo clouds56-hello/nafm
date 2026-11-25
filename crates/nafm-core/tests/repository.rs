@@ -3030,10 +3030,9 @@ async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
     direction: SortDirection::Asc,
   };
   let mut anchor = StorageDirectoryAnchor {
-    child_id: child.id.clone(),
+    child_id: Some(child.id.clone()),
     query: Some("  ShOt  ".into()),
-    inspect_file: false,
-    preserve_page_offset: false,
+    inspected_file_id: None,
   };
   let snapshot = fixture
     .repo
@@ -3066,7 +3065,7 @@ async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
 
   anchor.query = Some("shot".into());
   for child_id in [nested.id.as_str(), "missing-child"] {
-    anchor.child_id = child_id.into();
+    anchor.child_id = Some(child_id.into());
     let fallback = fixture
       .repo
       .storage_view_snapshot_with_anchor("anchor-source", None, &parent.id, 1, 1, 2, 2, sort, Some(&anchor))
@@ -3103,10 +3102,14 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   let file = child_named(nested, "retained.bin");
   let outside = child_named(parent, "outside");
   let anchor = StorageDirectoryAnchor {
-    child_id: file.id.clone(),
+    child_id: Some(file.id.clone()),
     query: Some("retained".into()),
-    inspect_file: true,
-    preserve_page_offset: false,
+    inspected_file_id: Some(file.id.clone()),
+  };
+  let browsing = StorageDirectoryAnchor {
+    child_id: Some(outside.id.clone()),
+    query: Some("outside".into()),
+    inspected_file_id: Some(file.id.clone()),
   };
   let sort = DirectorySort {
     field: DirectorySortField::Name,
@@ -3114,13 +3117,13 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   };
   let snapshot = fixture
     .repo
-    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 1, 0, 1, 1, sort, Some(&anchor))
+    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 0, 0, 1, 1, sort, Some(&browsing))
     .await
     .unwrap();
   assert!(snapshot.location.root.children.is_empty());
   assert_eq!(snapshot.page.offset, 1);
   assert_eq!(snapshot.page.children[0].id, outside.id);
-  assert!(snapshot.filtered_page.is_none());
+  assert_eq!(snapshot.filtered_page.unwrap().children[0].id, outside.id);
   let inspected = snapshot.inspected_file.unwrap();
   assert_eq!(inspected.id, file.id);
   assert_eq!(inspected.path, file.path);
@@ -3140,7 +3143,7 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   assert_eq!(direct.inspected_file.unwrap().id, file.id);
 
   let keep_window = StorageDirectoryAnchor {
-    preserve_page_offset: true,
+    child_id: None,
     ..anchor.clone()
   };
   let distant = fixture
@@ -3160,7 +3163,7 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
     .unwrap();
   assert_eq!(distant.page.offset, 0);
   assert_eq!(distant.page.children[0].name, "earlier.bin");
-  assert_eq!(distant.filtered_page.unwrap().children[0].id, file.id);
+  assert!(distant.filtered_page.is_none());
   assert_eq!(distant.inspected_file.unwrap().id, file.id);
 
   let outside_scope = fixture
@@ -3175,7 +3178,7 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   fixture.repo.scan_site("inspected-source").await.unwrap();
   let removed = fixture
     .repo
-    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 0, 0, 1, 1, sort, Some(&anchor))
+    .storage_view_snapshot_with_anchor("inspected-source", None, &parent.id, 0, 0, 1, 1, sort, Some(&browsing))
     .await
     .unwrap();
   assert!(removed.inspected_file.is_none());

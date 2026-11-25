@@ -4742,14 +4742,14 @@ fn storage_view_snapshot(
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
   let entries = ordered_directory_entries(selected, sort, None);
   let total_children = entries.len() as u64;
-  let anchor_index = anchor.and_then(|anchor| directory_entry_index(&entries, &anchor.child_id));
+  let anchor_index = anchor
+    .and_then(|anchor| anchor.child_id.as_deref())
+    .and_then(|id| directory_entry_index(&entries, id));
   let page_offset = match anchor_index {
-    Some(index) if !anchor.is_some_and(|anchor| anchor.preserve_page_offset) => {
-      directory_page_start(index as u64, page_limit)
-    }
-    _ if total_children == 0 => 0,
-    _ if offset >= total_children => directory_page_start(total_children - 1, page_limit),
-    _ => offset,
+    Some(index) => directory_page_start(index as u64, page_limit),
+    None if total_children == 0 => 0,
+    None if offset >= total_children => directory_page_start(total_children - 1, page_limit),
+    None => offset,
   };
   let page = directory_page(
     site.clone(),
@@ -4763,12 +4763,15 @@ fn storage_view_snapshot(
     .and_then(|anchor| anchor.query.as_deref())
     .zip(anchor_index)
     .and_then(|(query, index)| anchored_filtered_directory_page(&page, &entries, index, query));
-  let inspected_file = anchor.filter(|anchor| anchor.inspect_file).and_then(|anchor| {
-    let node = anchor_index
-      .map(|index| entries[index])
-      .or_else(|| find_storage_node_builder_path(selected, &anchor.child_id).and_then(|path| path.last().copied()))?;
-    (node.kind == StorageNodeKind::File).then(|| storage_node_without_children(node))
-  });
+  let inspected_file = anchor
+    .and_then(|anchor| anchor.inspected_file_id.as_deref())
+    .and_then(|id| {
+      let node = anchor_index
+        .map(|index| entries[index])
+        .filter(|node| node.id == id)
+        .or_else(|| find_storage_node_builder(selected, id))?;
+      (node.kind == StorageNodeKind::File).then(|| storage_node_without_children(node))
+    });
 
   Ok(StorageViewSnapshot {
     tree: StorageTree {

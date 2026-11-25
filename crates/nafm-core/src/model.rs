@@ -250,13 +250,11 @@ pub struct StorageViewSnapshot {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageDirectoryAnchor {
-  pub child_id: String,
+  /// Direct child that anchors the directory page and any filtered page.
+  pub child_id: Option<String>,
   pub query: Option<String>,
-  #[serde(default)]
-  pub inspect_file: bool,
-  /// Keep the requested unfiltered window while resolving the anchor.
-  #[serde(default)]
-  pub preserve_page_offset: bool,
+  /// File to inspect anywhere within the requested directory, independently of the visible page.
+  pub inspected_file_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -295,10 +295,9 @@ export interface StorageFileReveal extends StorageViewSnapshot {
 }
 
 export interface StorageDirectoryAnchor {
-  child_id: string;
-  query: string | null;
-  inspect_file?: boolean;
-  preserve_page_offset?: boolean;
+  child_id?: string;
+  query?: string | null;
+  inspected_file_id?: string;
 }
 
 export interface DirectoryRefresh {

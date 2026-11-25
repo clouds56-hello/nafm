@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { StorageViewSnapshot } from "../src/lib/types";
+import type { StorageDirectoryAnchor, StorageViewSnapshot } from "../src/lib/types";
 
 const studioWorkspace = "Studio workspace";
 const fieldWorkspace = "Field notes";
@@ -183,12 +183,13 @@ for (const layout of ["desktop", "compact"] as const) {
     await expect(heading).toBeVisible();
     const inspections = await page.evaluateHandle(() => {
       const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-        __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: { child_id: string; inspect_file?: boolean } }) => Promise<unknown> };
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: StorageDirectoryAnchor }) => Promise<unknown> };
       };
       const invoke = bridge.invoke.bind(bridge);
       const files: string[] = [];
       bridge.invoke = (command, args) => {
-        if (command === "get_storage_view_snapshot" && args.anchor?.inspect_file) files.push(args.anchor.child_id);
+        const inspected = args.anchor?.inspected_file_id;
+        if (command === "get_storage_view_snapshot" && inspected) files.push(inspected);
         return invoke(command, args);
       };
       return files;
@@ -215,12 +216,12 @@ test("returning to a workspace opens Contents when its inspected file is no long
   await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
   await page.evaluate((removedId) => {
     const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: { child_id: string; inspect_file?: boolean } }) => Promise<unknown> };
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: StorageDirectoryAnchor }) => Promise<unknown> };
     };
     const invoke = bridge.invoke.bind(bridge);
     bridge.invoke = async (command, args) => {
       const response = await invoke(command, args);
-      if (command !== "get_storage_view_snapshot" || args.anchor?.child_id !== removedId || !args.anchor.inspect_file) return response;
+      if (command !== "get_storage_view_snapshot" || args.anchor?.inspected_file_id !== removedId) return response;
       const snapshot = response as StorageViewSnapshot;
       return {
         ...snapshot, inspected_file: null,

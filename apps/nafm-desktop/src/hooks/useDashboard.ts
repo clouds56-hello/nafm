@@ -164,7 +164,7 @@ interface DirectoryAnchorLoad {
 }
 
 function inspectFileAnchor(id: string, preservePageOffset = false): DirectoryAnchorLoad {
-  return { request: { child_id: id, query: null, inspect_file: true, preserve_page_offset: preservePageOffset || undefined } };
+  return { request: { child_id: preservePageOffset ? undefined : id, inspected_file_id: id } };
 }
 
 interface ContentsFileReveal {
@@ -547,12 +547,12 @@ export function useDashboard(
       const preserved = historyAction === "preserve" ? selectionRef.current : null;
       const selectedId = preserved?.node.id ?? entry.selected_node_id;
       const inspection = preserved ? preserved.inspection : entry.inspection ?? null;
-      const inspectedFileId = sameFolder && anchor?.request?.inspect_file ? anchor.request.child_id : null;
+      const inspectedFileId = sameFolder ? anchor?.request?.inspected_file_id : undefined;
       if (inspectedFileId && inspectedFileId !== selectedId) return "superseded";
       const indexedSelection = snapshot.inspected_file?.id === selectedId ? snapshot.inspected_file
         : findNode(nextLocation.root, selectedId) ?? page.children.find((child) => child.id === selectedId);
       const lastSelected = preserved?.node ?? entry.selected_file;
-      const unavailableFile = !indexedSelection && inspectedFileId === lastSelected?.id && lastSelected.kind === "file"
+      const unavailableFile = !indexedSelection && lastSelected?.kind === "file" && inspectedFileId === lastSelected.id
         ? lastSelected : null;
       const selection = indexedSelection ?? unavailableFile ?? nextLocation.root;
 
@@ -684,9 +684,11 @@ export function useDashboard(
       return position?.siteId === entry.site_id && position.targetSiteId === entry.target_site_id
         && position.nodeId === entry.node_id ? position : null;
     };
-    const position = !foreground && preserve ? positionForFolder(directoryRefresh.current) : null;
+    const contents = directoryRefresh.current;
+    const position = !foreground && preserve ? positionForFolder(contents) : null;
+    const inspectedFileId = saved?.file?.id ?? entry.selected_file?.id;
     const anchor: DirectoryAnchorLoad | undefined = position ? {
-      request: { child_id: position.childId, query: null },
+      request: { child_id: position.childId, inspected_file_id: inspectedFileId },
       onArrival: (_location, page) => {
         const target = directoryRefresh.current;
         const latest = positionForFolder(target);
@@ -702,11 +704,8 @@ export function useDashboard(
           missingEntry: match < 0,
         });
       },
-    } : undefined;
-    const selected = preserve ? selectionRef.current?.node : null;
-    const inspectedFileId = saved?.file?.id ?? (selected?.kind === "file" ? selected.id : undefined);
-    const inspectionAnchor = inspectedFileId ? inspectFileAnchor(inspectedFileId) : undefined;
-    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor: anchor ?? inspectionAnchor });
+    } : inspectedFileId ? inspectFileAnchor(inspectedFileId, Boolean(preserve && contents)) : undefined;
+    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor });
     return result === "loaded";
   }, [browsingScope, currentNavigationEntry, directoryRefresh, loadFolderLocation]);
 
@@ -802,8 +801,7 @@ export function useDashboard(
       }
       const current = siteListChanged ? currentNavigationEntry() : null;
       if (current && current.site_id === nextSite) {
-        const selected = selectionRef.current?.node;
-        const anchor = selected?.kind === "file" ? inspectFileAnchor(selected.id) : undefined;
+        const anchor = current.selected_file ? inspectFileAnchor(current.selected_file.id, Boolean(directoryRefresh.current)) : undefined;
         // Site edits refresh the visible folder without blocking a newer navigation.
         await loadFolderLocation({ ...current, target_site_id: nextTarget }, "preserve", { silent: true, anchor });
       } else if (nextSite) {
@@ -814,7 +812,7 @@ export function useDashboard(
     } finally {
       if (dashboardRequestRef.current === requestId) setLoading(false);
     }
-  }, [acceptDashboard, browsingScope, clearLocation, currentNavigationEntry, loadFolderLocation, refreshTree]);
+  }, [acceptDashboard, browsingScope, clearLocation, currentNavigationEntry, directoryRefresh, loadFolderLocation, refreshTree]);
 
   const reloadDashboard = useCallback(async () => {
     if (!dashboardRef.current) {

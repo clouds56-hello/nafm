@@ -173,16 +173,17 @@ for (const view of ["all entries", "filtered matches"] as const) {
   });
 }
 
-for (const handoff of ["a Coverage target change", "a Sites round trip"] as const) {
+for (const handoff of ["a Coverage target change", "a Sites round trip", "an inventory refresh"] as const) {
   test(`Show in Contents keeps its paused search and viewport through ${handoff}`, async ({ page }) => {
-    const fromFinder = handoff === "a Coverage target change";
+    const fromFinder = handoff !== "a Sites round trip";
+    const changesTarget = handoff === "a Coverage target change";
     const fileName = fromFinder ? "Proof 096.jpg" : "Proof 001.jpg";
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.goto(fromFinder ? "/mock/?scenario=large" : "/mock/");
     const map = page.getByRole("figure");
     await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
     await expect(currentFolder(page)).toHaveText("Photo Library");
-    if (!fromFinder) await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    if (!changesTarget) await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
     await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
 
     const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
@@ -214,7 +215,7 @@ for (const handoff of ["a Coverage target change", "a Sites round trip"] as cons
     await expect(grid).toHaveAttribute("aria-rowcount", count);
     await expect(revealed).toBeFocused();
 
-    if (fromFinder) {
+    if (changesTarget) {
       await showCoverage(page);
       await expect(target(page)).toHaveAttribute("title", "Field drive");
     }
@@ -225,7 +226,7 @@ for (const handoff of ["a Coverage target change", "a Sites round trip"] as cons
     await expect(row).toBeInViewport({ ratio: 0.99 });
     await expect(revealed).toHaveCount(0);
     const fileId = (await row.getAttribute("data-entry-id"))!;
-    const comparisonRow = fromFinder ? await row.elementHandle() : null;
+    const comparisonRow = changesTarget ? await row.elementHandle() : null;
     const scroll = await contents.evaluate((pane) => pane.scrollTop);
     expect(scroll).toBeGreaterThan(0);
 
@@ -240,7 +241,7 @@ for (const handoff of ["a Coverage target change", "a Sites round trip"] as cons
       if (comparisonRow) expect(await row.evaluate((current, initial) => current === initial, comparisonRow)).toBe(true);
     }
 
-    if (fromFinder) {
+    if (changesTarget) {
       await target(page).selectOption("team-share");
       await expect(target(page)).toHaveAttribute("title", "Team share");
       await expect(target(page)).toHaveValue("team-share");
@@ -252,7 +253,7 @@ for (const handoff of ["a Coverage target change", "a Sites round trip"] as cons
       await expectPausedPosition();
       await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
       await expect(target(page)).toHaveAttribute("title", "Team share");
-    } else {
+    } else if (handoff === "a Sites round trip") {
       const sites = page.getByRole("complementary", { name: "Sites", exact: true });
       const field = sites.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
       const studio = sites.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
@@ -262,6 +263,46 @@ for (const handoff of ["a Coverage target change", "a Sites round trip"] as cons
       await studio.press("Enter");
       await expect(studio).toHaveAttribute("aria-current", "true");
       await expect(studio).toBeFocused();
+    } else {
+      const scan = await page.evaluateHandle(() => {
+        const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+        };
+        const invoke = bridge.invoke.bind(bridge);
+        let publish!: () => void;
+        const publication = new Promise<void>((resolve) => { publish = resolve; });
+        const state = { publish, published: false, refreshed: false };
+        bridge.invoke = async (command, args) => {
+          if (command === "plugin:event|emit" && args.event === "task://scan/events") {
+            const event = args.payload as { site_id: string | null; kind: string; phase: string | null };
+            if (event.site_id === "studio-archive" && event.kind === "progress"
+              && (event.phase === "hashing" || event.phase === "finalizing")) {
+              await publication;
+              state.published = true;
+            }
+          }
+          const response = await invoke(command, args);
+          if (state.published && command === "get_storage_view_snapshot" && args.nodeId === "site_folder:studio-archive:1") {
+            requestAnimationFrame(() => requestAnimationFrame(() => { state.refreshed = true; }));
+          }
+          return response;
+        };
+        return state;
+      });
+      const results = contents.getByRole("region", { name: "Directory entries" });
+      await expect(results).not.toHaveAttribute("aria-busy", "true");
+      const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+      await sites.getByRole("button", { name: "Scan Studio archive", exact: true }).click();
+      try {
+        await row.evaluate((element) => element.focus({ preventScroll: true }));
+        await expect(row).toBeFocused();
+        await scan.evaluate((state) => state.publish());
+        await expect.poll(() => scan.evaluate((state) => state.refreshed), { timeout: 15_000 }).toBe(true);
+        await expectPausedPosition();
+        await expect(row).toBeFocused();
+      } finally {
+        await scan.evaluate((state) => state.publish());
+      }
     }
 
     await expectPausedPosition();

@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { StorageChildrenPage, StorageViewSnapshot } from "../src/lib/types";
+import type { StorageChildrenPage, StorageDirectoryAnchor, StorageViewSnapshot } from "../src/lib/types";
 
 function arc(page: Page, name: RegExp) {
   return page.getByRole("region", { name: "Circular storage map" }).getByRole("button", { name });
@@ -727,9 +727,9 @@ test.describe("compact file Details during a rescan", () => {
         const response = await invoke(command, args);
         if ((command !== "get_storage_view_snapshot" && command !== "get_storage_children") || args.nodeId !== nodeId) return response;
         const snapshot = command === "get_storage_view_snapshot" ? response as StorageViewSnapshot : null;
-        const anchor = args.anchor as { child_id?: string; inspect_file?: boolean } | string | undefined;
-        if (snapshot?.inspected_file?.id === fileId && anchor && typeof anchor === "object"
-          && anchor.inspect_file && anchor.child_id === fileId) read.inspected = true;
+        const anchor = args.anchor as StorageDirectoryAnchor | string | undefined;
+        if (snapshot?.inspected_file?.id === fileId && typeof anchor === "object"
+          && anchor.inspected_file_id === fileId) read.inspected = true;
         if (command === "get_storage_children" && anchor === fileId && args.query === "pRoOf") read.filtered = true;
         if (!children) return response;
         const page = snapshot?.page ?? response as StorageChildrenPage;

@@ -255,11 +255,12 @@ function makeSnapshot(
   const { node } = nodePath(model.root, args);
   const { offset, limit } = paging(args);
   const children = orderedChildren(node, directorySort(args.sort));
-  const childIndex = anchor ? children.findIndex((child) => child.id === anchor.child_id) : -1;
-  const start = childIndex >= 0 && !anchor?.preserve_page_offset
-    ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
-  const inspected = anchor?.inspect_file
-    ? children[childIndex] ?? findPath(node, anchor.child_id)?.at(-1)
+  const childId = anchor?.child_id;
+  const childIndex = childId === undefined ? -1 : children.findIndex((child) => child.id === childId);
+  const start = childIndex >= 0 ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
+  const inspectedId = anchor?.inspected_file_id;
+  const inspected = inspectedId !== undefined
+    ? (inspectedId === childId ? children[childIndex] : undefined) ?? findPath(node, inspectedId)?.at(-1)
     : undefined;
   const snapshot = {
     tree: makeTree(model, args), location: makeLocation(model, args),
@@ -330,13 +331,14 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   function snapshot(args: CommandArgs) {
     checkWorkspace(current(), args.expectedWorkspace);
     if (args.anchor == null) return makeSnapshot(model(args), args);
-    const { child_id, query, inspect_file, preserve_page_offset } = record(args.anchor);
-    if (typeof child_id !== "string" || (query != null && typeof query !== "string")
-      || (inspect_file !== undefined && typeof inspect_file !== "boolean")
-      || (preserve_page_offset !== undefined && typeof preserve_page_offset !== "boolean")) {
+    const { child_id, query, inspected_file_id } = record(args.anchor);
+    if ((child_id != null && typeof child_id !== "string") || (query != null && typeof query !== "string")
+      || (inspected_file_id != null && typeof inspected_file_id !== "string")) {
       throw new Error("Invalid directory anchor.");
     }
-    return makeSnapshot(model(args), args, { child_id, query: query ?? null, inspect_file, preserve_page_offset });
+    return makeSnapshot(model(args), args, {
+      child_id: child_id ?? undefined, query: query ?? null, inspected_file_id: inspected_file_id ?? undefined,
+    });
   }
 
   function children(args: CommandArgs) {
