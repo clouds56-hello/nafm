@@ -296,6 +296,125 @@ test("adding the first comparison target does not interrupt a newer folder drill
 test.describe("compact Coverage options", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
 
+  async function coverWithPanels(page: Page) {
+    await openPartialCoverage(page);
+    await page.getByRole("figure").getByRole("button", { name: /^Projects,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    await expect(sites).toBeVisible();
+    await expect(contents).toBeVisible();
+    return { sites, contents };
+  }
+
+  async function holdComparisons(page: Page, pairs: string[]) {
+    return page.evaluateHandle((pairs) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { siteId?: string; targetSiteId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const calls: string[] = [];
+      const released: string[] = [];
+      const gates = new Map(pairs.map((pair) => {
+        let release = () => {};
+        const reply = new Promise<void>((resolve) => { release = resolve; });
+        return [pair, { release, reply }] as const;
+      }));
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        const pair = `${args?.siteId}:${args?.targetSiteId}`;
+        const gate = command === "get_storage_view_snapshot" ? gates.get(pair) : undefined;
+        if (gate) {
+          calls.push(pair);
+          await gate.reply;
+          released.push(pair);
+        }
+        return response;
+      };
+      return { calls, released, release: (pair: string) => gates.get(pair)?.release() };
+    }, pairs);
+  }
+
+  test("a pending target keeps picker focus and Escape closes only Map options", async ({ page }) => {
+    const { sites, contents } = await coverWithPanels(page);
+    await sites.getByRole("button", { name: "Add site", exact: true }).press("Enter");
+    await addSite(page, "Backup archive", "/demo/Backup");
+
+    const trigger = page.getByRole("button", { name: "Map options", exact: true });
+    await trigger.press("Enter");
+    const options = page.getByRole("group", { name: "Map options", exact: true });
+    const picker = options.getByRole("combobox", { name: "Compare with", exact: true });
+    const backupId = (await picker.getByRole("option", { name: "Backup archive", exact: true }).getAttribute("value"))!;
+    const team = "studio-archive:team-share";
+    const backup = `studio-archive:${backupId}`;
+    const reads = await holdComparisons(page, [team, backup]);
+
+    await picker.focus();
+    await picker.selectOption("team-share");
+    await expect.poll(() => reads.evaluate(({ calls }) => calls)).toEqual([team]);
+    await expect(picker).toBeFocused();
+    await expect(picker).toBeEnabled();
+    await expect(picker).toHaveValue("field-drive");
+    await expect(target(page)).toHaveValue("field-drive");
+    await expect(options.getByText("Comparing with Team share…", { exact: true })).toBeVisible();
+    await expect(coverage(page).getByRole("status")).toHaveText("Comparing with Team share…");
+
+    await picker.selectOption(backupId);
+    await expect.poll(() => reads.evaluate(({ calls }) => calls)).toEqual([team, backup]);
+    await reads.evaluate(({ release }, pair) => release(pair), team);
+    await expect.poll(() => reads.evaluate(({ released }) => released)).toEqual([team]);
+    await expect(picker).toBeFocused();
+    await expect(picker).toHaveValue("field-drive");
+    await expect(options.getByText("Comparing with Backup archive…", { exact: true })).toBeVisible();
+    await expect(coverage(page).getByRole("status")).toHaveText("Comparing with Backup archive…");
+
+    await page.keyboard.press("Escape");
+    await expect(options).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(sites).toBeVisible();
+    await expect(contents).toBeVisible();
+    await reads.evaluate(({ release }, pair) => release(pair), backup);
+    await expect(target(page)).toHaveValue(backupId);
+    await expect(coverage(page).getByRole("status")).toContainText("Coverage unavailable");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(trigger).toBeFocused();
+    await expect(sites).toBeVisible();
+    await expect(contents).toBeVisible();
+  });
+
+  test("a pending swap retains focus while the confirmed comparison stays visible", async ({ page }) => {
+    const { sites, contents } = await coverWithPanels(page);
+    const trigger = page.getByRole("button", { name: "Map options", exact: true });
+    await trigger.press("Enter");
+    const options = page.getByRole("group", { name: "Map options", exact: true });
+    const swap = options.getByRole("button", { name: "Swap source and target", exact: true });
+    const swapped = "field-drive:studio-archive";
+    const reads = await holdComparisons(page, [swapped]);
+
+    await swap.press("Enter");
+    await expect.poll(() => reads.evaluate(({ calls }) => calls)).toEqual([swapped]);
+    await expect(swap).toBeDisabled();
+    await expect(swap).toBeFocused();
+    await expect(target(page)).toHaveValue("field-drive");
+    await expect(options.getByText("Opening Field drive…", { exact: true })).toBeVisible();
+    await expect(coverage(page).getByRole("status")).toHaveText("Opening Field drive…");
+    await page.keyboard.press("Enter");
+    await reads.evaluate(({ release }, pair) => release(pair), swapped);
+    await expect(currentFolder(page)).toHaveText("Field drive");
+    await expect(target(page)).toHaveValue("studio-archive");
+    await expect(swap).toBeEnabled();
+    await expect(swap).toBeFocused();
+    expect(await reads.evaluate(({ calls }) => calls)).toEqual([swapped]);
+
+    await page.keyboard.press("Escape");
+    await expect(options).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await expect(sites).toBeVisible();
+    await expect(contents).toBeVisible();
+  });
+
   test("Map options can verify both sites independently without leaving the comparison", async ({ page }) => {
     await openPartialCoverage(page);
     const map = page.getByRole("figure");

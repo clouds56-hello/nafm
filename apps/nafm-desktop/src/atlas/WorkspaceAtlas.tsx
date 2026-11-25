@@ -17,7 +17,7 @@ import { SourceLibrary } from "./SourceLibrary";
 import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
-import { useDashboard, type AtlasInspection } from "../hooks/useDashboard";
+import { useDashboard, type AnalysisInspection, type AtlasInspection } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
@@ -56,7 +56,14 @@ interface ReviewInspection {
   returning: boolean;
 }
 
-type ComparisonSession = { session: symbol; workspace: string; siteId: string; siteName: string; node: StorageNode; open: boolean } & (
+type ComparisonSession = {
+  session: symbol;
+  workspace: string;
+  siteId: string;
+  siteName: string;
+  node: StorageNode;
+  nextInspection: AnalysisInspection | null;
+} & (
   | { kind: "copies"; destination?: { siteId: string; path: string }; position: AnalysisPosition<FileContentMatchesPage> | null }
   | { kind: "similarity"; destination?: { siteId: string; nodeId: string }; position: AnalysisPosition<FolderSimilarityPage> | null }
 );
@@ -134,6 +141,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [reviewSession, setReviewSession] = useState(() => Symbol());
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
+  const [comparisonVisits, setComparisonVisits] = useState(() => new Map<AnalysisInspection, ComparisonSession>());
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, workspace.siteListRevision, browsingScope, directoryRefresh);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
@@ -243,20 +251,32 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const returnToReview = reviewed && reviewed.session === analysisSession && selected?.kind === "file"
     && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
   const comparison = comparisonSession?.workspace === findWorkspace ? comparisonSession : null;
-  const returnToComparison = comparison?.destination && comparison.session === analysisSession
-    && comparison.destination.siteId === siteId && (comparison.kind === "copies"
-      ? selected?.kind === "file" && selected.path === comparison.destination.path
-      : !selected && folder?.id === comparison.destination.nodeId);
+  const comparisonVisit = inspection?.kind === "analysis" ? comparisonVisits.get(inspection) : null;
+  const returnToComparison = comparison && comparisonVisit?.destination && comparisonVisit.session === comparison.session
+    && comparisonVisit.destination.siteId === siteId && (comparisonVisit.kind === "copies"
+      ? selected?.kind === "file" && selected.path === comparisonVisit.destination.path
+      : !selected && folder?.id === comparisonVisit.destination.nodeId) ? comparisonVisit : null;
+  const nextComparisonInspection = comparison?.nextInspection;
 
   function openComparison(kind: ComparisonKind) {
     if (!findWorkspace || !site || !selectedNode) return;
-    const source = { session: Symbol(), workspace: findWorkspace, siteId: site.id, siteName: site.name, node: selectedNode, open: true };
+    const session = Symbol();
+    const source = { session, workspace: findWorkspace, siteId: site.id, siteName: site.name, node: selectedNode,
+      nextInspection: { kind: "analysis", session } as const };
+    setComparisonVisits(new Map());
     setComparisonSession({ ...source, kind, position: null });
+  }
+
+  function rememberComparisonVisit(marker: AnalysisInspection, next: ComparisonSession) {
+    setComparisonVisits((saved) => new Map(saved).set(marker, next));
+    setComparisonSession(next);
+    showAnalysisDetails();
   }
 
   function closeComparison() {
     if (comparison?.destination) setAnalysisFocusRequested(true);
     setComparisonSession(null);
+    setComparisonVisits(new Map());
   }
 
   function openReview() {
@@ -343,7 +363,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const currentVerification = site ? siteVerification(site, verificationScanState(site.id)) : null;
   const sourceVerification = coverage && site ? siteVerification(site, verificationScanState(site.id), "source") : null;
   const targetVerification = coverage && target ? siteVerification(target, verificationScanState(target.id), "target") : null;
-  const comparisonSite = comparison?.open && dashboard?.sites.find((item) => item.id === comparison.siteId);
+  const comparisonSite = comparison?.nextInspection && dashboard?.sites.find((item) => item.id === comparison.siteId);
   const comparisonVerification = comparisonSite ? siteVerification(comparisonSite, verificationScanState(comparisonSite.id)) : undefined;
 
   useEffect(() => {
@@ -359,6 +379,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const recoveryOnMap = !recoveryInSources && Boolean(state.locationFailure) && !state.treeError && !state.error;
   const openingSiteId = state.locationProgress?.opening_site_id;
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
+  const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
 
   useLayoutEffect(() => {
     if (recoveryOnMap) revealInCompactAtlas(mapRegion.current?.querySelector(".atlas-location-recovery") ?? null);
@@ -642,6 +663,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           targets: targetOptions,
           target,
           navigationBusy: state.childrenLoading,
+          navigationProgress: state.locationProgress?.message,
           spaceVerification: currentVerification,
           sourceVerification,
           targetVerification,
@@ -703,7 +725,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"} />
             )}
             {folder && state.locationProgress && (
-              <span className="atlas-location-progress" role={openingSiteInPanel ? undefined : "status"}>
+              <span className="atlas-location-progress" role={openingSiteInPanel || coverageFooterVisible ? undefined : "status"}>
                 {state.locationProgress.message}
               </span>
             )}
@@ -733,6 +755,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 hasFolderContent={folder.file_count > 0}
                 sourceVerification={sourceVerification} targetVerification={targetVerification}
                 navigationBusy={state.childrenLoading}
+                navigationProgress={state.locationProgress?.message}
                 onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
                 onScanSite={state.scan} onAddSite={addSiteLauncher("coverage")}
                 addedTarget={siteAddition?.origin === "coverage" ? addedSite : undefined}
@@ -793,9 +816,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
-                    returnAction={returnToComparison && comparison ? {
+                    returnAction={returnToComparison ? {
                       label: "Back to comparison",
-                      run: () => setComparisonSession({ ...comparison, open: true }),
+                      run: () => setComparisonSession({
+                        ...returnToComparison, nextInspection: { kind: "analysis", session: returnToComparison.session },
+                      }),
                     } : findWorkspace && finderPosition ? {
                       label: "Back to results",
                       run: () => setFinderSession((session) => session && { ...session, openedFrom: "details" }),
@@ -880,17 +905,18 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           </div>
         </section>
       </main>
-      {comparison?.open && (comparison.kind === "copies" ? comparison.node.path !== null && (
+      {comparison && nextComparisonInspection && (comparison.kind === "copies" ? comparison.node.path !== null && (
         <FileCopiesDialog
           key={comparison.node.id}
           workspaceName={comparison.workspace} siteId={comparison.siteId}
           source={{ name: comparison.node.name, site: comparison.siteName, path: comparison.node.path, size: comparison.node.total_bytes }}
           verification={comparisonVerification} onScanSite={state.scan}
           contentRevision={state.contentRevision} position={comparison.position}
-          onJump={(match, signal) => state.jumpToContentMatch(match, signal, comparison.session)} onClose={closeComparison}
+          onJump={(match, signal) => state.jumpToContentMatch(match, signal, nextComparisonInspection)} onClose={closeComparison}
           onShown={(match, position) => {
-            setComparisonSession({ ...comparison, open: false, position, destination: { siteId: match.site_id, path: match.path } });
-            showAnalysisDetails();
+            rememberComparisonVisit(nextComparisonInspection, {
+              ...comparison, nextInspection: null, position, destination: { siteId: match.site_id, path: match.path },
+            });
           }}
         />
       ) : (
@@ -900,12 +926,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           siteName={comparison.siteName} node={comparison.node}
           verification={comparisonVerification} onScanSite={state.scan}
           contentRevision={state.contentRevision} position={comparison.position}
-          onJump={(match, signal) => state.jumpToSimilarFolder(match, signal, comparison.session)} onClose={closeComparison}
+          onJump={(match, signal) => state.jumpToSimilarFolder(match, signal, nextComparisonInspection)} onClose={closeComparison}
           onShown={(match, position) => {
-            setComparisonSession({
-              ...comparison, open: false, position, destination: { siteId: match.folder.site_id, nodeId: match.folder.node_id },
+            rememberComparisonVisit(nextComparisonInspection, {
+              ...comparison, nextInspection: null, position,
+              destination: { siteId: match.folder.site_id, nodeId: match.folder.node_id },
             });
-            showAnalysisDetails();
           }}
         />
       ))}
@@ -986,7 +1012,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
           onHistoryStep={state.stepStageHistory}
-          onInspect={(file, signal) => state.jumpToContentMatch(file, signal, reviewSession)}
+          onInspect={(file, signal) => state.jumpToContentMatch(file, signal, { kind: "analysis", session: reviewSession })}
           onInspected={(file, position) => {
             setReviewInspection({ session: reviewSession, workspace: dashboard.workspace_name,
               siteId: file.site_id, path: file.path, position, returning: false });

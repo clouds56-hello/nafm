@@ -83,6 +83,7 @@ function ContentBreakdown({ match }: { match: FolderSimilarityMatch }) {
 export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, contentRevision, position, verification, onScanSite, onJump, onClose, onShown }: SimilarFoldersDialogProps) {
   const nodeId = node.id;
   const closeButton = useRef<HTMLButtonElement>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
   const verificationNoteId = useId();
   const [scanError, setScanError] = useState<string | null>(null);
   const load = useCallback((offset: number) => findSimilarFolders({
@@ -178,7 +179,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
         </div>
         {loading && !page && <p role="status">Comparing indexed contents…</p>}
         {loading && page && <p role="status">Refreshing similar folders…</p>}
-        {error && <AnalysisError error={error} retry={retry} />}
+        {error && <AnalysisError error={error} retry={retry} focusTarget={page ? refreshButton : closeButton} />}
         {matchChanged && <p role="status">The comparison results changed.</p>}
         {page && (
           <>
@@ -200,7 +201,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
             {scanFailure && <p className="atlas-analysis-warning" role="alert">{scanFailure}</p>}
             <div className="atlas-analysis-meta">
               {page.total_matches > 0 && <span role="status">{formatCount(page.total_matches)} {page.total_matches === 1 ? "match" : "matches"}</span>}
-              <button className="atlas-folder-refresh" type="button" aria-disabled={busy || undefined} onClick={busy ? undefined : () => {
+              <button className="atlas-folder-refresh" type="button" ref={refreshButton} aria-disabled={busy || undefined} onClick={busy ? undefined : () => {
                 navigation.clearError();
                 retry();
               }}>Refresh results</button>

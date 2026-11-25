@@ -93,7 +93,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
         </div>
         {loading && !page && <p role="status">Finding exact copies…</p>}
         {loading && page && <p role="status">Refreshing exact copies…</p>}
-        {error && <AnalysisError error={error} retry={retry} />}
+        {error && <AnalysisError error={error} retry={retry} focusTarget={closeButton} />}
         {matchChanged && <p role="status">The comparison results changed.</p>}
         {page && (
           <>

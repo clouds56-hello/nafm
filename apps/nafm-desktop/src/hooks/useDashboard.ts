@@ -89,9 +89,11 @@ interface NavigationEntry {
   inspection?: AtlasInspection | null;
 }
 
+export type AnalysisInspection = { kind: "analysis"; session: symbol };
+
 export type AtlasInspection =
   | { kind: "finder"; position: FinderPosition }
-  | { kind: "analysis"; session: symbol }
+  | AnalysisInspection
   | { kind: "file" };
 
 interface AtlasSelection {
@@ -1584,16 +1586,15 @@ export function useDashboard(
   }, [currentNavigationEntry, selectLocationNode]);
 
   const jumpToContentMatch = useCallback(async (
-    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | symbol,
+    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | AnalysisInspection,
   ): Promise<string | null> => {
-    const inspection: AtlasInspection = typeof origin === "symbol"
-      ? { kind: "analysis", session: origin } : { kind: "finder", position: origin };
+    const inspection: AtlasInspection = "kind" in origin ? origin : { kind: "finder", position: origin };
     const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection });
     return result.error;
   }, [revealFile]);
 
   const jumpToSimilarFolder = useCallback(async (
-    match: FolderSimilarityMatch, signal: AbortSignal, session: symbol,
+    match: FolderSimilarityMatch, signal: AbortSignal, inspection: AnalysisInspection,
   ): Promise<string | null> => {
     const workspace = workspaceNameRef.current;
     const currentSiteId = selectedSiteRef.current;
@@ -1609,7 +1610,7 @@ export function useDashboard(
     const sort = readSiteDirectorySort(workspace, site_id);
     let message = "The matched folder could not be opened.";
     const result = await loadFolderLocation({
-      site_id, node_id, target_site_id: target, selected_node_id: node_id, inspection: { kind: "analysis", session },
+      site_id, node_id, target_site_id: target, selected_node_id: node_id, inspection,
       offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, sort,
     }, "push", { signal, onError: (error) => { message = error; } });
     if (result === "superseded") return "Folder navigation was cancelled.";

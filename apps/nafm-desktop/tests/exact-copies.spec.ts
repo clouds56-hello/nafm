@@ -169,6 +169,30 @@ test("the same file returns to the comparison or review that opened its Atlas vi
   await expect(details).toBeFocused();
 });
 
+test("retrying unavailable exact copies keeps keyboard focus in the dialog", async ({ page }) => {
+  await inspectOriginalFile(page);
+  await page.evaluate(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let failFirst = true;
+    bridge.invoke = async (command, args) => {
+      if (command === "get_file_content_matches" && failFirst) {
+        failFirst = false;
+        throw new Error("Couldn’t read matching files.");
+      }
+      return invoke(command, args);
+    };
+  });
+
+  const dialog = await openExactCopies(page);
+  const error = dialog.getByRole("alert").filter({ hasText: "Couldn’t read matching files." });
+  await error.getByRole("button", { name: "Retry", exact: true }).press("Enter");
+  await expect(dialog.getByRole("list", { name: "Matching files" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close exact copies" })).toBeFocused();
+});
+
 test("an exact-copy jump that fails keeps the comparison available to retry", async ({ page }) => {
   await inspectOriginalFile(page);
   const dialog = await openExactCopies(page);

@@ -177,6 +177,53 @@ test("the compact comparison restores the chosen folder and scroll position afte
   expect(await comparisonReads.jsonValue()).toEqual([]);
 });
 
+test("Atlas history keeps each inspected match’s own comparison position", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 580 });
+  const dialog = await openComparison(page);
+  const picker = dialog.getByRole("combobox", { name: "Compare with", exact: true });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  const back = folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true });
+  const body = dialog.locator(".atlas-analysis-body");
+
+  await picker.selectOption({ label: "Backup campaign · Studio archive · 62%" });
+  await expect(match).toContainText(backupPath);
+  const backupScroll = await body.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  expect(backupScroll).toBeGreaterThan(0);
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(folderDetails(page)).toContainText(backupPath);
+  await back.press("Enter");
+  await expect(match).toContainText(backupPath);
+
+  await picker.selectOption({ label: "Campaign mirror · Team share · 89%" });
+  await expect(match).toContainText(mirrorPath);
+  await body.evaluate((element) => { element.scrollTop = 0; });
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(folderDetails(page)).toContainText(mirrorPath);
+  await expect(back).toBeVisible();
+
+  const previous = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  await previous.press("Enter");
+  await expect(folderDetails(page)).toContainText(backupPath);
+  await expect(back).toBeVisible();
+  await expect(previous).toBeFocused();
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(folderDetails(page)).toContainText(mirrorPath);
+  await expect(back).toBeVisible();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(folderDetails(page)).toContainText(backupPath);
+  await back.press("Enter");
+  await expect(match).toContainText(backupPath);
+  await expect(picker.locator("option:checked")).toContainText("Backup campaign");
+  await expect(show).toBeFocused();
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(backupScroll, 0);
+});
+
 test("refresh keeps the chosen folder while it remains a match", async ({ page }) => {
   const dialog = await openComparison(page);
   const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
@@ -262,6 +309,50 @@ test("refreshing and reopening a comparison keep the same result page", async ({
   await expect(pages.getByRole("button", { name: "Previous", exact: true })).toBeEnabled();
   await expect(pages.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
   expect(await comparisonReads.jsonValue()).toEqual([0, 1, 1]);
+});
+
+test("retrying a failed folder comparison refresh preserves focus and the selected match", async ({ page }) => {
+  const dialog = await openComparison(page);
+  const backup = dialog.getByRole("button", { name: /Studio archive.*Backup campaign/ });
+  const refresh = dialog.getByRole("button", { name: "Refresh results", exact: true });
+  await backup.press("Enter");
+  await expect(backup).toHaveAttribute("aria-pressed", "true");
+
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { count: 0, pending: false, release };
+    bridge.invoke = async (command, args) => {
+      if (command !== "find_similar_folders") return invoke(command, args);
+      if (++read.count === 1) throw new Error("Couldn’t refresh matching folders.");
+      const result = await invoke(command, args);
+      read.pending = true;
+      await gate;
+      return result;
+    };
+    return read;
+  });
+
+  try {
+    await refresh.press("Enter");
+    const error = dialog.getByRole("alert").filter({ hasText: "Couldn’t refresh matching folders." });
+    await error.getByRole("button", { name: "Retry", exact: true }).press("Enter");
+    await expect.poll(() => reads.evaluate((read) => read.pending)).toBe(true);
+    await expect(dialog.getByText("Refreshing similar folders…", { exact: true })).toBeVisible();
+    await expect(refresh).toBeFocused();
+    await expect(refresh).toBeDisabled();
+    await expect(backup).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    await reads.evaluate((read) => read.release());
+  }
+
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).toBeFocused();
+  await expect(backup).toHaveAttribute("aria-pressed", "true");
 });
 
 test("a failed folder jump keeps the chosen comparison open for retry", async ({ page }) => {

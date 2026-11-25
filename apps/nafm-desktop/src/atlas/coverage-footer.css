@@ -103,6 +103,7 @@
 }
 
 .atlas-coverage-status > span:first-child { font-weight: 650; }
+.atlas-coverage-status [data-tone="active"] { min-width: 0; color: var(--atlas-accent); overflow-wrap: anywhere; }
 .atlas-coverage-status [data-tone="ready"] { color: #c6d99b; }
 .atlas-coverage-status [data-tone="estimate"] { color: #e7ba94; }
 .atlas-coverage-info .atlas-health-key { margin-inline-start: auto; }

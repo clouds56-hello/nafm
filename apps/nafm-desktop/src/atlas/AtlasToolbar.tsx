@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import type { AtlasToolbarFocus, WorkspaceSwitchFailure } from "../hooks/useWorkspace";
 import { formatCount } from "../lib/format";
@@ -58,6 +58,7 @@ export interface AtlasToolbarProps {
     targets: readonly SiteOverview[];
     target: SiteOverview | null;
     navigationBusy: boolean;
+    navigationProgress?: string;
     spaceVerification: SiteVerification | null;
     sourceVerification: SiteVerification | null;
     targetVerification: SiteVerification | null;
@@ -140,6 +141,9 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
   const mode = mapModes.find(({ value }) => value === map.mode)?.title;
   const picker = useRef<HTMLSelectElement>(null);
   const spaceMetric = useRef<HTMLButtonElement>(null);
+  const progressId = useId();
+  const progress = map.navigationBusy ? map.navigationProgress ?? "Updating comparison…" : null;
+  const canSwap = map.target !== null && !map.navigationBusy;
   return (
     <ToolbarDisclosure
       label="Map options"
@@ -183,14 +187,21 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
                 <select
                   ref={picker}
                   value={map.target?.id ?? ""}
-                  disabled={map.targets.length === 0 || map.navigationBusy}
+                  disabled={map.targets.length === 0}
+                  aria-describedby={progress ? progressId : undefined}
                   onChange={(event) => map.onTargetChange(event.target.value)}
                 >
                   {!map.target && <option value="">{map.targets.length ? "Choose a source" : "No other source"}</option>}
                   {map.targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
                 </select>
               </label>
-              <button className="atlas-toolbar-panel-action" type="button" disabled={!map.target || map.navigationBusy} onClick={map.onSwap}>
+              {progress && <span className="atlas-toolbar-comparison-progress" id={progressId}>{progress}</span>}
+              <button className="atlas-toolbar-panel-action" type="button"
+                aria-describedby={progress ? progressId : undefined}
+                aria-disabled={!canSwap || undefined} onClick={canSwap ? (event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  map.onSwap();
+                } : undefined}>
                 <ToolbarIcon><path d="M4 7h12m-3-3 3 3-3 3M16 13H4m3-3-3 3 3 3" /></ToolbarIcon>
                 Swap source and target
               </button>

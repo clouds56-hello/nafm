@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import { formatCount } from "../../lib/format";
 
 interface AnalysisPageControlsProps {
@@ -38,11 +39,18 @@ export function VerificationNote({ pending, incomplete }: { pending: number; inc
   return <p className="atlas-analysis-warning" role="status">Results may be incomplete · {notes.join(" · ")}</p>;
 }
 
-export function AnalysisError({ error, retry }: { error: string; retry: () => void }) {
+export function AnalysisError({ error, retry, focusTarget }: {
+  error: string;
+  retry: () => void;
+  focusTarget?: RefObject<HTMLButtonElement | null>;
+}) {
   return (
     <div className="atlas-analysis-error" role="alert">
       <span>{error}</span>
-      <button type="button" onClick={retry}>Retry</button>
+      <button type="button" onClick={() => {
+        focusTarget?.current?.focus();
+        retry();
+      }}>Retry</button>
     </div>
   );
 }

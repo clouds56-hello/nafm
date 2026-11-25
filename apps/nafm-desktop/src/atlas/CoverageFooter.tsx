@@ -16,6 +16,7 @@ interface CoverageFooterProps {
   sourceVerification: SiteVerification;
   targetVerification: SiteVerification | null;
   navigationBusy?: boolean;
+  navigationProgress?: string;
   onTargetChange: (id: string) => void;
   onSwap: () => void;
   onScanSite: (siteId: string) => Promise<void>;
@@ -49,7 +50,7 @@ function unavailableReason(
 
 export function CoverageFooter({
   source, target, targets, coverage, hasFolderContent, sourceVerification, targetVerification, navigationBusy,
-  onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, children,
+  navigationProgress, onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, children,
 }: CoverageFooterProps) {
   const sourceStatusId = useId();
   const targetStatusId = useId();
@@ -113,7 +114,10 @@ export function CoverageFooter({
         {target && (
           <button
             className="atlas-coverage-swap" type="button" aria-label="Swap source and target" title="Swap source and target"
-            aria-disabled={navigationBusy || undefined} onClick={navigationBusy ? undefined : onSwap}
+            aria-disabled={navigationBusy || undefined} onClick={navigationBusy ? undefined : (event) => {
+              event.currentTarget.focus({ preventScroll: true });
+              onSwap();
+            }}
           >
             <svg width="17" height="17" viewBox="0 0 20 20" fill="none"
               stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
@@ -125,7 +129,9 @@ export function CoverageFooter({
       </div>
       <div className="atlas-coverage-info">
         <div className="atlas-coverage-status" role="status">
-          <span data-tone={navigationBusy ? undefined : result.tone}>{navigationBusy ? "Updating comparison…" : result.text}</span>
+          <span data-tone={navigationBusy ? "active" : result.tone}>
+            {navigationBusy ? navigationProgress ?? "Updating comparison…" : result.text}
+          </span>
           {reason && <span>{reason}</span>}
         </div>
         {target && (
