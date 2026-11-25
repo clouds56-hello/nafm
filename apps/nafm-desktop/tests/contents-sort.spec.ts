@@ -140,6 +140,42 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   await expect(page.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
 });
 
+test("keyboard Tab moves between sort groups and can leave the compact menu", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 310 });
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  const menu = page.getByRole("dialog", { name: "Sort contents" });
+  const method = menu.getByRole("radio", { name: "Size", exact: true });
+  const direction = menu.getByRole("radio", { name: "Descending", exact: true });
+
+  await sort.press("Tab");
+  await expect(sort).not.toBeFocused();
+  const nextControl = await page.evaluateHandle(() => document.activeElement);
+
+  await sort.press("Enter");
+  await expect(method).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(direction).toBeFocused();
+  await expect(direction).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("Shift+Tab");
+  await expect(method).toBeFocused();
+  await expect(method).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("Shift+Tab");
+  await expect(menu).toBeHidden();
+  await expect(sort).toBeFocused();
+
+  await sort.press("Enter");
+  await expect(method).toBeChecked();
+  await page.keyboard.press("Tab");
+  await expect(direction).toBeChecked();
+  await page.keyboard.press("Tab");
+  await expect(menu).toBeHidden();
+  await expect.poll(() => nextControl.evaluate((control) => control === document.activeElement)).toBe(true);
+  await expect(contents.locator('[aria-rowindex="1"] [data-entry-id]')).toHaveAccessibleName(/^Projects/);
+});
+
 test("each site restores its own Contents order after switching and reopening", async ({ page, context }) => {
   test.setTimeout(90_000);
   const contents = (view: Page) => view.getByRole("tabpanel", { name: "Contents" });
