@@ -30,6 +30,7 @@ interface DirectoryContentsProps {
   reveal?: { index: number; onApplied: () => void };
   refreshHandler?: RefObject<DirectoryRefreshTarget | null>;
   returnEntryId: string | null;
+  revealedEntry?: { id: string; origin?: Element | null };
   resumeVisibleRow: boolean;
   historyFocusOrigin: HTMLElement | null;
   onHistoryFocusHandled: () => void;
@@ -54,7 +55,8 @@ function visibleEntry(list: HTMLUListElement | null, first: number, capacity: nu
 
 export function DirectoryContents({
   location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, resumeVisibleRow, historyFocusOrigin, onHistoryFocusHandled,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
+  historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -70,7 +72,7 @@ export function DirectoryContents({
   const keyboardRow = useRef<{
     key: string; index: number; refreshPage?: StorageChildrenPage; preventScroll?: boolean;
   } | null>(null);
-  const returningEntry = useRef<{ id: string | null } | null>(null);
+  const returningEntry = useRef<{ id: string | null; origin?: Element | null } | null>(null);
   const [refreshReveal, setRefreshReveal] = useState<{
     key: string; page: StorageChildrenPage; index: number; position: number | "end"; onApplied: () => void;
   } | null>(null);
@@ -118,15 +120,17 @@ export function DirectoryContents({
   });
 
   useEffect(() => {
-    returningEntry.current = active && (returnEntryId || resumeVisibleRow) ? { id: returnEntryId } : null;
-  }, [active, returnEntryId, resumeVisibleRow, contentsKey]);
+    const id = returnEntryId ?? revealedEntry?.id ?? null;
+    returningEntry.current = active && (id || resumeVisibleRow) ? { id, origin: revealedEntry?.origin } : null;
+  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, contentsKey]);
 
   useEffect(() => {
     const request = returningEntry.current;
     const pane = scrollPane.current;
     if (!request || !pane || loading || (total > 0 && !ready)) return;
     const tab = document.getElementById(pane.getAttribute("aria-labelledby") ?? "");
-    if (document.activeElement === pane || document.activeElement === tab) {
+    const focus = document.activeElement;
+    if (focus === pane || focus === tab || (request.origin && (focus === request.origin || focus === document.body))) {
       const row = request.id
         ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(request.id)}"]`)
         : visibleEntry(listRef.current, first, viewport.capacity, cursor);
@@ -140,7 +144,7 @@ export function DirectoryContents({
       }
     }
     returningEntry.current = null;
-  }, [active, returnEntryId, resumeVisibleRow, cursor, ready, loading, total, error, page, first, start, end, viewport.capacity, listRef, scrollPane]);
+  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, cursor, ready, loading, total, error, page, first, start, end, viewport.capacity, listRef, scrollPane]);
 
   useLayoutEffect(() => {
     if (!active || loading) return;

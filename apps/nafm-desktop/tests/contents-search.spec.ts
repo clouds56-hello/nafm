@@ -167,6 +167,88 @@ test("Show in Contents can restore an excluding search and keeps the Finder jump
   await expect(currentFolder(page)).toHaveText("Studio archive");
 });
 
+const portraitsQuery = "  Studio portraits  ";
+
+async function openPortraitSearch(page: Page) {
+  const contents = await openPhotoLibrary(page, "large");
+  await sortByName(page, contents, "Ascending");
+  await searchButton(contents).press("Enter");
+  await searchInput(contents).fill(portraitsQuery);
+  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
+  await expect(entry(contents, /^Studio portraits/)).toBeVisible();
+  return contents;
+}
+
+test("Smaller items opens its group and preserves the folder search across the visit", async ({ page }) => {
+  const contents = await openPortraitSearch(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const grid = contents.getByRole("grid");
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  const search = searchInput(contents);
+
+  const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+  const paused = contents.getByRole("status").filter({ hasText: "Search paused" });
+  const restore = contents.getByRole("button", { name: "Restore search", exact: true });
+  const firstGroupedRow = grid.locator('[aria-rowindex="12"] [data-entry-id]');
+  await map.getByRole("button", { name: /^Smaller items,/ }).press("Enter");
+
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  await expect(paused).toBeVisible();
+  await expect(restore).toBeVisible();
+  await expect(search).toBeHidden();
+  await expect(sort).toHaveAttribute("title", "Size, descending");
+  await expect(firstGroupedRow).toHaveAccessibleName(/^Rooftop portraits 1428\.tif/);
+  await expect(firstGroupedRow).toBeFocused();
+  await expect(firstGroupedRow).toBeInViewport({ ratio: 0.99 });
+  await page.keyboard.press("ArrowDown");
+  await expect(grid.locator('[aria-rowindex="13"] [data-entry-id]')).toBeFocused();
+
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toHaveValue(portraitsQuery);
+  await expect(sort).toHaveAttribute("title", "Name, ascending");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  await expect(entry(contents, /^Studio portraits/)).toBeVisible();
+
+  await path.getByRole("button", { name: "Next location", exact: true }).press("Enter");
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  await expect(paused).toBeVisible();
+  await expect(sort).toHaveAttribute("title", "Size, descending");
+  await expect(firstGroupedRow).toBeInViewport({ ratio: 0.99 });
+  await restore.press("Enter");
+
+  await expect(paused).toBeHidden();
+  await expect(search).toHaveValue(portraitsQuery);
+  await expect(search).toBeFocused();
+  await expect(sort).toHaveAttribute("title", "Name, ascending");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  await expect(entry(contents, /^Studio portraits/)).toBeVisible();
+  await expect(sites).toBeVisible();
+});
+
+test("a nested Smaller items arc focuses the first grouped row in its containing folder", async ({ page }) => {
+  const contents = await openPortraitSearch(page);
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+  const photoId = await map.getByRole("button", { name: /^Photo Library,/ }).getAttribute("data-node-id");
+  const nestedGroup = map.getByRole("button", { name: /^Smaller items,/ })
+    .and(map.locator(`[data-tier="1"][data-node-id$=":${photoId}"]`));
+  await nestedGroup.press("Enter");
+
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  await expect(contents.getByRole("status").filter({ hasText: "Search paused" })).toBeVisible();
+  const grouped = grid.locator('[aria-rowindex="12"] [data-entry-id]');
+  await expect(grouped).toHaveAccessibleName(/^Rooftop portraits 1428\.tif/);
+  await expect(grouped).toBeFocused();
+  await expect(grouped).toBeInViewport({ ratio: 0.99 });
+});
+
 test("a nested file arc returns to the source search or reveals in its containing search", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });

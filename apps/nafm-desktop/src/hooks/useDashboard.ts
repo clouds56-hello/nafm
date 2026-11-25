@@ -78,6 +78,7 @@ interface NavigationEntry {
   anchor_offset: number;
   selected_node_id: string;
   sort: DirectorySort;
+  atlas_group?: true;
   finder_position?: FinderPosition | null;
 }
 
@@ -89,6 +90,7 @@ interface AtlasSelection {
 interface DirectoryWindow extends StorageChildrenPage {
   anchor_offset: number;
   sort: DirectorySort;
+  atlas_group?: true;
 }
 
 interface RowRange {
@@ -122,7 +124,7 @@ interface LocationLoadOptions {
 }
 
 interface DirectoryAnchorLoad {
-  request: StorageDirectoryAnchor;
+  request?: StorageDirectoryAnchor;
   onArrival: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
 }
 
@@ -168,7 +170,8 @@ function sameSort(left: DirectorySort, right: DirectorySort) {
 
 function withDirectorySort(entry: NavigationEntry, sort: DirectorySort): NavigationEntry {
   // Offsets and grouped-arc anchors only have meaning in the order that produced them.
-  return sameSort(entry.sort, sort) ? entry : { ...entry, sort, offset: 0, anchor_offset: 0, limit: CHILDREN_PAGE_SIZE };
+  return !entry.atlas_group && sameSort(entry.sort, sort) ? entry
+    : { ...entry, sort, offset: 0, anchor_offset: 0, limit: CHILDREN_PAGE_SIZE, atlas_group: undefined };
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
@@ -178,6 +181,7 @@ function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boo
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
     && left.anchor_offset === right.anchor_offset
+    && left.atlas_group === right.atlas_group
     && sameSort(left.sort, right.sort)
     && left.selected_node_id === right.selected_node_id
     && previousSearch?.session === nextSearch?.session
@@ -397,6 +401,7 @@ export function useDashboard(
       limit: Math.max(CHILDREN_PAGE_SIZE, currentPage?.children.length ?? 0),
       anchor_offset: currentPage?.anchor_offset ?? 0,
       sort: currentPage?.sort ?? DEFAULT_DIRECTORY_SORT,
+      atlas_group: currentPage?.atlas_group,
       selected_node_id: selected?.node.id ?? currentLocation.root.id,
       finder_position: selected?.finderPosition,
     };
@@ -466,6 +471,7 @@ export function useDashboard(
       const page: DirectoryWindow = {
         ...snapshot.page,
         sort: entry.sort,
+        atlas_group: sameFolder ? entry.atlas_group : undefined,
         anchor_offset: sameFolder && ((silent && anchor) || entry.anchor_offset < snapshot.page.total_children)
           ? entry.anchor_offset : snapshot.page.offset,
       };
@@ -560,6 +566,15 @@ export function useDashboard(
     if (destination !== current || childrenLoadingRef.current) {
       await loadFolderLocation(destination, "preserve", { action: { title: "Couldn’t change the Contents order" } });
     }
+  }, [currentNavigationEntry, loadFolderLocation]);
+
+  const leaveContentsGroup = useCallback(async () => {
+    const current = currentNavigationEntry();
+    if (!current?.atlas_group) return true;
+    const sort = readSiteDirectorySort(workspaceNameRef.current, current.site_id);
+    return (await loadFolderLocation(withDirectorySort(current, sort), "preserve", {
+      action: { title: "Couldn’t restore Contents" },
+    })) === "loaded";
   }, [currentNavigationEntry, loadFolderLocation]);
 
   const refreshTree = useCallback(async (
@@ -1039,14 +1054,15 @@ export function useDashboard(
     const action = { title: `Couldn’t open ${sites.find((site) => site.id === siteId)?.name ?? "this source"}`, sourceSwitch: true };
     if (current?.site_id === siteId) {
       if (childrenLoadingRef.current) {
-        return (await loadFolderLocation(withDirectorySort(current, sort), "preserve", { action })) === "loaded";
+        const destination = current.atlas_group ? current : withDirectorySort(current, sort);
+        return (await loadFolderLocation(destination, "preserve", { action })) === "loaded";
       }
       setLocationFailure(null);
       return true;
     }
     const previous = lastLocationBySite.current.get(siteId);
     const destination = previous
-      ? { ...withDirectorySort(previous, sort), target_site_id: target }
+      ? { ...(previous.atlas_group ? previous : withDirectorySort(previous, sort)), target_site_id: target }
       : rememberedSiteEntry(browsingScope, workspace, siteId, target, sort);
     return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
   }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
@@ -1167,7 +1183,7 @@ export function useDashboard(
     }
   }, []);
 
-  const selectNode = useCallback((node: StorageNode) => {
+  const selectNode = useCallback((node: StorageNode, onGroupArrival?: DirectoryAnchorLoad["onArrival"]) => {
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     if (node.kind === "file") {
@@ -1205,7 +1221,11 @@ export function useDashboard(
       selected_node_id: folderId,
       // The atlas group offset counts entries in descending size order.
       sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
-    }, "push", { action: { title: `Couldn’t open ${node.name}` } });
+      atlas_group: group ? true : undefined,
+    }, "push", {
+      action: { title: `Couldn’t open ${node.name}` },
+      anchor: group && onGroupArrival ? { onArrival: onGroupArrival } : undefined,
+    });
   }, [loadFolderLocation, selectLocationNode]);
 
   const navigateHistory = useCallback(async function navigateHistory(
@@ -1221,7 +1241,7 @@ export function useDashboard(
         const entry = history.at(-1);
         if (!entry) return false;
         const sort = readSiteDirectorySort(workspaceNameRef.current, entry.site_id);
-        const result = await loadFolderLocation(withDirectorySort(entry, sort), direction, {
+        const result = await loadFolderLocation(entry.atlas_group ? entry : withDirectorySort(entry, sort), direction, {
           action: {
             title: direction === "back" ? "Couldn’t open the previous location" : "Couldn’t open the next location",
             retry: () => navigateHistory(direction, true),
@@ -1327,7 +1347,10 @@ export function useDashboard(
         throw new Error("The directory entries could not be read.");
       }
       // A rescan can shrink the folder mid-seek. Its new total clamps the scrollbar to a valid range.
-      const next = { ...page, offset: Math.min(page.offset, page.total_children), anchor_offset: loaded.anchor_offset, sort: loaded.sort };
+      const next = {
+        ...page, offset: Math.min(page.offset, page.total_children),
+        anchor_offset: loaded.anchor_offset, sort: loaded.sort, atlas_group: loaded.atlas_group,
+      };
       childrenPageRef.current = next;
       setChildrenPage(next);
     } catch (loadError) {
@@ -1715,8 +1738,10 @@ export function useDashboard(
     duplicateJumpRevision,
     childrenPage,
     contentsAnchorOffset: childrenPage?.anchor_offset ?? 0,
+    contentsGroup: childrenPage?.atlas_group ?? false,
     directorySort: childrenPage?.sort ?? DEFAULT_DIRECTORY_SORT,
     setDirectorySort,
+    leaveContentsGroup,
     childrenLoading,
     loadingMoreChildren,
     childrenError,
@@ -1793,6 +1818,7 @@ export function useDashboard(
     lastScanResult,
     openFolderExternally,
     setDirectorySort,
+    leaveContentsGroup,
     location,
     locationFailure,
     notice,

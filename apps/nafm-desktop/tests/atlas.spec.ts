@@ -220,6 +220,24 @@ test.describe("touch exploration", () => {
     await expect(rail).toBeHidden();
     await expect(inspector.getByRole("heading", { name: "Projects" })).toBeInViewport();
   });
+
+  test("closing file details returns to its Atlas arc while Sites stays open", async ({ page }) => {
+    const sites = page.getByRole("complementary", { name: "Sites" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const file = arc(page, /^Trailer master\.mov,/).and(page.locator('[data-node-id*="/Brand campaign/"]'));
+
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await expect(sites).toBeVisible();
+    await file.press("Enter");
+    await expect(inspector.getByRole("heading", { name: "Trailer master.mov", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await expect(inspector).toBeHidden();
+    await expect(sites).toBeVisible();
+    await expect(file).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(arc(page, /^Camera originals\.mxf,/)).toBeFocused();
+  });
 });
 
 test("the full scrollbar seeks directly to a distant file and restores it after inspection", async ({ page }) => {

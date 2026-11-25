@@ -7,6 +7,12 @@ export function revealInCompactAtlas(element: Element | null) {
 }
 
 export function restoreAtlasPanelFocus(launcher: HTMLButtonElement | null, origin?: SVGGElement | null) {
+  if (origin?.isConnected) {
+    revealInCompactAtlas(origin);
+    origin.focus({ preventScroll: true });
+    return;
+  }
+
   const otherPanel = window.matchMedia(compactAtlas).matches
     ? launcher?.closest(".atlas-panels")?.querySelector<HTMLElement>("[data-atlas-panel]")
     : null;
@@ -18,7 +24,6 @@ export function restoreAtlasPanelFocus(launcher: HTMLButtonElement | null, origi
     otherControl.focus();
     return;
   }
-  const target = origin?.isConnected ? origin : launcher;
-  revealInCompactAtlas(target);
-  target?.focus({ preventScroll: true });
+  revealInCompactAtlas(launcher);
+  launcher?.focus({ preventScroll: true });
 }
