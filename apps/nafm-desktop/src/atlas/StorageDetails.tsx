@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
-import type { FolderOpenDestination, HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import type { FolderOpenDestination, HealthMetric, StorageNode } from "../lib/types";
 import { DetailPath } from "./DetailPath";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { ModifiedDate } from "./ModifiedDate";
@@ -9,9 +9,8 @@ import { CheckIcon } from "../management/Icons";
 import "./inspector.css";
 
 interface StorageDetailsProps {
-  location: StorageLocation;
-  entries: readonly StorageNode[];
-  selected: StorageNode | null;
+  node: StorageNode;
+  parent?: StorageNode | null;
   fileUnavailable: boolean;
   announceFileChange?: boolean;
   listPosition?: { index: number; total: number; label: "Item" | "Match" | "Result"; site?: string };
@@ -25,14 +24,6 @@ interface StorageDetailsProps {
   onShowInContents?: () => void;
   revealing: boolean;
   children?: ReactNode;
-}
-
-function findContainingFolder(folder: StorageNode, id: string): StorageNode | undefined {
-  for (const item of folder.children) {
-    if (item.id === id) return folder;
-    const container = findContainingFolder(item, id);
-    if (container) return container;
-  }
 }
 
 function HealthDetail({
@@ -54,7 +45,7 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  location, entries, selected, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
+  node, parent, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
   returnAction, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
@@ -79,12 +70,6 @@ export function StorageDetails({
     onFocusHandled();
   }, [focusRequested, onFocusHandled]);
 
-  const { root: folder, breadcrumbs } = location;
-  const node = selected ?? folder;
-  const isDirectEntry = selected && entries.some((item) => item.id === selected.id);
-  const container = selected
-    ? isDirectEntry ? folder : findContainingFolder(folder, selected.id)
-    : breadcrumbs.at(-2);
   const verification = verificationStatus(node);
   const space = nodeHealthPresentation(node, "space_health");
   const coverage = nodeHealthPresentation(node, "coverage_health", targetCompleteness);
@@ -111,7 +96,11 @@ export function StorageDetails({
         <div className="atlas-detail-actions">
           {returnAction && (
             <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog"
-              aria-label={returnAction.shortLabel ? returnAction.label : undefined} onClick={returnAction.run}>
+              aria-label={returnAction.shortLabel ? returnAction.label : undefined}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                returnAction.run();
+              }}>
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M13 8H3m5-5L3 8l5 5" />
               </svg>
@@ -149,11 +138,11 @@ export function StorageDetails({
               <dt>Verification</dt>
               <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
             </div>
-            {container && (
+            {parent && (
               <div className="atlas-detail-metric">
                 <dt>Share of parent</dt>
-                <dd title={container.total_bytes === 0 ? `${container.name} has no bytes` : container.name}>
-                  {formatShare(node.total_bytes, container.total_bytes)}
+                <dd title={parent.total_bytes === 0 ? `${parent.name} has no bytes` : parent.name}>
+                  {formatShare(node.total_bytes, parent.total_bytes)}
                 </dd>
               </div>
             )}

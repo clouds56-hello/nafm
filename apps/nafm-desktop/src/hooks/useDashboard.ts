@@ -97,7 +97,7 @@ export type AtlasInspection =
   | { kind: "finder"; position: FinderPosition }
   | AnalysisInspection
   | ReviewInspection
-  | { kind: "file" };
+  | { kind: "file"; direct_child: boolean };
 
 export interface AtlasWorkspaceLocation {
   site_id: string;

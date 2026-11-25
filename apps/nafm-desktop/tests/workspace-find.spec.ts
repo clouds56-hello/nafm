@@ -398,7 +398,10 @@ test("Find files restores a late result and its scroll position while Atlas Back
   await expect(dialog).toBeHidden();
   await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(details(page).getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
-  await backToResults(page).click();
+  const back = backToResults(page);
+  const previousResult = page.getByRole("complementary", { name: "Inspector" })
+    .getByRole("button", { name: "Previous result", exact: true });
+  await back.press("Enter");
   await expect(input).toHaveValue(searchText);
   await expect(last).toBeFocused();
   await expect(last).toBeInViewport({ ratio: 1 });
@@ -406,10 +409,29 @@ test("Find files restores a late result and its scroll position while Atlas Back
   expect(await offsets.evaluate((reads) => [...reads])).toEqual(loadedOffsets);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(back).toBeFocused();
+  await expect(previousResult).toBeEnabled();
+
   await opener.click();
-  await expect(input).toBeFocused();
-  await expect(input).toHaveValue("");
-  await expect(result(dialog, /Proof 095\.jpg/i)).toHaveCount(0);
+  await expect(input).toHaveValue(searchText);
+  await expect(previous).toBeFocused();
+  await input.fill("Uncommitted locator draft");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+  await expect(details(page).getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+  await expect(previousResult).toBeEnabled();
+
+  await back.press("Enter");
+  await expect(input).toHaveValue(searchText);
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  expect(await scroller.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollPosition, 0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(back).toBeFocused();
+  await previousResult.press("Enter");
+  await expect(details(page).getByRole("heading", { name: "Proof 095.jpg", exact: true })).toBeVisible();
 });
 
 test("Find files can seek across hundreds of matches and return to the inspected result", async ({ page }) => {
@@ -1049,15 +1071,24 @@ test.describe("compact workspace finder", () => {
       .getByRole("button", { name: "Find files", exact: true }).tap();
 
     const dialog = finder(page);
-    await expect(query(dialog)).toBeFocused();
-    await expect(query(dialog)).toBeInViewport();
+    const input = query(dialog);
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport();
+    await input.fill("proof 001");
+    await expect(result(dialog, /Proof 001\.jpg/i)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await expect(actions).toBeFocused();
     await expect(currentFolder(page)).toHaveText("Studio archive");
+
+    await actions.tap();
+    await page.getByRole("group", { name: "Workspace actions", exact: true })
+      .getByRole("button", { name: "Find files", exact: true }).tap();
+    await expect(input).toHaveValue("");
+    await expect(input).toBeFocused();
   });
 
-  test("touch inspection can return to the chosen result and close the search", async ({ page }) => {
+  test("touch inspection can close Finder and keep browsing the same results", async ({ page }) => {
     await page.goto("/mock/");
     const actions = page.getByRole("button", { name: "Workspace actions" });
     await actions.tap();
@@ -1065,21 +1096,34 @@ test.describe("compact workspace finder", () => {
       .getByRole("button", { name: "Find files", exact: true }).tap();
 
     const dialog = finder(page);
-    await query(dialog).fill("proof 001");
+    const searchText = "  pRoOf 00  ";
+    await query(dialog).fill(searchText);
     const proof = result(dialog, /Proof 001\.jpg/i);
     await proof.tap();
     await expect(dialog).toBeHidden();
     await expect(details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true })).toBeVisible();
     await expect(backToResults(page)).toBeInViewport();
 
-    await backToResults(page).tap();
-    await expect(query(dialog)).toHaveValue("proof 001");
+    const back = backToResults(page);
+    const dismiss = dialog.getByRole("button", { name: "Close find files", exact: true });
+    await back.tap();
+    await expect(query(dialog)).toHaveValue(searchText);
     await expect(proof).toBeFocused();
     await expect(proof).toBeInViewport();
-    await dialog.getByRole("button", { name: "Close find files", exact: true }).tap();
+    await dismiss.tap();
     await expect(dialog).toBeHidden();
-    await expect(backToResults(page)).toBeHidden();
+    await expect(back).toBeFocused();
+    await expect(back).toBeInViewport();
     await expect(details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true })).toBeVisible();
-    await expect(details(page)).toBeFocused();
+
+    await back.tap();
+    await expect(query(dialog)).toHaveValue(searchText);
+    await expect(proof).toBeFocused();
+    await dismiss.tap();
+    await expect(dialog).toBeHidden();
+    await expect(back).toBeFocused();
+    await page.getByRole("complementary", { name: "Inspector" })
+      .getByRole("button", { name: "Next result", exact: true }).tap();
+    await expect(details(page).getByRole("heading", { name: "Proof 002.jpg", exact: true })).toBeVisible();
   });
 });

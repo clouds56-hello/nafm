@@ -71,6 +71,8 @@ test("Details reads and copies a long path while preserving the filtered Content
   await file.press("Enter");
 
   await expect(details.getByRole("heading", { name: fileName, exact: true })).toBeVisible();
+  await expect(details.getByText("Share of parent", { exact: true }).locator("..").locator("dd"))
+    .toHaveAttribute("title", "Interview Selects");
   await expect(details.getByText("Modified", { exact: true }).locator("..").locator("time"))
     .toHaveAttribute("datetime", new Date(modified!).toISOString());
   const code = details.locator(".atlas-detail-path code");
@@ -100,6 +102,33 @@ test("Details reads and copies a long path while preserving the filtered Content
   await expect(current).toHaveText("Interview Selects");
   await expect(filter).toHaveValue("  dAy 03  ");
   await expect(file).toBeFocused();
+});
+
+test("Details keeps a file's share after it scrolls out of the Contents window", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("button", { name: "Find files", exact: true }).press("Enter");
+  const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+  await finder.getByRole("searchbox", { name: "File name", exact: true }).fill("Proof 096");
+  await finder.getByRole("button", { name: /^Proof 096\.jpg/ }).press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const details = inspector.getByRole("region", { name: "Storage details", exact: true });
+  const share = details.getByText("Share of parent", { exact: true }).locator("..").locator("dd");
+  await expect(share).toHaveAttribute("title", "Photo Library");
+  const initialShare = await share.textContent();
+
+  await details.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const proof = contents.getByRole("button", { name: /^Proof 096\.jpg/ });
+  await expect(proof).toBeFocused();
+  await contents.evaluate((pane) => { pane.scrollTop = 0; });
+  await expect(contents.getByRole("button", { name: /^Studio portraits/ })).toBeInViewport();
+  await expect(proof).toHaveCount(0);
+
+  await inspector.getByRole("tab", { name: "Details", exact: true }).press("Enter");
+  await expect(details.getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+  await expect(share).toHaveText(initialShare!);
+  await expect(share).toHaveAttribute("title", "Photo Library");
 });
 
 test("a denied clipboard write expands the path for manual selection and can be retried", async ({ page }) => {

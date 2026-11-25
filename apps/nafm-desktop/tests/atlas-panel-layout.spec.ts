@@ -142,6 +142,41 @@ test.describe("compact Atlas panels", () => {
     expect((await bounds(details)).top).toBeGreaterThanOrEqual(remaining.bottom - 1);
   });
 
+  test("tapping a folder keeps its new Contents ready for arrow keys and Escape", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.goto("/mock/");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+    // Open Sites last so a misplaced Escape would dismiss the other panel.
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    const contents = inspector(page).getByRole("tabpanel", { name: "Contents" });
+    await contents.getByRole("button", { name: /^Photo Library/ }).tap();
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    const portraits = contents.getByRole("button", { name: /^Studio portraits/ });
+    await expect(portraits).toBeFocused();
+    await expect(portraits).toBeInViewport({ ratio: 0.99 });
+    await expect(page.getByRole("tooltip")).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(inspector(page)).toBeHidden();
+    await expect(sites(page)).toBeVisible();
+
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+    await portraits.tap();
+    await expect(currentFolder(page)).toHaveText("Studio portraits");
+    await expect(contents.getByRole("button", { name: /^Medium format scans\.tif/ })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(contents.getByRole("button", { name: /^Portrait selects\.zip/ })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(inspector(page).getByRole("heading", { name: "Portrait selects.zip", exact: true })).toBeVisible();
+    await inspector(page).getByRole("button", { name: "Back to Contents" }).tap();
+    await contents.getByRole("button", { name: "Up to Photo Library" }).tap();
+    const up = contents.getByRole("button", { name: "Up to Studio archive" });
+    await expect(up).toBeFocused();
+    await up.tap();
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await expect(contents.getByRole("button", { name: /^Photo Library/ })).toBeFocused();
+    await expect(page.getByRole("tooltip")).toBeHidden();
+  });
+
   test("a retry stays between the full-size Atlas and both open panels", async ({ page }) => {
     await page.goto("/mock/?scenario=recovery");
     await expect(currentFolder(page)).toHaveText("Studio archive");
@@ -280,6 +315,24 @@ test.describe("desktop Atlas panels", () => {
     expect(contentsOnly.width).toBeGreaterThanOrEqual(plot.width - 1);
     expect((await bounds(details)).left).toBeGreaterThanOrEqual(contentsOnly.right - 1);
   });
+});
+
+test("a delayed mouse-opened folder keeps newer focus in Sites", async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 700 });
+  await page.goto("/mock/?scenario=slow");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+  const contents = inspector(page).getByRole("tabpanel", { name: "Contents" });
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:01:00Z"));
+  await contents.getByRole("button", { name: /^Photo Library/ }).click();
+  const field = sites(page).getByRole("button", { name: "Open Field drive in Atlas" });
+  await field.focus();
+  await page.clock.runFor(1_300);
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "100");
+  await expect(field).toBeFocused();
 });
 
 test("tablet panels leave room for curved labels and stay open as the chart reflows", async ({ page }) => {

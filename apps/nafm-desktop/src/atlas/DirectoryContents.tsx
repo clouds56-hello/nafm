@@ -68,7 +68,7 @@ export function DirectoryContents({
   const retryButton = useRef<HTMLButtonElement>(null);
   const [focusedCursor, setFocusedCursor] = useState<{ key: string; id: string } | null>(null);
   const cursor = focusedCursor?.key === contentsKey ? focusedCursor.id : cursorPositions.get(contentsKey);
-  const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
+  const folderFocus = useRef<{ folder: string; origin: Element | null; row?: string; fromPointer?: boolean } | null>(null);
   const keyboardRow = useRef<{
     key: string; index: number; refreshPage?: StorageChildrenPage; preventScroll?: boolean;
     retryPosition?: { top: number; total: number };
@@ -161,22 +161,23 @@ export function DirectoryContents({
 
   useLayoutEffect(() => {
     if (!active || loading) return;
-    const destination = keyboardFolder.current;
+    const destination = folderFocus.current;
     const pending = keyboardRow.current;
     if (!pending && !destination) return;
     const pane = scrollPane.current;
     const focus = document.activeElement;
     if (!pane || (focus !== document.body && !pane.contains(focus))) {
       keyboardRow.current = null;
-      keyboardFolder.current = null;
+      folderFocus.current = null;
       return;
     }
     if (destination && destination.folder !== directoryId) {
-      keyboardFolder.current = null;
+      folderFocus.current = null;
       return;
     }
-    if (destination && focus !== document.body && focus !== destination.origin && focus !== listRef.current) {
-      keyboardFolder.current = null;
+    const originRemoved = destination?.origin && !destination.origin.isConnected && focus === document.body;
+    if (destination && !originRemoved && focus !== destination.origin && focus !== listRef.current) {
+      folderFocus.current = null;
       return;
     }
     if (pending) {
@@ -199,11 +200,12 @@ export function DirectoryContents({
     const parentEntry = destination?.row
       ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(destination.row)}"]`) : null;
     const target = Math.min(total - 1, pending?.index ?? first);
-    const row = parentEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
+    const pointerEntry = destination?.fromPointer ? entryTabStop(listRef.current) : null;
+    const row = parentEntry ?? pointerEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
     if (row || !total || error) {
       keyboardRow.current = null;
-      keyboardFolder.current = null;
-      (row ?? headingRef.current)?.focus(pending?.preventScroll ? { preventScroll: true } : undefined);
+      folderFocus.current = null;
+      (row ?? headingRef.current)?.focus({ preventScroll: Boolean(pending?.preventScroll || destination?.fromPointer) });
     }
   }, [active, contentsKey, directoryId, error, first, listRef, loading, page, ready, scrollPane, start, end, total]);
 
@@ -242,7 +244,7 @@ export function DirectoryContents({
   }
 
   function getUnfilteredPosition(): DirectoryRefreshPosition | null {
-    if (filtering || loading || !ready || reveal || contentsFocusOrigin || keyboardFolder.current || returningEntry.current
+    if (filtering || loading || !ready || reveal || contentsFocusOrigin || folderFocus.current || returningEntry.current
       || !location || !page || page.parent.id !== location.root.id) return null;
     const { pending, focusedIndex } = readResultFocus();
     if (pending?.refreshPage && pending.refreshPage !== page) return null;
@@ -263,7 +265,7 @@ export function DirectoryContents({
   }
 
   function receiveRefresh({ previousIndex, index, previousTotal, page: nextPage, missingEntry }: DirectoryRefresh) {
-    if (reveal || loading || keyboardFolder.current) return;
+    if (reveal || loading || folderFocus.current) return;
     const total = nextPage.total_children;
     const { list, onList, focusedIndex, pending } = readResultFocus();
     const newerIndex = pending?.index ?? focusedIndex;
@@ -298,9 +300,12 @@ export function DirectoryContents({
     }
   }
 
-  function activate(node: StorageNode, keyboard: boolean) {
-    keyboardFolder.current = keyboard && node.kind !== "file" && node.kind !== "smaller_items"
-      ? { folder: node.id, origin: document.activeElement } : null;
+  function activate(node: StorageNode, origin: HTMLElement, fromPointer: boolean) {
+    folderFocus.current = null;
+    if (node.kind !== "file" && node.kind !== "smaller_items") {
+      origin.focus({ preventScroll: true });
+      folderFocus.current = { folder: node.id, origin, fromPointer };
+    }
     onSelect(node);
   }
 
@@ -310,11 +315,14 @@ export function DirectoryContents({
     onSearchChange(null);
   }
 
-  function goUp(keyboard: boolean) {
+  function goUp(pointerButton?: HTMLButtonElement) {
     if (!parent || loading) return;
-    const origin = document.activeElement;
-    keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId, origin } : null;
-    const keyboardOrigin = keyboard && origin instanceof HTMLElement && scrollPane.current?.contains(origin) ? origin : undefined;
+    pointerButton?.focus({ preventScroll: true });
+    const origin = pointerButton ?? document.activeElement;
+    // Keep a clicked Up button ready to climb again until it disappears at the site root.
+    folderFocus.current = !pointerButton || location?.breadcrumbs.length === 2
+      ? { folder: parent.id, row: directoryId, origin, fromPointer: Boolean(pointerButton) } : null;
+    const keyboardOrigin = !pointerButton && origin instanceof HTMLElement && scrollPane.current?.contains(origin) ? origin : undefined;
     onGoUp(keyboardOrigin);
   }
 
@@ -322,7 +330,7 @@ export function DirectoryContents({
     const pane = scrollPane.current;
     const list = listRef.current;
     const pending = keyboardRow.current;
-    keyboardFolder.current = null;
+    folderFocus.current = null;
     if (pane && list && total) {
       const index = pending?.key === contentsKey && pending.index >= first && pending.index < first + viewport.capacity
         ? pending.index : first;
@@ -357,12 +365,12 @@ export function DirectoryContents({
       case "ArrowLeft":
         event.preventDefault();
         keyboardRow.current = null;
-        goUp(true);
+        goUp();
         return;
       case "ArrowRight":
         if (node) {
           event.preventDefault();
-          activate(node, true);
+          activate(node, event.currentTarget, false);
         }
         return;
       default: return;
@@ -382,11 +390,15 @@ export function DirectoryContents({
   }
 
   return (
-    <section className="atlas-directory" aria-labelledby={labelId} onKeyDown={(event) => {
+    <section className="atlas-directory" aria-labelledby={labelId} onBlurCapture={(event) => {
+      if (event.target === folderFocus.current?.origin && event.relatedTarget && event.relatedTarget !== listRef.current) {
+        folderFocus.current = null;
+      }
+    }} onKeyDown={(event) => {
       if (!event.defaultPrevented && parent && event.key === "ArrowUp" && (event.altKey || event.metaKey)
         && event.target instanceof Element && !event.target.closest("input, textarea, select, dialog, [contenteditable]")) {
         event.preventDefault();
-        goUp(true);
+        goUp();
         return;
       }
       if (!searchOpen || event.key !== "Escape" || event.defaultPrevented) return;
@@ -399,7 +411,7 @@ export function DirectoryContents({
           <button
             className="atlas-directory-up" type="button" aria-disabled={loading || undefined}
             aria-label={`Up to ${parent.name}`} title={`Up to ${parent.name}`}
-            onClick={(event) => goUp(event.detail === 0)}
+            onClick={(event) => goUp(event.detail === 0 ? undefined : event.currentTarget)}
           >
             <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M9 14V4m-4 5 4-5 4 5" />
@@ -492,7 +504,7 @@ export function DirectoryContents({
                       data-entry-id={node.id}
                       tabIndex={tabStop === node.id ? 0 : -1}
                       onKeyDown={(event) => moveRow(event, node, index)}
-                      onClick={(event) => activate(node, event.detail === 0)}
+                      onClick={(event) => activate(node, event.currentTarget, event.detail !== 0)}
                     >
                       <DirectoryEntryLabel node={node} awaitingInventory={awaitingInventory} showDate={sort.field === "date"} />
                     </button>

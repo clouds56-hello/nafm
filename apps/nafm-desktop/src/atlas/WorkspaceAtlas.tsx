@@ -288,6 +288,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
+  // File results open in their containing folder. Contents can then scroll far beyond their row.
+  const directEntry = selected && ((selected.kind === "file" && inspection && (inspection.kind !== "file" || inspection.direct_child))
+    || directoryPage?.children.some((entry) => entry.id === selected.id));
+  const detailsParent = selected && folder
+    ? (directEntry ? folder : fileParent(folder, selected.id))
+    : location?.breadcrumbs.at(-2);
   const finderPosition = inspection?.kind === "finder" && inspection.position.session === finder?.id ? inspection.position : null;
   const finderStep = useFinderFileStep(
     findWorkspace,
@@ -666,8 +672,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     setRevealingFileId(file.id);
     try {
       // Keep the source Details entry intact if this reveal opens another folder.
-      const revealInspection = inspection && inspection.kind !== "file" ? inspection : { kind: "file" } as const;
-      const parent = fileParent(folder, file.id) ?? folder;
+      const revealInspection = inspection && inspection.kind !== "file" ? inspection : { kind: "file", direct_child: true } as const;
+      const parent = detailsParent ?? folder;
       const query = folderSearches.get(directoryScope(dashboard?.workspace_name, siteId, parent.id))?.text.trim();
       const filter = query ? { folder_id: parent.id, query } : undefined;
       await state.revealSelectedFileInContents({
@@ -750,7 +756,10 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       state.selectNode(node);
       return;
     }
-    const nextInspection = { kind: "file" } as const;
+    const nextInspection = {
+      kind: "file",
+      direct_child: !origin || Boolean(folder?.children.some((child) => child.id === node.id)),
+    } as const;
     if (revealedContentsVisit && (!origin || inspectorView === "contents" || currentVisit)) {
       setRevealedContentsVisits((saved) => new Map(saved).set(nextInspection, revealedContentsVisit));
     }
@@ -955,10 +964,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 onClose={closeInspector}
                 details={location ? (
                   <StorageDetails
-                    location={location}
+                    node={selected ?? location.root}
                     onOpenFolder={state.openFolderExternally}
-                    entries={directoryPage?.children ?? []}
-                    selected={selected}
+                    parent={detailsParent}
                     fileUnavailable={state.selectedFileUnavailable}
                     announceFileChange={Boolean(finderStep ?? fileStep)}
                     listPosition={listPosition}
@@ -1101,8 +1109,10 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
             showAnalysisDetails();
           }}
           onClose={() => {
-            setFinderSession(null);
-            if (finder.openedFrom === "details") setAnalysisFocusRequested(true);
+            setFinderSession((session) => {
+              if (session?.id !== finder.id) return session;
+              return session.latestPosition ? { ...session, openedFrom: null } : null;
+            });
           }}
         />
       )}

@@ -37,19 +37,38 @@ const ORIENTATIONS = [0, 90, 180, 270].map((angle) => ({
   end: positionAt(284, angle),
 }));
 
-function isHitAreaVisible(area: SVGPathElement, toolbar: HTMLElement | null | undefined) {
+function radialViewport() {
   const viewport = window.visualViewport;
-  const viewportLeft = viewport?.offsetLeft ?? 0;
-  const viewportTop = viewport?.offsetTop ?? 0;
-  const bounds = area.getBoundingClientRect();
-  const left = Math.max(bounds.left, viewportLeft);
-  const top = Math.max(bounds.top, viewportTop);
-  const right = Math.min(bounds.right, viewportLeft + (viewport?.width ?? window.innerWidth));
-  const bottom = Math.min(bounds.bottom, viewportTop + (viewport?.height ?? window.innerHeight));
+  const left = viewport?.offsetLeft ?? 0;
+  const top = viewport?.offsetTop ?? 0;
+  return { left, top, right: left + (viewport?.width ?? window.innerWidth), bottom: top + (viewport?.height ?? window.innerHeight) };
+}
+
+function isHitAreaVisible(bounds: DOMRect, cover?: DOMRect, viewport = radialViewport()) {
+  const left = Math.max(bounds.left, viewport.left);
+  const top = Math.max(bounds.top, viewport.top);
+  const right = Math.min(bounds.right, viewport.right);
+  const bottom = Math.min(bounds.bottom, viewport.bottom);
   if (left >= right || top >= bottom) return false;
 
-  const cover = toolbar?.getBoundingClientRect();
   return !cover || left < cover.left || top < cover.top || right > cover.right || bottom > cover.bottom;
+}
+
+function revealKeyboardSector(area: SVGPathElement) {
+  const bounds = area.getBoundingClientRect();
+  const cover = area.closest(".atlas-shell")?.querySelector(".atlas-toolbar")?.getBoundingClientRect();
+  const viewport = radialViewport();
+  if (isHitAreaVisible(bounds, cover, viewport)) return;
+
+  const top = cover && bounds.left < cover.right && bounds.right > cover.left
+    ? Math.max(viewport.top, cover.bottom) : viewport.top;
+  const available = viewport.bottom - top;
+  if (available <= 0) return;
+  const gap = Math.min(8, available / 4);
+  const visibleHeight = Math.min(bounds.height, available - gap * 2);
+  const distance = bounds.bottom <= top ? bounds.bottom - top - gap - visibleHeight
+    : bounds.top >= viewport.bottom ? bounds.top - viewport.bottom + gap + visibleHeight : 0;
+  if (distance) window.scrollBy({ top: distance, behavior: "instant" });
 }
 
 export function RadialAtlas(props: RadialAtlasProps) {
@@ -167,7 +186,7 @@ function RadialPlot({
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
         frame = null;
-        if (!area.isConnected || !isHitAreaVisible(area, toolbar)) {
+        if (!area.isConnected || !isHitAreaVisible(area.getBoundingClientRect(), toolbar?.getBoundingClientRect())) {
           setPreview((current) => current === preview ? null : current);
         }
       });
@@ -227,6 +246,14 @@ function RadialPlot({
     onSelect(sector.node, origin);
   }
 
+  function focusKeyboardSector(sector: Sector) {
+    const element = sectorElement(sector.node.id);
+    const area = element?.querySelector<SVGPathElement>(".radial-atlas__target");
+    if (area) revealKeyboardSector(area);
+    element?.focus({ preventScroll: true });
+    showPreview(sector, "keyboard");
+  }
+
   function handleSectorKey(event: KeyboardEvent<SVGGElement>, sector: Sector) {
     if (event.altKey || event.metaKey || event.ctrlKey) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -257,9 +284,7 @@ function RadialPlot({
     if (!next && event.key === "ArrowUp" && sector.tier === 0 && up.current) {
       up.current.focus({ preventScroll: true });
     } else {
-      const destination = next ?? sector;
-      sectorElement(destination.node.id)?.focus({ preventScroll: true });
-      showPreview(destination, "keyboard");
+      focusKeyboardSector(next ?? sector);
     }
   }
 
@@ -413,7 +438,7 @@ function RadialPlot({
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown" && !event.altKey && !event.metaKey && sectors[0]) {
                     event.preventDefault();
-                    sectorElement(sectors[0].node.id)?.focus({ preventScroll: true });
+                    focusKeyboardSector(sectors[0]);
                   }
                 }}
                 aria-label={`Up to ${parentName}`} title={`Up to ${parentName}`}

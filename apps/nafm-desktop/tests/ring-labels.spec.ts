@@ -80,6 +80,49 @@ test("nested arcs identify the folders containing identical file copies", async 
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   await expect(inspector.getByRole("heading", { name: "Trailer master.mov", exact: true })).toBeVisible();
   await expect(inspector.getByText(/Backup campaign\/Trailer master\.mov/)).toBeVisible();
+  await expect(inspector.getByText("Share of parent", { exact: true }).locator("..").locator("dd"))
+    .toHaveAttribute("title", "Backup campaign");
+});
+
+test("keyboard movement uncovers an arc hidden by the compact toolbar", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 320 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const location = map.getByRole("button", { name: /^Location scouting,/ });
+  const reference = map.getByRole("button", { name: /^Reference images,/ });
+  const target = reference.locator(".radial-atlas__target");
+  const toolbar = page.locator(".atlas-toolbar");
+  const toolbarBottom = () => toolbar.evaluate((element) => element.getBoundingClientRect().bottom);
+  const targetBottom = () => target.evaluate((element) => element.getBoundingClientRect().bottom);
+  const scrollPage = (top: number) => page.evaluate((offset) => window.scrollTo({ top: offset, behavior: "instant" }), top);
+  const pageTop = () => page.evaluate(() => window.scrollY);
+
+  await expect(async () => {
+    await location.evaluate((element) => (element as SVGGElement).focus({ preventScroll: true }));
+    await scrollPage(0);
+    const point = await arcMidpoint(location);
+    const between = (point.y + await targetBottom()) / 2;
+    await scrollPage(between - await toolbarBottom());
+    expect((await arcMidpoint(location)).hittable).toBe(true);
+    expect(await targetBottom()).toBeLessThan(await toolbarBottom());
+  }).toPass({ timeout: 5_000 });
+  const hiddenScroll = await pageTop();
+  await expect(location).toBeFocused();
+
+  await page.keyboard.press("ArrowRight");
+  await expect(reference).toBeFocused();
+  await expect.poll(() => arcMidpoint(reference).then(({ hittable }) => hittable)).toBe(true);
+  expect(await pageTop()).toBeLessThan(hiddenScroll);
+  await expect.poll(() => arcMidpoint(location).then(({ hittable }) => hittable)).toBe(true);
+  const revealedScroll = await pageTop();
+  await page.keyboard.press("ArrowLeft");
+  await expect(location).toBeFocused();
+  expect(await pageTop()).toBe(revealedScroll);
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+  await expect(page.getByRole("tabpanel", { name: "Contents", exact: true })).toBeVisible();
 });
 
 test.describe("compact Atlas readout", () => {
