@@ -107,21 +107,22 @@
 .atlas-path-destination:focus-visible { background: #252742; }
 .atlas-folder-hierarchy [aria-current] .atlas-path-destination { background: #252742; font-weight: 650; }
 
-@media (max-width: 760px) {
+@media (max-width: 1240px) {
   .atlas-toolbar-ancestor,
   .atlas-toolbar-location > .atlas-toolbar-separator { display: none; }
+}
+
+@media (max-width: 760px) {
   .atlas-path-trigger { gap: 3px; min-height: 44px; padding-inline: 3px; }
 }
 
-@media (max-width: 380px) {
-  .atlas-path-trigger .atlas-toolbar-current {
+@media (max-width: 480px) {
+  .atlas-toolbar-current {
     display: -webkit-box;
     max-block-size: 2.5em;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
-    font-size: 11px;
     line-height: 1.25;
-    overflow-wrap: anywhere;
     white-space: normal;
   }
 }

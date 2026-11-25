@@ -1,4 +1,5 @@
-import { useState, type MouseEvent, type ReactNode } from "react";
+import { useState, type MouseEvent } from "react";
+import type { AtlasToolbarExtension } from "./atlas/AtlasToolbar";
 import { WorkspaceAtlas } from "./atlas/WorkspaceAtlas";
 import { useWorkspace } from "./hooks/useWorkspace";
 import { AddSiteDialog } from "./management/AddSiteDialog";
@@ -7,7 +8,7 @@ import { SshAuthentication } from "./management/SshAuthentication";
 import "./styles/atlas.css";
 
 export interface AppProps {
-  toolbarExtension?: ReactNode;
+  toolbarExtension?: AtlasToolbarExtension;
   browsingScope?: string;
 }
 

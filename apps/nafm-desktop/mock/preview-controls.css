@@ -1,6 +1,6 @@
 .atlas-preview-controls {
   display: grid;
-  min-width: 174px;
+  min-width: 0;
   gap: 10px;
   padding: 2px;
   color: var(--atlas-muted);
@@ -29,3 +29,7 @@
 .atlas-preview-controls :where(button, a) { display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }
 .atlas-preview-controls :where(select, button, a):hover { border-color: var(--atlas-accent); }
 .atlas-preview-controls a span { color: var(--atlas-accent); }
+
+@media (max-width: 480px), (pointer: coarse) {
+  .atlas-preview-controls :where(select, button, a) { min-height: 44px; }
+}

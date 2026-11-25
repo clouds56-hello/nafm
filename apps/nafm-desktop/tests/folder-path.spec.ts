@@ -11,8 +11,30 @@ function currentFolder(page: Page) {
   return folderPath(page).locator(".atlas-toolbar-current");
 }
 
-async function openDeepFolder(page: Page) {
-  await page.goto("/mock/?scenario=deep");
+async function expectUnclippedFolderName(page: Page, maxLines: number) {
+  const location = currentFolder(page);
+  await expect(location).toBeInViewport({ ratio: 0.99 });
+  const layout = await location.evaluate(async (element) => {
+    await document.fonts.ready;
+    const bounds = element.getBoundingClientRect();
+    const text = document.createRange();
+    text.selectNodeContents(element);
+    const lines = Array.from(text.getClientRects());
+    const tolerance = 1;
+    return {
+      lineCount: new Set(lines.map((line) => line.top)).size,
+      unclipped: lines.every((line) => line.left >= bounds.left - tolerance
+        && line.right <= bounds.right + tolerance && line.top >= bounds.top - tolerance
+        && line.bottom <= bounds.bottom + tolerance),
+    };
+  });
+  expect(layout.lineCount).toBeGreaterThan(0);
+  expect(layout.lineCount).toBeLessThanOrEqual(maxLines);
+  expect(layout.unclipped).toBe(true);
+}
+
+async function openDeepFolder(page: Page, url = "/mock/?scenario=deep") {
+  await page.goto(url);
   await expect(currentFolder(page)).toHaveText(ancestors[0]);
   const map = page.getByRole("region", { name: "Circular storage map" });
   for (const name of [...ancestors.slice(1), current]) {
@@ -52,8 +74,90 @@ test("the toolbar reveals intermediate folders and a jump preserves Back history
   await expect(hierarchy).toBeHidden();
 });
 
+test.describe("minimum desktop toolbar", () => {
+  test.use({ viewport: { width: 1080, height: 700 } });
+
+  test("the current folder is readable at the macOS window minimum with Coverage and a scan active", async ({ page }) => {
+    // Hold the mock scan active while measuring the toolbar.
+    await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+    await openDeepFolder(page, "/mock/atlas.html?scenario=deep");
+
+    const options = page.getByRole("button", { name: "Map options", exact: true });
+    await options.click();
+    const modes = page.getByRole("group", { name: "Map options", exact: true });
+    await modes.getByRole("button", { name: "Coverage", exact: true }).click();
+    await expect(modes.getByRole("combobox", { name: "Compare with", exact: true })).toHaveValue("field-drive");
+    await page.keyboard.press("Escape");
+    await expect(options).toContainText("Coverage");
+
+    await page.getByRole("button", { name: "Workspace actions", exact: true }).click();
+    await page.getByRole("group", { name: "Workspace actions", exact: true }).getByRole("button", { name: "Scan all", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Scan activity", exact: true })).toHaveAccessibleDescription("Scanning");
+
+    // Apply the title-bar inset that the macOS app host adds to this shared toolbar.
+    await page.locator(".atlas-toolbar").evaluate((toolbar) => toolbar.setAttribute("data-native-inset", "true"));
+    await expect(currentFolder(page)).toHaveText(current);
+    await expectUnclippedFolderName(page, 1);
+    const path = folderPath(page);
+    await expect(path.getByRole("button", { name: "Second Unit", exact: true })).toBeHidden();
+    const pathButton = path.getByRole("button", { name: "Show folder path", exact: true });
+    await pathButton.press("Enter");
+    const hierarchy = page.getByRole("group", { name: "Folder hierarchy", exact: true });
+    await expect(hierarchy.getByRole("button")).toHaveCount(ancestors.length);
+    await expect(hierarchy.getByText(current, { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(pathButton).toBeFocused();
+  });
+});
+
 test.describe("compact touch toolbar", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
+
+  test("the folder name stays readable with scan and folder actions available", async ({ page }) => {
+    await page.goto("/mock/?scenario=partial");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const location = currentFolder(page);
+    for (const name of ["Projects", "Brand campaign"]) {
+      await map.getByRole("button", { name: new RegExp(`^${name},`) }).press("Enter");
+      await expect(location).toHaveText(name);
+    }
+
+    await expectUnclippedFolderName(page, 2);
+
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+    const controls = ["Previous location", "Show folder path", "Open Brand campaign in…", "Map options", "Scan activity", "Workspace actions"];
+    for (const control of controls) {
+      const button = page.getByRole("button", { name: control, exact: true });
+      await expect(button).toBeInViewport({ ratio: 0.99 });
+      await button.click({ trial: true });
+    }
+    await expect(page.getByRole("button", { name: "Preview", exact: true })).toBeHidden();
+    await expect(page.getByRole("combobox", { name: "Workspace", exact: true })).toBeHidden();
+
+    const menu = page.getByRole("group", { name: "Workspace actions", exact: true });
+    const workspace = menu.getByRole("combobox", { name: "Workspace", exact: true });
+    await actions.tap();
+    await expect(workspace).toHaveValue("Studio workspace");
+    await menu.getByText("Preview", { exact: true }).tap();
+    const scenario = menu.getByRole("combobox", { name: "Scenario", exact: true });
+    await expect(scenario).toBeVisible();
+    await expect(scenario).toHaveValue("partial");
+    await expect(scenario.locator("option:checked")).toHaveText("Partial verification");
+    await expect(menu.getByRole("button", { name: "Reset", exact: true })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "App only", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(actions).toBeFocused();
+    await expect(location).toHaveText("Brand campaign");
+
+    await actions.tap();
+    await workspace.selectOption("Field notes");
+    await expect(menu).toBeHidden();
+    await expect(map.getByText("No source selected", { exact: true })).toBeVisible();
+    await actions.tap();
+    await expect(workspace).toHaveValue("Field notes");
+  });
 
   test("the current location and full hierarchy stay reachable", async ({ page }) => {
     await openDeepFolder(page);

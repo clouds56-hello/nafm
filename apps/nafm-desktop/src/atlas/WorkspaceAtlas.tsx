@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
-import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
+import { AtlasToolbar, type AtlasToolbarExtension, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
@@ -67,7 +67,7 @@ interface WorkspaceAtlasProps {
   siteListRevision: number;
   browsingScope: string;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string) => void;
-  toolbarExtension?: ReactNode;
+  toolbarExtension?: AtlasToolbarExtension;
 }
 
 export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {

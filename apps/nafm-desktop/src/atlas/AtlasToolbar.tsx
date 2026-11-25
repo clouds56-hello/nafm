@@ -17,6 +17,12 @@ const mapModes = [
 
 export type MapMode = (typeof mapModes)[number]["value"];
 
+export interface AtlasToolbarExtension {
+  label: string;
+  icon: ReactNode;
+  render: (close: () => void) => ReactNode;
+}
+
 export interface AtlasToolbarProps {
   workspace: {
     name: string | null;
@@ -61,7 +67,7 @@ export interface AtlasToolbarProps {
     onSources: () => void;
   };
   scanActivity: ScanActivityProps;
-  extension?: ReactNode;
+  extension?: AtlasToolbarExtension;
 }
 
 function ToolbarIcon({ children }: { children: ReactNode }) {
@@ -110,6 +116,7 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
   return (
     <ToolbarDisclosure
       label="Map options"
+      description={map.mode === "coverage_health" && map.target ? `Coverage compared with ${map.target.name}` : mode}
       summary={map.mode === "coverage_health" && map.target
         ? <>{mode}<span className="atlas-toolbar-coverage-target" title={map.target.name}>→ {map.target.name}</span></>
         : mode}
@@ -165,7 +172,19 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
   );
 }
 
-function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "actions" | "navigation">) {
+function WorkspacePicker({ workspace, inActions }: Pick<AtlasToolbarProps, "workspace"> & { inActions?: boolean }) {
+  if (!workspace.name) return null;
+  return (
+    <label className={inActions ? "atlas-actions-workspace" : "atlas-toolbar-workspace"} title={workspace.name}>
+      {inActions ? <span>Workspace</span> : <WorkspaceIcon />}
+      <select aria-label="Workspace" value={workspace.name} disabled={workspace.disabled} onChange={(event) => workspace.onSwitch(event.target.value)}>
+        {workspace.options.map((option) => <option key={option.name} value={option.name}>{option.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function WorkspaceActions({ actions, navigation, workspace, extension }: Pick<AtlasToolbarProps, "actions" | "navigation" | "workspace" | "extension">) {
   const parent = navigation.breadcrumbs.at(-2);
   return (
     <ToolbarDisclosure
@@ -219,6 +238,13 @@ function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "acti
               )}
             </div>
           )}
+          <WorkspacePicker workspace={{ ...workspace, onSwitch: (name) => { close(); workspace.onSwitch(name); } }} inActions />
+          {extension && (
+            <details className="atlas-actions-extension">
+              <summary>{extension.label}</summary>
+              {extension.render(close)}
+            </details>
+          )}
         </>
       )}
     </ToolbarDisclosure>
@@ -233,14 +259,7 @@ export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity
         <span className="atlas-toolbar-orbit" aria-hidden="true" />
         <span className="atlas-toolbar-wordmark" data-tauri-drag-region>NAFM</span>
       </div>
-      {workspace.name && (
-        <label className="atlas-toolbar-workspace" title={workspace.name}>
-          <WorkspaceIcon />
-          <select aria-label="Workspace" value={workspace.name} disabled={workspace.disabled} onChange={(event) => workspace.onSwitch(event.target.value)}>
-            {workspace.options.map((option) => <option key={option.name} value={option.name}>{option.name}</option>)}
-          </select>
-        </label>
-      )}
+      <WorkspacePicker workspace={workspace} />
 
       <FolderNavigation navigation={navigation} />
 
@@ -257,8 +276,12 @@ export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity
         </button>
         {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
         <ScanActivity {...scanActivity} />
-        <WorkspaceActions actions={actions} navigation={navigation} />
-        {extension}
+        <WorkspaceActions actions={actions} navigation={navigation} workspace={workspace} extension={extension} />
+        {extension && (
+          <ToolbarDisclosure label={extension.label} className="atlas-toolbar-extension" icon={extension.icon} summary={extension.label}>
+            {extension.render}
+          </ToolbarDisclosure>
+        )}
       </div>
     </header>
   );

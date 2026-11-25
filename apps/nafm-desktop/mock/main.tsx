@@ -1,7 +1,7 @@
 import { mountApp } from "../src/mount";
 import { clearAtlasBrowsingScope } from "../src/lib/atlasBrowsing";
 import { installPreviewBackend } from "./backend";
-import { PreviewControls } from "./PreviewControls";
+import { previewToolbar } from "./PreviewControls";
 import { getScenario } from "./scenarios";
 
 const root = document.getElementById("root")!;
@@ -20,5 +20,5 @@ installPreviewBackend(scenario);
 mountApp(root, {
   browsingScope,
   toolbarExtension: root.hasAttribute("data-preview-controls")
-    ? <PreviewControls url={url} scenario={scenario} /> : undefined,
+    ? previewToolbar(url, scenario) : undefined,
 });
