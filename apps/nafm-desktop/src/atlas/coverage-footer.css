@@ -84,7 +84,9 @@
 .atlas-coverage-footer button:is(:disabled, [aria-disabled="true"]) { opacity: .55; }
 .atlas-coverage-footer :is(select, button):focus-visible { outline-offset: 1px; }
 .atlas-coverage-footer .atlas-coverage-swap { width: 32px; padding-inline: 4px; }
+.atlas-coverage-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px; }
 .atlas-coverage-action svg { width: 14px; height: 14px; flex: none; }
+.atlas-coverage-action-short { display: none; }
 
 .atlas-coverage-info {
   flex: 1 1 auto;
@@ -110,6 +112,8 @@
   .atlas-coverage-info { flex-basis: 100%; }
   .atlas-coverage-pair { flex: 1; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
   .atlas-coverage-site { max-width: none; }
+  .atlas-coverage-actions:has(> button + button) .atlas-coverage-action-full { display: none; }
+  .atlas-coverage-actions:has(> button + button) .atlas-coverage-action-short { display: inline; }
 }
 
 @media (max-width: 380px) {

@@ -7,6 +7,7 @@ import type { AnalysisPosition } from "./analysis/useAnalysisPage";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type AtlasToolbarExtension, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
+import { coverageSiteVerification } from "./coverageVerification";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
 import { LocationRecovery } from "./LocationRecovery";
@@ -289,15 +290,21 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const coverage = mapMode === "coverage_health";
   const folderCoverage = folder && coverage ? nodeHealthPresentation(folder, "coverage_health", targetCompleteness) : null;
   const analysisNotice = site && metric === "space_health" ? spaceHealthNotice(site) : null;
-  const targetScanning = Boolean(target && state.scanRequestBySite.has(target.id));
-  const canScanTarget = Boolean(target && !state.scanBlockedSiteIds.has(target.id));
   const changeCoverageTarget = (id: string) => void state.selectCoverageTarget(id);
   const swapCoverageSites = () => { if (site && target) void selectSite(target.id, site.id); };
-  const scanCoverageTarget = () => { if (target) void state.scan(target.id); };
-  function coverageScan(id: string) {
+  function coverageScanState(id: string) {
+    const requestId = state.scanRequestBySite.get(id);
     const progress = state.progressBySite.get(id);
-    return progress?.request_id === state.scanRequestBySite.get(id) ? progress : undefined;
+    return {
+      running: requestId !== undefined,
+      stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
+      blocked: state.scanBlockedSiteIds.has(id),
+      progress: progress?.request_id === requestId ? progress : undefined,
+      interruption: state.firstScanInterruptions.get(id),
+    };
   }
+  const sourceVerification = coverage && site ? coverageSiteVerification(site, "source", coverageScanState(site.id)) : null;
+  const targetVerification = coverage && target ? coverageSiteVerification(target, "target", coverageScanState(target.id)) : null;
 
   useEffect(() => {
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
@@ -490,11 +497,11 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           targets: targetOptions,
           target,
           navigationBusy: state.childrenLoading,
-          targetScanning,
+          sourceVerification,
+          targetVerification,
           onTargetChange: changeCoverageTarget,
           onSwap: swapCoverageSites,
-          canScanTarget,
-          onScanTarget: scanCoverageTarget,
+          onScanSite: state.scan,
         }}
         actions={{
           ready: dashboard !== null,
@@ -572,17 +579,17 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                   onClick={addSiteLauncher("atlas")}
                 >Add site</button>
               </div>
-            ) : coverage && site && folder ? (
+            ) : sourceVerification && site && folder ? (
               <CoverageFooter
                 source={site} target={target} targets={targetOptions} coverage={folderCoverage}
                 hasFolderContent={folder.file_count > 0}
-                sourceScan={coverageScan(site.id)} targetScan={target ? coverageScan(target.id) : undefined}
+                sourceVerification={sourceVerification} targetVerification={targetVerification}
                 navigationBusy={state.childrenLoading}
-                canScanTarget={canScanTarget} onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
-                onScanTarget={scanCoverageTarget} onAddSite={addSiteLauncher("coverage")}
+                onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
+                onScanSite={state.scan} onAddSite={addSiteLauncher("coverage")}
                 addedTarget={siteAddition?.origin === "coverage" ? addedSite : undefined}
               >
-                {target && <HealthScale />}
+                {target && folderCoverage && folderCoverage.state !== "unavailable" && <HealthScale />}
               </CoverageFooter>
             ) : folder && !firstScan && metric === "space_health" && (
               <>

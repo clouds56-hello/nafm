@@ -195,7 +195,7 @@
 
 .atlas-toolbar-metrics button[aria-pressed="true"],
 .atlas-toolbar-metrics button:hover:not(:disabled),
-.atlas-toolbar-panel-action:hover:not(:disabled) {
+.atlas-toolbar-panel-action:hover:not(:disabled, [aria-disabled="true"]) {
   border-color: #4e5377;
   background: #252742;
   color: #dedfff;
@@ -212,7 +212,7 @@
 }
 
 .atlas-toolbar-panel-action > svg { width: 15px; height: 15px; flex: none; color: var(--atlas-accent); }
-.atlas-toolbar-panel-action:disabled { opacity: .45; }
+.atlas-toolbar-panel-action:is(:disabled, [aria-disabled="true"]) { opacity: .45; }
 .atlas-toolbar-panel-action > small { margin-inline-start: auto; color: var(--atlas-muted); font-size: 10px; }
 
 .atlas-toolbar-comparison {
@@ -222,6 +222,8 @@
   padding-top: 7px;
   border-top: 1px solid var(--atlas-border);
 }
+
+.atlas-toolbar-verification-actions { display: grid; gap: 4px; }
 
 .atlas-toolbar-comparison label {
   display: grid;

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
@@ -7,6 +7,8 @@ import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
 import { ScanActivity, type ScanActivityProps } from "./ScanActivity";
+import { CoverageScanActions } from "./CoverageScanActions";
+import type { CoverageSiteVerification } from "./coverageVerification";
 import "./atlas-toolbar.css";
 
 const mapModes = [
@@ -48,11 +50,11 @@ export interface AtlasToolbarProps {
     targets: readonly SiteOverview[];
     target: SiteOverview | null;
     navigationBusy: boolean;
-    targetScanning: boolean;
+    sourceVerification: CoverageSiteVerification | null;
+    targetVerification: CoverageSiteVerification | null;
     onTargetChange: (id: string) => void;
     onSwap: () => void;
-    canScanTarget: boolean;
-    onScanTarget: () => void;
+    onScanSite: (siteId: string) => Promise<void>;
   };
   actions: {
     ready: boolean;
@@ -113,6 +115,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
 
 function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sourceName: string }) {
   const mode = mapModes.find(({ value }) => value === map.mode)?.title;
+  const picker = useRef<HTMLSelectElement>(null);
   return (
     <ToolbarDisclosure
       label="Map options"
@@ -146,6 +149,7 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
               <label>
                 <span>Compare with</span>
                 <select
+                  ref={picker}
                   value={map.target?.id ?? ""}
                   disabled={map.targets.length === 0 || map.navigationBusy}
                   onChange={(event) => map.onTargetChange(event.target.value)}
@@ -158,11 +162,12 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
                 <ToolbarIcon><path d="M4 7h12m-3-3 3 3-3 3M16 13H4m3-3-3 3 3 3" /></ToolbarIcon>
                 Swap source and target
               </button>
-              {map.target && (map.targetScanning || map.target.hash_status !== "ready") && (
-                <button className="atlas-toolbar-panel-action" type="button" disabled={!map.canScanTarget} onClick={map.onScanTarget}>
-                  <RefreshIcon />
-                  {map.targetScanning ? "Scanning target…" : map.target.hash_status === "pending" ? "Resume target scan" : "Scan target"}
-                </button>
+              {map.target && (
+                <CoverageScanActions
+                  actions={[map.sourceVerification?.action, map.targetVerification?.action]}
+                  onScanSite={map.onScanSite} focusTarget={picker}
+                  className="atlas-toolbar-verification-actions" buttonClassName="atlas-toolbar-panel-action"
+                />
               )}
             </div>
           )}

@@ -34,6 +34,14 @@ async function showCoverage(page: Page) {
   await expect(coverage(page)).toBeVisible();
 }
 
+async function openPartialCoverage(page: Page) {
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  await page.goto("/mock/?scenario=partial");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await showCoverage(page);
+}
+
 test("changing the target keeps the folder, and Back restores the direction after a swap", async ({ page }) => {
   await page.goto("/mock/");
   await expect(currentFolder(page)).toHaveText("Studio archive");
@@ -85,6 +93,37 @@ test("a pending target reports estimated coverage and can finish verification", 
   await expect(page.getByRole("figure").locator(".radial-atlas__size")).not.toContainText("≈");
   await expect(currentFolder(page)).toHaveText("Team share");
   await expect(target(page)).toHaveValue("studio-archive");
+});
+
+test("source verification updates coverage without changing the comparison or folder history", async ({ page }) => {
+  await openPartialCoverage(page);
+  await target(page).selectOption("team-share");
+  await expect(target(page)).toHaveValue("team-share");
+  const map = page.getByRole("figure");
+  await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await map.getByRole("button", { name: /^Brand campaign,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+
+  const comparison = coverage(page);
+  await expect(comparison.getByText("Estimated coverage", { exact: true })).toBeVisible();
+  await expect(map.locator(".radial-atlas__size")).toContainText("≈");
+  await comparison.getByRole("button", { name: "Resume source scan", exact: true }).press("Enter");
+  await expect(comparison.getByRole("button", { name: "Scanning source…", exact: true })).toBeDisabled();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(target(page)).toHaveValue("team-share");
+
+  await page.clock.runFor(5_700);
+  await expect(comparison.getByText("Coverage ready", { exact: true })).toBeVisible();
+  await expect(map.locator(".radial-atlas__size")).toHaveText("89/100");
+  await expect(comparison.getByText("Studio archive", { exact: true })).toBeVisible();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(target(page)).toHaveValue("team-share");
+  await expect(target(page)).toBeFocused();
+
+  await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(target(page)).toHaveValue("team-share");
 });
 
 test("a workspace with one site can add a comparison target from Coverage", async ({ page }) => {
@@ -156,6 +195,45 @@ test("adding the first comparison target does not interrupt a newer folder drill
 
 test.describe("compact Coverage options", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
+
+  test("Map options can verify both sites independently without leaving the comparison", async ({ page }) => {
+    await openPartialCoverage(page);
+    const map = page.getByRole("figure");
+    await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    const sites = page.getByRole("complementary", { name: "Sites" });
+    await sites.getByRole("button", { name: "Add site", exact: true }).tap();
+    await addSite(page, "Backup archive", "/demo/Backup");
+    await sites.getByRole("button", { name: "Open Backup archive in Atlas", exact: true }).waitFor();
+    await sites.getByRole("button", { name: "Close sites", exact: true }).tap();
+
+    const optionsButton = page.getByRole("button", { name: "Map options", exact: true });
+    await optionsButton.tap();
+    const mapOptions = page.getByRole("group", { name: "Map options", exact: true });
+    const picker = mapOptions.getByRole("combobox", { name: "Compare with" });
+    await picker.selectOption({ label: "Backup archive" });
+    await expect(target(page).locator("option:checked")).toHaveText("Backup archive");
+    await expect(coverage(page).getByText("Coverage unavailable", { exact: true })).toBeVisible();
+    await expect(coverage(page).getByText("Both sites need verification.", { exact: true })).toBeVisible();
+
+    const resumeSource = mapOptions.getByRole("button", { name: "Resume source scan", exact: true });
+    const scanTarget = mapOptions.getByRole("button", { name: "Scan target", exact: true });
+    await expect(resumeSource).toBeInViewport();
+    await expect(scanTarget).toBeInViewport();
+    await scanTarget.tap();
+    await expect(mapOptions.getByRole("button", { name: "Scanning target…", exact: true })).toBeDisabled();
+    await expect(resumeSource).toBeEnabled();
+    await resumeSource.tap();
+    await expect(mapOptions.getByRole("button", { name: "Scanning source…", exact: true })).toBeDisabled();
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(picker.locator("option:checked")).toHaveText("Backup archive");
+
+    await page.clock.runFor(5_700);
+    await expect(coverage(page).getByText("Coverage ready", { exact: true })).toBeVisible();
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(target(page).locator("option:checked")).toHaveText("Backup archive");
+  });
 
   test("Map options still changes the target while Contents is open", async ({ page }) => {
     await page.goto("/mock/");
