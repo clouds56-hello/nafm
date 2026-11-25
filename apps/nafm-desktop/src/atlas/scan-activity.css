@@ -1,0 +1,91 @@
+.atlas-scan-disclosure .atlas-toolbar-panel {
+  width: min(328px, calc(100vw - 16px));
+}
+
+.atlas-scan-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.atlas-scan-icon:is([data-state="running"], [data-state="stopping"])::after {
+  position: absolute;
+  inset: -1px -2px auto auto;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--atlas-bg);
+  border-radius: 50%;
+  background: var(--atlas-accent);
+  content: "";
+}
+
+.atlas-scan-icon[data-state="cancelled"] svg { color: #edbd8a; }
+.atlas-scan-icon[data-state="stopping"]::after { background: #edbd8a; }
+.atlas-scan-icon[data-state="failed"] svg { color: #f3a492; }
+
+.atlas-scan-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.atlas-scan-activity-panel { display: grid; gap: 6px; }
+
+.atlas-scan-request {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 6px;
+  background: #171925;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.atlas-scan-request-header {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.atlas-scan-stop {
+  flex: none;
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid #45496a;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-ink);
+  font: inherit;
+}
+
+.atlas-scan-stop:hover:not([aria-disabled="true"]) { background: #252742; }
+.atlas-scan-stop[aria-disabled="true"] { color: var(--atlas-muted); cursor: default; }
+.atlas-scan-site-list { display: grid; gap: 8px; margin: 5px 0 0; padding: 0; list-style: none; }
+.atlas-scan-site { display: grid; gap: 3px; min-width: 0; }
+.atlas-scan-site strong { font-weight: 500; }
+.atlas-scan-site-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 3px 8px;
+  color: var(--atlas-muted);
+  font: 11px/1.35 var(--atlas-mono);
+}
+
+.atlas-scan-site progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--atlas-accent);
+}
+
+.atlas-scan-result p { margin: 6px 0 0; color: var(--atlas-muted); }
+.atlas-scan-result:focus-visible, .atlas-scan-activity-panel:focus-visible { outline-offset: -2px; }
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-scan-stop { min-height: 44px; }
+}

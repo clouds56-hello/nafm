@@ -99,7 +99,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     ["site:team-share", "interrupt"],
   ] : []);
 
-  function startScan(selector: ScanSelector, stepTime = 900): ScanTask {
+  function startScan(selector: ScanSelector, stepTime = 900, initialStep = 0): ScanTask {
     const workspace = management.current();
     const sites = selector.all ? [...workspace.sites.values()] : [getSite(workspace, selector.site_id!)];
     if (!sites.length) throw new Error("Add a source before scanning.");
@@ -108,7 +108,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
 
     const inventories = new Map(sites.map((site) => [site.id, { site, tree: usedInventory(workspace, site) }]));
     const scan: PreviewScan = {
-      inventories, step: 0, timer: undefined,
+      inventories, step: initialStep, timer: undefined,
       task: {
         request_id: nextRequest++, selector, status: "running", created_at: new Date().toISOString(),
         site_states: sites.map((site) => ({
@@ -118,32 +118,37 @@ export function installPreviewBackend(scenario: PreviewScenario) {
         })),
       },
     };
+
+    function updateProgress([phase, progress]: (typeof SCAN_STEPS)[number]) {
+      scan.task.site_states = scan.task.site_states.map((state) => {
+        const { site, tree } = scan.inventories.get(state.site_id)!;
+        const known = phase === "hashing" || phase === "finalizing";
+        const total = tree.file_count;
+        const reused = Math.min(total, site.verified_file_count);
+        const hashed = known ? Math.round((total - reused) * progress) : 0;
+        const pending = total - reused - hashed;
+        if (known) {
+          setTree(workspace, {
+            ...site, hash_status: pending > 0 ? "pending" : "ready",
+            latest_inventory_at: new Date().toISOString(),
+          }, verifiedInventory(tree, reused + hashed).children);
+        }
+        return {
+          ...state, phase, processed_files: known ? reused + hashed : Math.round(total * progress),
+          total_files: total, hashed_files: hashed, reused_files: reused, hashes_pending: pending,
+          current_path: phase === "finalizing" ? null : tree.children[0]?.path ?? null,
+        };
+      });
+      scan.task.site_states.forEach((state) => notify(scan.task, "progress", state));
+    }
+
     scans.set(scan.task.request_id, scan);
     scan.task.site_states.forEach((state) => notify(scan.task, "started", state));
+    if (initialStep > 0) updateProgress(SCAN_STEPS[initialStep]);
     scan.timer = window.setInterval(() => {
       const step = SCAN_STEPS[++scan.step];
       if (step) {
-        const [phase, progress] = step;
-        scan.task.site_states = scan.task.site_states.map((state) => {
-          const { site, tree } = scan.inventories.get(state.site_id)!;
-          const known = phase === "hashing" || phase === "finalizing";
-          const total = tree.file_count;
-          const reused = Math.min(total, site.verified_file_count);
-          const hashed = known ? Math.round((total - reused) * progress) : 0;
-          const pending = total - reused - hashed;
-          if (known) {
-            setTree(workspace, {
-              ...site, hash_status: pending > 0 ? "pending" : "ready",
-              latest_inventory_at: new Date().toISOString(),
-            }, verifiedInventory(tree, reused + hashed).children);
-          }
-          return {
-            ...state, phase, processed_files: known ? reused + hashed : Math.round(total * progress),
-            total_files: total, hashed_files: hashed, reused_files: reused, hashes_pending: pending,
-            current_path: phase === "finalizing" ? null : tree.children[0]?.path ?? null,
-          };
-        });
-        scan.task.site_states.forEach((state) => notify(scan.task, "progress", state));
+        updateProgress(step);
         return;
       }
 
@@ -278,5 +283,8 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   });
 
   const first = management.current().sites.values().next().value;
-  if (scenario === "scanning" && first) startScan({ site_id: first.id }, 5000);
+  if (scenario === "scanning" && first) {
+    const hashingStep = SCAN_STEPS.findIndex(([phase]) => phase === "hashing");
+    startScan({ site_id: first.id }, 5000, hashingStep);
+  }
 }

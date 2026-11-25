@@ -3,12 +3,14 @@ import "./atlas-toolbar.css";
 
 interface ToolbarDisclosureProps {
   label: string;
+  className?: string;
+  description?: string;
   icon: ReactNode;
   summary?: ReactNode;
   children: (close: () => void) => ReactNode;
 }
 
-export function ToolbarDisclosure({ label, icon, summary, children }: ToolbarDisclosureProps) {
+export function ToolbarDisclosure({ label, className, description, icon, summary, children }: ToolbarDisclosureProps) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -42,7 +44,7 @@ export function ToolbarDisclosure({ label, icon, summary, children }: ToolbarDis
 
   return (
     <div
-      className="atlas-toolbar-disclosure"
+      className={className ? `atlas-toolbar-disclosure ${className}` : "atlas-toolbar-disclosure"}
       ref={root}
       onBlur={(event) => {
         if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
@@ -62,6 +64,7 @@ export function ToolbarDisclosure({ label, icon, summary, children }: ToolbarDis
         ref={trigger}
         type="button"
         aria-label={label}
+        aria-describedby={description ? `${id}-description` : undefined}
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         title={label}
@@ -73,6 +76,7 @@ export function ToolbarDisclosure({ label, icon, summary, children }: ToolbarDis
         {icon}
         {summary != null && <span className="atlas-toolbar-label">{summary}</span>}
       </button>
+      {description && <span id={`${id}-description`} hidden>{description}</span>}
       {open && (
         <div
           className="atlas-toolbar-panel"

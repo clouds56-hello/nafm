@@ -415,6 +415,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           onSettings: () => workspace.openManagement("workspaces"),
           onSources: () => setSourcesOpen(true),
         }}
+        scanActivity={{
+          sites: dashboard?.sites ?? [],
+          tasks: state.activeScanTasks,
+          progressBySite: state.progressBySite,
+          completionBySite: state.completionBySite,
+          cancellingRequestIds: state.cancellingRequestIds,
+          lastResult: state.lastScanResult,
+          onStop: (id) => void state.cancel(id),
+        }}
         extension={toolbarExtension}
       />
 

@@ -21,7 +21,8 @@ choose **+** to add a local folder or SMB share in a floating window. Saving
 adds the site to the list and keeps your current folder open. The same window
 opens from **Workspace actions** → **Sources** and **Settings** → **Sites**.
 Use the Sites panel or Sources list to start or stop a scan. **Workspace actions**
-also contains **Scan all**, **Review**, and **Settings**.
+also contains **Scan all**, **Review**, and **Settings**. **Scan activity** in the
+toolbar shows progress, stop controls, and the latest scan result while you browse.
 
 For a newly added site, choose **Scan this site** in the center of the atlas.
 The dial shows progress until the inventory is available, then the rings open

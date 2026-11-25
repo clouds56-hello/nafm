@@ -6,6 +6,7 @@ import { RefreshIcon, SearchIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
+import { ScanActivity, type ScanActivityProps } from "./ScanActivity";
 import "./atlas-toolbar.css";
 
 const mapModes = [
@@ -59,6 +60,7 @@ export interface AtlasToolbarProps {
     onSettings: () => void;
     onSources: () => void;
   };
+  scanActivity: ScanActivityProps;
   extension?: ReactNode;
 }
 
@@ -165,7 +167,7 @@ function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "acti
       summary={(
         <>
           Actions
-          {(actions.activeScans > 0 || actions.stagedCount > 0) && <span className="atlas-toolbar-action-dot" aria-hidden="true" />}
+          {actions.stagedCount > 0 && <span className="atlas-toolbar-action-dot" aria-hidden="true" />}
         </>
       )}
       icon={<ToolbarIcon><circle cx="5" cy="10" r=".8" /><circle cx="10" cy="10" r=".8" /><circle cx="15" cy="10" r=".8" /></ToolbarIcon>}
@@ -217,7 +219,7 @@ function WorkspaceActions({ actions, navigation }: Pick<AtlasToolbarProps, "acti
   );
 }
 
-export function AtlasToolbar({ workspace, navigation, map, actions, extension }: AtlasToolbarProps) {
+export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity, extension }: AtlasToolbarProps) {
   const hasTrafficLights = isTauri() && /Mac/.test(navigator.platform);
   return (
     <header className="atlas-toolbar" data-native-inset={hasTrafficLights || undefined} data-tauri-drag-region>
@@ -248,6 +250,7 @@ export function AtlasToolbar({ workspace, navigation, map, actions, extension }:
           <SearchIcon /><span className="atlas-toolbar-label">Find</span>
         </button>
         {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
+        <ScanActivity {...scanActivity} />
         <WorkspaceActions actions={actions} navigation={navigation} />
         {extension}
       </div>

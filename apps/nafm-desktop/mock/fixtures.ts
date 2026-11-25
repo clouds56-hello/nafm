@@ -207,7 +207,7 @@ export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview
   const trees = new Map([
     [studio.id, buildTree(studio, studioRoots.map(([name, entries]) => ({
       name, path: joinPath(studioDirectory, name), entries,
-    })), scenario === "partial")],
+    })), scenario === "partial" || scenario === "scanning")],
     [field.id, createSampleTree(field)],
     [team.id, createSampleTree(team)],
   ]);

@@ -38,6 +38,7 @@ import type {
   FolderOpenDestination,
   FolderSimilarityMatch,
   HealthMetric,
+  ScanActivityResult,
   ScanCompletionView,
   ScanProgressView,
   ScanTask,
@@ -200,6 +201,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const [completionBySite, setCompletionBySite] = useState<Map<string, ScanCompletionView>>(new Map());
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [activeScanTasks, setActiveScanTasks] = useState<Map<number, ScanTask>>(new Map());
+  const [lastScanResult, setLastScanResult] = useState<ScanActivityResult | null>(null);
   const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -319,6 +321,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         updateCompletionBySite(() => new Map());
         setActiveRequestIds(new Set());
         setActiveScanTasks(new Map());
+        setLastScanResult(null);
         setCancellingRequestIds(new Set());
         currentSiteIdsRef.current = new Set();
         terminalRequestIdsRef.current.clear();
@@ -542,6 +545,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       cancelRequestsInFlightRef.current.clear();
       publishedInventoryKeysRef.current.clear();
       setProgressBySite(new Map());
+      setLastScanResult(null);
     }
     const activeTasks = next.active_tasks.filter(
       (task) => !terminalRequestIdsRef.current.has(task.request_id),
@@ -802,7 +806,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         if (event.kind === "failed") setNotice(event.message ?? "A site scan failed.");
       }
     }
-    if (event.scope === "task" && ["completed", "failed", "cancelled"].includes(event.kind)) {
+    if (event.scope === "task" && (event.kind === "completed" || event.kind === "failed" || event.kind === "cancelled")) {
+      const siteStates = event.site_states?.filter((site) => currentSiteIdsRef.current.has(site.site_id)) ?? [];
+      if (siteStates.length > 0 && !terminalRequestIdsRef.current.has(event.request_id)) {
+        setLastScanResult({
+          request_id: event.request_id,
+          kind: event.kind,
+          site_states: siteStates,
+          message: event.message,
+        });
+      }
       clearAnalysisRefreshRequest(event.request_id);
       const retainedCompletions = (event.site_states ?? [])
         .map((state) => retainedScanCompletionFromSiteState(event.request_id, state))
@@ -893,6 +906,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
             if (next.get(siteId)?.request_id === task.request_id) next.delete(siteId);
             continue;
           }
+          if (siteState?.status === "queued") continue;
           const existing = next.get(siteId);
           if (!existing || existing.request_id < task.request_id) {
             next.set(siteId, siteState?.status === "running" ? {
@@ -958,16 +972,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         siteId ? { site_id: siteId } : { all: true },
         workspaceName,
       );
-      if (terminalRequestIdsRef.current.has(task.request_id)) return;
+      if (workspaceNameRef.current !== workspaceName || terminalRequestIdsRef.current.has(task.request_id)) return;
       dashboardRequestRef.current += 1;
-      setCancellingRequestIds((current) => {
-        if (!current.has(task.request_id)) return current;
-        const next = new Set(current);
-        next.delete(task.request_id);
-        return next;
-      });
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
-      setActiveScanTasks((current) => new Map(current).set(task.request_id, task));
+      setActiveScanTasks((current) => current.has(task.request_id) ? current : new Map(current).set(task.request_id, task));
       invalidateCleanupPreview();
       const siteIds = siteId
         ? [siteId]
@@ -977,10 +985,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         siteIds,
         task.request_id,
       ));
+      const siteStates = new Map(task.site_states.map((state) => [state.site_id, state.status]));
       setProgressBySite((current) => {
         let next = current;
         for (const currentSiteId of siteIds) {
-          if (completionBySiteRef.current.get(currentSiteId)?.request_id === task.request_id) continue;
+          if (completionBySiteRef.current.get(currentSiteId)?.request_id === task.request_id
+            || current.get(currentSiteId)?.request_id === task.request_id
+            || siteStates.get(currentSiteId) === "queued") continue;
           next = setCurrentScanProgress(
             next,
             initialScanProgress(task.request_id, currentSiteId),
@@ -1593,6 +1604,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     retryTree,
     progressBySite,
     completionBySite,
+    activeScanTasks,
+    lastScanResult,
     backendScanningSiteIds: backendScanState.scanning_site_ids,
     scanBlockedSiteIds: backendScanState.blocked_site_ids,
     scanRequestBySite: backendScanState.request_by_site,
@@ -1616,6 +1629,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     runPreview,
   }), [
     activeRequestIds.size,
+    activeScanTasks,
     activeSite,
     activeSiteId,
     activeSelectedNode,
@@ -1642,6 +1656,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     jumpToSimilarFolder,
     revealSelectedFileInContents,
     loading,
+    lastScanResult,
     openFolderExternally,
     setDirectorySort,
     location,

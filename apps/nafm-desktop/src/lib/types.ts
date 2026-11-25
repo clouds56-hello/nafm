@@ -377,6 +377,13 @@ export interface ScanTaskEvent {
   message: string | null;
 }
 
+export interface ScanActivityResult {
+  request_id: number;
+  kind: "completed" | "cancelled" | "failed";
+  site_states: ScanTaskSiteState[];
+  message: string | null;
+}
+
 export interface DuplicateFile {
   file_id: string;
   site_id: string;
