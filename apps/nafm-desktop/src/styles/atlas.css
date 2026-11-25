@@ -165,6 +165,75 @@ button:disabled { cursor: default; }
 .atlas-map-footer:empty { display: none; }
 .atlas-view-error, .atlas-map-empty-help { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; font-size: 12px; overflow-wrap: anywhere; }
 
+.atlas-map-footer:has(> .atlas-location-recovery) {
+  padding-block: 8px;
+  border-color: #665261;
+  background: #292335;
+}
+
+.atlas-location-recovery {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  color: var(--atlas-ink);
+  font: 13px/1.35 var(--atlas-sans, system-ui);
+}
+
+.source-layout > .atlas-location-recovery {
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border: 1px solid #665261;
+  border-radius: 6px;
+  background: #292335;
+}
+
+.atlas-location-error { display: flex; min-width: 0; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; }
+.atlas-location-error > svg { width: 17px; height: 17px; flex: none; color: #f1bfae; }
+.atlas-location-error strong { font-size: 13px; font-weight: 650; }
+.atlas-location-error p { margin: 2px 0 0; color: var(--atlas-muted); font-size: 12px; }
+.atlas-location-recovery-actions { display: flex; flex: none; align-items: center; gap: 4px; }
+
+.atlas-location-recovery-actions button {
+  display: inline-grid;
+  min-width: 30px;
+  min-height: 30px;
+  place-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--atlas-ink);
+  font: inherit;
+}
+
+.atlas-location-recovery-actions .atlas-location-retry {
+  border-color: #7c769d;
+  background: #34304b;
+}
+.atlas-location-recovery-actions button:hover:not([aria-disabled="true"]) { background: #423a58; }
+.atlas-location-recovery-actions button[aria-disabled="true"] { opacity: .65; }
+.atlas-location-dismiss svg { width: 15px; height: 15px; }
+
+@media (max-width: 760px) {
+  .atlas-visualization[data-location-recovery]:not([data-both-panels]) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .atlas-visualization[data-location-recovery]:not([data-both-panels]) .atlas-map-footer {
+    grid-row: 1;
+    border-top: 0;
+    border-bottom: 1px solid #665261;
+  }
+  .atlas-visualization[data-location-recovery]:not([data-both-panels])
+    :is(.atlas-chart-well, .atlas-sites-trigger, .atlas-inspector-trigger) { grid-row: 2 / 3; }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-location-recovery-actions button { min-width: 44px; min-height: 44px; }
+}
+
 @media (min-width: 880px) and (min-height: 620px) {
   .atlas-shell {
     height: 100vh;

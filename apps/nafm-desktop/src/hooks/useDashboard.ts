@@ -80,10 +80,26 @@ interface RowRange {
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
 
+interface LocationAction {
+  title: string;
+  sourceSwitch?: boolean;
+  retry?: () => Promise<boolean>;
+}
+
+interface LocationFailure {
+  workspace: string;
+  title: string;
+  message: string;
+  sourceSwitch?: boolean;
+  retry: (() => Promise<boolean>) | null;
+}
+
 interface LocationLoadOptions {
   silent?: boolean;
   signal?: AbortSignal;
   onError?: (message: string) => void;
+  action?: LocationAction;
+  retrying?: boolean;
 }
 
 type FileRevealDestination =
@@ -157,6 +173,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [locationFailure, setLocationFailure] = useState<LocationFailure | null>(null);
   const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
   const [coverageTargetSiteId, setCoverageTargetSiteId] = useState<string | null>(null);
   const [healthMetric, setHealthMetric] = useState<HealthMetric>("space_health");
@@ -274,6 +291,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setSelectedNode(null);
     setChildrenPage(null);
     setTreeError(null);
+    setLocationFailure(null);
     setChildrenError(null);
     setChildrenLoading(false);
     setLoadingMoreChildren(false);
@@ -320,11 +338,11 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     };
   }, []);
 
-  const loadFolderLocation = useCallback(async (
+  const loadFolderLocation = useCallback(async function loadFolderLocation(
     entry: NavigationEntry,
     historyAction: "push" | "switch" | "back" | "forward" | "reset" | "preserve",
-    { silent = false, signal, onError }: LocationLoadOptions = {},
-  ): Promise<LocationLoadResult> => {
+    { silent = false, signal, onError, action, retrying = false }: LocationLoadOptions = {},
+  ): Promise<LocationLoadResult> {
     const workspace = workspaceNameRef.current;
     if (!workspace) return "failed";
     if (signal?.aborted) return "superseded";
@@ -354,6 +372,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setChildrenLoading(true);
       setChildrenError(null);
       setTreeError(null);
+      if (!retrying) setLocationFailure(null);
       if (!onError) setNotice(null);
     }
 
@@ -408,6 +427,10 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setSelectedNode(selection);
       setChildrenError(null);
       setTreeError(null);
+      if (!silent || previousEntry?.site_id !== entry.site_id
+        || previousEntry.node_id !== nextLocation.root.id || previousEntry.target_site_id !== entry.target_site_id) {
+        setLocationFailure(null);
+      }
 
       if (historyAction === "reset" || (historyAction === "preserve" && nextLocation.root.id !== entry.node_id)) {
         backHistoryRef.current = [];
@@ -433,8 +456,21 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       if (onError) {
         onError(message);
       } else if (!silent) {
-        if (!previousEntry) setTreeError(message);
-        else if (!unavailable || (historyAction !== "back" && historyAction !== "forward")) setNotice(message);
+        const skipUnavailable = unavailable && (historyAction === "back" || historyAction === "forward");
+        if (action && !skipUnavailable) {
+          setLocationFailure({
+            workspace,
+            title: action.title,
+            sourceSwitch: action.sourceSwitch,
+            message: unavailable ? "This location is no longer available in the index." : message,
+            retry: unavailable ? null : action.retry ?? (async () =>
+              (await loadFolderLocation(entry, historyAction, { action, retrying: true })) === "loaded"),
+          });
+        } else if (!previousEntry) {
+          setTreeError(message);
+        } else if (!skipUnavailable) {
+          setNotice(message);
+        }
       }
       return unavailable ? "unavailable" : "failed";
     } finally {
@@ -443,13 +479,21 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [currentNavigationEntry]);
 
+  const retryLocation = useCallback(async () => {
+    if (!locationFailure?.retry || locationFailure.workspace !== workspaceNameRef.current
+      || childrenLoadingRef.current || navigationInProgressRef.current) return false;
+    return locationFailure.retry();
+  }, [locationFailure]);
+
   const setDirectorySort = useCallback(async (sort: DirectorySort) => {
     const workspace = workspaceNameRef.current;
     const current = currentNavigationEntry();
     if (!workspace || !current) return;
     writeSiteDirectorySort(workspace, current.site_id, sort);
     const destination = withDirectorySort(current, sort);
-    if (destination !== current || childrenLoadingRef.current) await loadFolderLocation(destination, "preserve");
+    if (destination !== current || childrenLoadingRef.current) {
+      await loadFolderLocation(destination, "preserve", { action: { title: "Couldn’t change the Contents order" } });
+    }
   }, [currentNavigationEntry, loadFolderLocation]);
 
   const refreshTree = useCallback(async (
@@ -849,24 +893,33 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   }, [completionBySite, dashboard?.active_tasks, dashboard?.sites]);
 
   const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current) => {
-    const target = validTarget(dashboard?.sites ?? [], siteId, targetSiteId);
+    const sites = dashboardRef.current?.sites ?? [];
+    const target = validTarget(sites, siteId, targetSiteId);
     const current = currentNavigationEntry();
     const sort = readSiteDirectorySort(workspaceNameRef.current, siteId);
+    const action = { title: `Couldn’t open ${sites.find((site) => site.id === siteId)?.name ?? "this source"}`, sourceSwitch: true };
     if (current?.site_id === siteId) {
-      return !childrenLoadingRef.current || (await loadFolderLocation(withDirectorySort(current, sort), "preserve")) === "loaded";
+      if (childrenLoadingRef.current) {
+        return (await loadFolderLocation(withDirectorySort(current, sort), "preserve", { action })) === "loaded";
+      }
+      setLocationFailure(null);
+      return true;
     }
     const previous = lastLocationBySite.current.get(siteId);
     const destination = previous
       ? { ...withDirectorySort(previous, sort), target_site_id: target }
       : siteRootEntry(siteId, target, sort);
-    return (await loadFolderLocation(destination, "switch")) === "loaded";
-  }, [currentNavigationEntry, dashboard?.sites, loadFolderLocation]);
+    return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
+  }, [currentNavigationEntry, loadFolderLocation]);
 
   const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
     const current = currentNavigationEntry();
     if (!current || current.site_id === targetSiteId
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
-    await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push");
+    const targetName = dashboardRef.current?.sites.find((site) => site.id === targetSiteId)?.name;
+    await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push", {
+      action: { title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target" },
+    });
   }, [currentNavigationEntry, loadFolderLocation]);
 
   const retryTree = useCallback(async () => {
@@ -980,6 +1033,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     if (node.kind === "file") {
+      setLocationFailure(null);
       if (pendingRangeRef.current) {
         // Keep this row's data available for Back while its details are open.
         childrenRequestRef.current += 1;
@@ -1014,11 +1068,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       selected_node_id: folderId,
       // The atlas group offset counts entries in descending size order.
       sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
-    }, "push");
+    }, "push", { action: { title: `Couldn’t open ${node.name}` } });
   }, [loadFolderLocation]);
 
-  const navigateHistory = useCallback(async (direction: "back" | "forward") => {
-    if (!selectedSiteRef.current || childrenLoadingRef.current || navigationInProgressRef.current) return;
+  const navigateHistory = useCallback(async function navigateHistory(
+    direction: "back" | "forward", retrying = false,
+  ): Promise<boolean> {
+    if (!selectedSiteRef.current || childrenLoadingRef.current || navigationInProgressRef.current) return false;
     const operationId = navigationOperationRef.current + 1;
     navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
@@ -1026,14 +1082,20 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       while (true) {
         const history = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
         const entry = history.at(-1);
-        if (!entry) return;
+        if (!entry) return false;
         const sort = readSiteDirectorySort(workspaceNameRef.current, entry.site_id);
-        const result = await loadFolderLocation(withDirectorySort(entry, sort), direction);
-        if (result !== "unavailable") return;
+        const result = await loadFolderLocation(withDirectorySort(entry, sort), direction, {
+          action: {
+            title: direction === "back" ? "Couldn’t open the previous location" : "Couldn’t open the next location",
+            retry: () => navigateHistory(direction, true),
+          },
+          retrying,
+        });
+        if (result !== "unavailable") return result === "loaded";
 
         const currentHistory = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
         const currentEntry = currentHistory.at(-1);
-        if (!currentEntry || !sameNavigationEntry(currentEntry, entry)) return;
+        if (!currentEntry || !sameNavigationEntry(currentEntry, entry)) return false;
         const nextHistory = currentHistory.slice(0, -1);
         if (direction === "back") {
           backHistoryRef.current = nextHistory;
@@ -1043,8 +1105,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
           setForwardHistory(nextHistory);
         }
         if (nextHistory.length === 0) {
+          setLocationFailure(null);
           setNotice("That folder is no longer available.");
-          return;
+          return false;
         }
       }
     } finally {
@@ -1082,6 +1145,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         sort,
       },
       "push",
+      { action: { title: `Couldn’t open ${node.name}` } },
     );
   }, [loadFolderLocation]);
 
@@ -1204,6 +1268,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setChildrenLoading(true);
     childrenLoadingRef.current = true;
     setChildrenError(null);
+    setLocationFailure(null);
     if (destination.kind === "node") setNotice(null);
 
     try {
@@ -1464,6 +1529,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     error,
     notice,
     clearNotice: () => setNotice(null),
+    locationFailure,
+    retryLocation,
+    clearLocationFailure: () => setLocationFailure(null),
     openFolderExternally,
     refresh,
     activeSite,
@@ -1555,12 +1623,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     openFolderExternally,
     setDirectorySort,
     location,
+    locationFailure,
     notice,
     preview,
     previewLoading,
     progressBySite,
     refresh,
     retryChildren,
+    retryLocation,
     removeStaged,
     reviewError,
     reviewOpen,

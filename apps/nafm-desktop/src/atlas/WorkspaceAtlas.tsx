@@ -6,6 +6,7 @@ import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
+import { LocationRecovery } from "./LocationRecovery";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
@@ -222,6 +223,34 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     setSourcesOpen(false);
   }
 
+  const recoveryInSources = sourcesOpen && state.locationFailure?.sourceSwitch;
+  const recoveryOnMap = !recoveryInSources && Boolean(state.locationFailure) && !state.treeError && !state.error;
+
+  function focusAfterRecovery(button: HTMLButtonElement) {
+    if (document.activeElement !== button && document.activeElement !== document.body) return;
+    const heading = button.closest("dialog")?.querySelector<HTMLElement>("h1")
+      ?? mapRegion.current?.closest(".atlas-shell")?.querySelector<HTMLElement>(".atlas-toolbar-location h1");
+    (heading ?? mapRegion.current)?.focus({ preventScroll: true });
+  }
+
+  const recovery = state.locationFailure && (
+    <LocationRecovery
+      title={state.locationFailure.title} message={state.locationFailure.message}
+      retrying={state.childrenLoading}
+      onRetry={state.locationFailure.retry ? async (event) => {
+        const button = event.currentTarget;
+        const hadFocus = document.activeElement === button;
+        if (!await state.retryLocation()) return;
+        if (recoveryInSources) setSourcesOpen(false);
+        else if (hadFocus) focusAfterRecovery(button);
+      } : undefined}
+      onDismiss={(event) => {
+        if (document.activeElement === event.currentTarget) focusAfterRecovery(event.currentTarget);
+        state.clearLocationFailure();
+      }}
+    />
+  );
+
   const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
   const fileOpen = currentVisit?.view === "details";
   const canGoBack = fileOpen || state.canGoBack;
@@ -379,7 +408,11 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       />
 
       <main className="atlas-main">
-        <section ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map" data-both-panels={sitesOpen && inspectorView ? "" : undefined}>
+        <section
+          ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map" tabIndex={-1}
+          data-both-panels={sitesOpen && inspectorView ? "" : undefined}
+          data-location-recovery={recoveryOnMap || undefined}
+        >
           <div
             className="atlas-chart-well"
             aria-busy={state.childrenLoading || state.treeLoading || undefined}
@@ -397,7 +430,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                 onSelect={activateNode}
               />
             ) : (
-              <EmptyOrbit label={state.treeError || state.error ? "Map unavailable" : state.loading || state.treeLoading ? "Reading inventory" : "No source selected"} />
+              <EmptyOrbit label={state.loading || state.treeLoading ? "Reading inventory"
+                : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"} />
             )}
             {folder && (state.childrenLoading || state.treeLoading) && (
               <span className="atlas-location-progress" role="status">Reading inventory…</span>
@@ -410,7 +444,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                 <span>{state.treeError ?? state.error}</span>
                 <button className="atlas-text-button" type="button" onClick={() => void (state.treeError ? state.retryTree() : state.refresh())}>Try again</button>
               </div>
-            ) : dashboard && !site ? (
+            ) : recoveryOnMap ? recovery : dashboard && !site ? (
               <div className="atlas-map-empty-help">
                 <span>Add a folder or network share to map its files.</span>
                 <button
@@ -571,7 +605,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
         />
       )}
 
-      {state.notice && !sourcesOpen && !state.reviewOpen && (
+      {state.notice && !recoveryOnMap && !sourcesOpen && !state.reviewOpen && (
         <div className="atlas-alert" role="status">
           <span>{state.notice}</span>
           <button className="atlas-text-button" type="button" onClick={state.clearNotice}>Dismiss</button>
@@ -594,6 +628,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           onScan={(id) => void state.scan(id)}
           onCancelScan={(id) => void state.cancel(id)}
           onManage={(id) => { setSourcesOpen(false); workspace.openManagement("sites", id); }}
+          recovery={recoveryInSources ? recovery : null}
           error={state.notice ?? state.error}
           errorAction={state.notice
             ? { label: "Dismiss", run: state.clearNotice }

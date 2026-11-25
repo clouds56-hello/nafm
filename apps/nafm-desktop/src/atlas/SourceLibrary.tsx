@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MouseEvent } from "react";
+import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
@@ -21,6 +21,7 @@ interface SourceLibraryProps {
   onManage: (site_id: string) => void;
   error?: string | null;
   errorAction?: { label: string; run: () => void };
+  recovery?: ReactNode;
 }
 
 function inventoryLabel(site: SiteOverview, scanning: boolean): string {
@@ -35,7 +36,7 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 
 export function SourceLibrary({
   sites, workspaceName, activeId, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
-  scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction,
+  scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction, recovery,
 }: SourceLibraryProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -71,12 +72,12 @@ export function SourceLibrary({
             <span aria-hidden="true">+</span> Add site
           </button>
         </header>
-        {error && (
+        {recovery ?? (error && (
           <div className="source-alert" role="alert">
             <p className="source-error">{error}</p>
             {errorAction && <button type="button" className="source-action" onClick={errorAction.run}>{errorAction.label}</button>}
           </div>
-        )}
+        ))}
         {blockedIds.size > 0 && <p className="source-scan-note" role="status">You can add sources when all scans finish.</p>}
         {sites.length > 0 ? (
           <section className="source-directory" aria-label="Storage sources">

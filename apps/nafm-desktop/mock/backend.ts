@@ -94,6 +94,10 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   let nextRequest = 1;
   const management = createManagementApi(scenario, () => scans.size > 0);
   const storage = createStorageApi(management.current);
+  const interruptedReads = new Map<string, "interrupt" | "recover">(scenario === "recovery" ? [
+    ["site_folder:studio-archive:0", "interrupt"],
+    ["site:team-share", "interrupt"],
+  ] : []);
 
   function startScan(selector: ScanSelector, stepTime = 900): ScanTask {
     const workspace = management.current();
@@ -233,7 +237,17 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     get_storage_tree: storage.tree,
     get_storage_location: storage.location,
     get_storage_children: storage.children,
-    get_storage_view_snapshot: storage.snapshot,
+    async get_storage_view_snapshot(args) {
+      const snapshot = storage.snapshot(args);
+      const folderId = snapshot.location.root.id;
+      const read = interruptedReads.get(folderId);
+      if (!read) return snapshot;
+      if (read === "interrupt") interruptedReads.set(folderId, "recover");
+      else interruptedReads.delete(folderId);
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      if (read === "interrupt") throw new Error("The inventory could not be read.");
+      return snapshot;
+    },
     search_indexed_files: storage.searchIndexedFiles,
     get_storage_file_reveal: storage.reveal,
     get_storage_node_reveal: storage.revealNode,
@@ -256,7 +270,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
 
   registerPreviewIpc(async (command, payload) => {
     if (!Object.hasOwn(handlers, command)) throw new Error(`Unsupported preview command: ${command}`);
-    const response = handlers[command](payload === undefined ? {} : record(payload));
+    const response = await handlers[command](payload === undefined ? {} : record(payload));
     if (scenario === "slow" && ["get_storage_view_snapshot", "get_storage_children", "get_storage_node_reveal", "search_indexed_files"].includes(command)) {
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }

@@ -7,6 +7,7 @@ export const scenarioLabels = {
   empty: "Empty workspace",
   scanning: "Scan in progress",
   slow: "Slow folder reads",
+  recovery: "Interrupted navigation",
 } satisfies Record<PreviewScenario, string>;
 
 export function getScenario(url: URL): PreviewScenario {
