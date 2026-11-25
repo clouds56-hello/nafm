@@ -1,6 +1,6 @@
 import type { SiteOverview, StorageNode } from "../src/lib/types";
 
-export type PreviewScenario = "populated" | "deep" | "partial" | "empty" | "scanning" | "scan-failed" | "slow" | "recovery";
+export type PreviewScenario = "populated" | "large" | "deep" | "partial" | "empty" | "scanning" | "scan-failed" | "slow" | "recovery";
 
 export const PREVIEW_WORKSPACE = "Studio workspace";
 
@@ -10,6 +10,7 @@ type SampleRoot = { name: string; path: string; entries: readonly SampleEntry[] 
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
+const KiB = 1024;
 const brandGuidelines: SampleEntry = ["Brand guidelines.pdf", 65 * MiB];
 export const INVENTORY_DATE = "2025-11-04T10:15:00.000Z";
 
@@ -69,6 +70,25 @@ const photographs: readonly SampleEntry[] = [
     `Proof ${String(index + 1).padStart(3, "0")}.jpg`, 2 * MiB - index * 1024,
   ]),
 ];
+
+function largePhotoLibrary(): SampleEntry[] {
+  const subjects = ["Harbor survey", "Glasshouse", "Night market", "Botanical study", "Studio session", "Rooftop portraits"];
+  const formats = [
+    { extension: "jpg", minimum: 700 * KiB, spread: 12 * MiB },
+    { extension: "dng", minimum: 18 * MiB, spread: 52 * MiB },
+    { extension: "tif", minimum: 48 * MiB, spread: 180 * MiB },
+    { extension: "xmp", minimum: 3 * KiB, spread: 16 * KiB },
+    { extension: "heic", minimum: 2 * MiB, spread: 8 * MiB },
+  ];
+  const captures = Array.from({ length: 4_096 - photographs.length }, (_, index): SampleEntry => {
+    const subject = subjects[index % subjects.length];
+    const { extension, minimum, spread } = formats[Math.floor(index / subjects.length) % formats.length];
+    const frame = String(index + 1).padStart(4, "0");
+    const size = minimum + ((index * 1_048_573) % spread);
+    return [`${subject} ${frame}.${extension}`, size];
+  });
+  return [...photographs, ...captures];
+}
 
 const deliverables: readonly SampleEntry[] = [
   ["Exhibition playback", [["Gallery loop.mov", 44 * GiB], ["Captions.vtt", 38 * 1024]]],
@@ -196,7 +216,7 @@ export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview
   };
   const studioRoots = [
     ["Projects", projects],
-    ["Photo Library", photographs],
+    ["Photo Library", scenario === "large" ? largePhotoLibrary() : photographs],
     ["Deliverables", deliverables],
     ["Sound Library", sound],
     ["Documents", documents],

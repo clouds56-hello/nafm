@@ -249,6 +249,80 @@ test("the full scrollbar seeks directly to a distant file and restores it after 
   await expect(last).toBeFocused();
 });
 
+test("Home returns focus to the first row during a pending End jump", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  await arc(page, /^Photo Library,/).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  const entries = contents.getByRole("region", { name: "Directory entries" });
+  const first = entries.locator('[aria-rowindex="1"] [data-entry-id]');
+  const second = entries.locator('[aria-rowindex="2"] [data-entry-id]');
+  await expect(entries.getByRole("grid")).toHaveAttribute("aria-rowcount", "4096");
+  await expect(entries.locator('[aria-rowindex="7"] [data-entry-id]')).toBeAttached();
+  await expect(entries).not.toHaveAttribute("aria-busy", "true");
+  await first.focus();
+
+  const distantRead = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { offset?: number }) => Promise<unknown> };
+    };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, replied: false, release };
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      if (read.pending || command !== "get_storage_children" || !(Number(args.offset) > 0)) {
+        return invoke(command, args);
+      }
+      read.pending = true;
+      const result = await invoke(command, args);
+      await gate;
+      requestAnimationFrame(() => { read.replied = true; });
+      return result;
+    };
+    return read;
+  });
+
+  try {
+    await page.keyboard.press("End");
+    await expect.poll(() => distantRead.evaluate((read) => read.pending)).toBe(true);
+    await expect(entries).toHaveAttribute("aria-busy", "true");
+    await page.keyboard.press("Home");
+    await expect(first).toBeFocused();
+    await expect(first).toBeInViewport();
+    await page.keyboard.press("ArrowDown");
+    await expect(second).toBeFocused();
+  } finally {
+    await distantRead.evaluate((read) => read.release());
+  }
+  await expect.poll(() => distantRead.evaluate((read) => read.replied)).toBe(true);
+  await expect(second).toBeFocused();
+  await expect(second).toBeInViewport();
+});
+
+test("Arrow Down resumes keyboard browsing at the first visible row after a scrollbar jump", async ({ page }) => {
+  await arc(page, /^Photo Library,/).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
+  const row = (index: number) => grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+  await row(1).focus();
+
+  const firstVisible = 74;
+  const rowHeight = (await grid.getByRole("row").first().boundingBox())!.height;
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (firstVisible - 1) * rowHeight);
+  await expect(row(firstVisible)).toBeInViewport();
+  await expect(row(1)).toHaveCount(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(row(firstVisible)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(row(firstVisible + 1)).toBeFocused();
+  await expect(row(firstVisible + 1)).toBeInViewport();
+});
+
 test("a slow folder reply cannot replace a newer destination or add a history entry", async ({ page }) => {
   let releaseFirst!: () => void;
   const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });

@@ -113,14 +113,15 @@ export function DirectoryContents({
       keyboardFolder.current = null;
       return;
     }
-    if (pending && (pending.key !== contentsKey || error)) {
+    if (pending && (pending.key !== contentsKey || error || (total > 0 && document.activeElement !== listRef.current))) {
       keyboardRow.current = null;
       return;
     }
     if (!ready && total) return;
     const parentEntry = destination?.row
       ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(destination.row)}"]`) : null;
-    const row = parentEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${(pending?.index ?? first) + 1}"] [data-entry-id]`);
+    const target = Math.min(total - 1, pending?.index ?? first);
+    const row = parentEntry ?? listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
     if (row || !total || error) {
       keyboardRow.current = null;
       keyboardFolder.current = null;
@@ -173,28 +174,42 @@ export function DirectoryContents({
     onGoUp();
   }
 
-  function moveRow(event: KeyboardEvent<HTMLButtonElement>, node: StorageNode, index: number) {
+  function moveRow(event: KeyboardEvent<HTMLElement>, node?: StorageNode, index?: number) {
     if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
-    let target = index;
+    const pending = keyboardRow.current;
+    const cursorIndex = index ?? (pending?.key === contentsKey ? pending.index : undefined);
+    const current = cursorIndex ?? first;
+    let target: number;
     switch (event.key) {
-      case "ArrowDown": target++; break;
-      case "ArrowUp": target--; break;
+      case "ArrowDown": target = cursorIndex === undefined ? first : current + 1; break;
+      case "ArrowUp": target = cursorIndex === undefined ? first : current - 1; break;
       case "Home": target = 0; break;
       case "End": target = total - 1; break;
-      case "PageDown": target += viewport.capacity; break;
-      case "PageUp": target -= viewport.capacity; break;
-      case "ArrowLeft": goUp(true); break;
-      case "ArrowRight": activate(node, true); break;
+      case "PageDown": target = current + viewport.capacity; break;
+      case "PageUp": target = current - viewport.capacity; break;
+      case "ArrowLeft":
+        event.preventDefault();
+        keyboardRow.current = null;
+        goUp(true);
+        return;
+      case "ArrowRight":
+        if (node) {
+          event.preventDefault();
+          activate(node, true);
+        }
+        return;
       default: return;
     }
     event.preventDefault();
     target = Math.min(total - 1, Math.max(0, target));
     if (target === index || loading) return;
     const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
-    if (row) row.focus();
-    else {
+    if (row) {
+      keyboardRow.current = null;
+      row.focus();
+    } else {
       keyboardRow.current = { key: contentsKey, index: target };
-      scrollPane.current?.focus({ preventScroll: true });
+      listRef.current?.focus({ preventScroll: true });
       viewport.scrollToRow(target);
     }
   }
@@ -271,9 +286,10 @@ export function DirectoryContents({
       <div role="region" aria-label="Directory entries" aria-busy={loading || loadingMore || undefined}>
         {total > 0 ? (
           <ul
-            className="atlas-directory-list" ref={listRef} role="grid" style={{ height: viewport.trackHeight }}
+            className="atlas-directory-list" ref={listRef} role="grid" tabIndex={-1} style={{ height: viewport.trackHeight }}
             aria-label={`${location.root.name} entries`} aria-rowcount={total}
             aria-description="Use Up and Down to move between entries, Enter to open, and Left to return to the parent."
+            onKeyDown={(event) => { if (event.target === event.currentTarget) moveRow(event); }}
           >
             {visible.map(({ index, node }) => {
               const style = { top: viewport.rowTop(index) };

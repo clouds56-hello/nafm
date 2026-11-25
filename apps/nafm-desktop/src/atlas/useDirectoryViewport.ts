@@ -39,7 +39,7 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, total, active, 
       const focusedRow = document.activeElement?.closest<HTMLElement>('[aria-rowindex]');
       if (focusedRow && list.contains(focusedRow)) {
         const index = Number(focusedRow.getAttribute("aria-rowindex")) - 1;
-        if (index < first - OVERSCAN || index > first + capacity + OVERSCAN) pane.focus({ preventScroll: true });
+        if (index < first - OVERSCAN || index > first + capacity + OVERSCAN) list.focus({ preventScroll: true });
       }
       setGeometry((old) => old.key === contentsKey && old.first === first && old.capacity === capacity
         && old.rowHeight === rowHeight && old.shift === shift
