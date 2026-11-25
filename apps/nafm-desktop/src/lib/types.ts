@@ -298,6 +298,7 @@ export interface StorageDirectoryAnchor {
   child_id: string;
   query: string | null;
   inspect_file?: boolean;
+  preserve_page_offset?: boolean;
 }
 
 export interface DirectoryRefresh {

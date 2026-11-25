@@ -268,6 +268,49 @@ test("a workspace return keeps the paused search and viewport of a Finder reveal
   await expect(search).toBeFocused();
 });
 
+test("a closed Atlas reveal keeps its paused search and cursor when its workspace returns", async ({ page }) => {
+  await page.goto("/mock/");
+  await openFolder(page, "Photo Library");
+  const opener = page.getByRole("button", { name: "Contents & details", exact: true });
+  await opener.press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const query = "  PrOoF 01  ";
+  const filter = contents.getByLabel("Find in folder", { exact: true });
+  await contents.getByRole("button", { name: "Search this folder" }).press("Enter");
+  await filter.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "10");
+  await page.getByRole("figure").getByRole("button", { name: /^Proof 001\.jpg,/ }).press("Enter");
+  await inspector.getByRole("button", { name: "Show in Contents" }).press("Enter");
+  await expect(grid.getByRole("button", { name: /^Proof 001\.jpg/ })).toBeFocused();
+  const restore = contents.getByRole("button", { name: "Restore search" });
+  await expect(restore).toBeVisible();
+
+  await page.keyboard.press("End");
+  const cursor = grid.locator('[aria-rowindex="100"] [data-entry-id]');
+  await expect(cursor).toBeFocused();
+  const scroll = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  await inspector.getByRole("button", { name: "Close inspector" }).press("Enter");
+  await switchWorkspace(page, fieldWorkspace);
+  await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
+  await switchWorkspace(page, studioWorkspace);
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(inspector).toBeHidden();
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+
+  await opener.press("Enter");
+  await expect(restore).toBeVisible();
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
+  await expect(cursor).toBeFocused();
+  await expect(cursor).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+  await restore.press("Enter");
+  await expect(filter).toHaveValue(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "10");
+});
+
 test("a failed quick workspace switch keeps Atlas open and retries the intended workspace", async ({ page }) => {
   await page.goto("/mock/?scenario=workspace-recovery");
   await openFolder(page, "Projects");

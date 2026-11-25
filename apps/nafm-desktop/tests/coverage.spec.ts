@@ -173,6 +173,107 @@ for (const view of ["all entries", "filtered matches"] as const) {
   });
 }
 
+for (const handoff of ["a Coverage target change", "a Sites round trip"] as const) {
+  test(`Show in Contents keeps its paused search and viewport through ${handoff}`, async ({ page }) => {
+    const fromFinder = handoff === "a Coverage target change";
+    const fileName = fromFinder ? "Proof 096.jpg" : "Proof 001.jpg";
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.goto(fromFinder ? "/mock/?scenario=large" : "/mock/");
+    const map = page.getByRole("figure");
+    await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    if (!fromFinder) await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+    const grid = contents.getByRole("grid");
+    const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+      .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+    const restoreSearch = contents.getByRole("button", { name: "Restore search", exact: true });
+    const paused = contents.getByText("Search paused", { exact: true });
+    const query = "  PrOoF 01  ";
+    await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+    await filter.fill(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "10");
+
+    if (fromFinder) {
+      await page.getByRole("button", { name: "Find files", exact: true }).click();
+      const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+      await finder.getByRole("searchbox", { name: "File name", exact: true }).fill("Proof 096");
+      await finder.getByRole("button", { name: /^Proof 096\.jpg/ }).press("Enter");
+      await expect(finder).toBeHidden();
+    } else {
+      await map.getByRole("button", { name: /^Proof 001\.jpg,/ }).press("Enter");
+    }
+    await expect(inspector.getByRole("heading", { name: fileName, exact: true })).toBeVisible();
+    await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+    const revealed = grid.getByRole("button", { name: fromFinder ? /^Proof 096\.jpg/ : /^Proof 001\.jpg/ });
+    const count = fromFinder ? "4096" : "100";
+    await expect(paused).toBeVisible();
+    await expect(grid).toHaveAttribute("aria-rowcount", count);
+    await expect(revealed).toBeFocused();
+
+    if (fromFinder) {
+      await showCoverage(page);
+      await expect(target(page)).toHaveAttribute("title", "Field drive");
+    }
+    const rank = fromFinder ? 1188 : 64;
+    const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (rank - 4) * height);
+    const row = grid.locator(`[aria-rowindex="${rank}"] [data-entry-id]`);
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await expect(revealed).toHaveCount(0);
+    const fileId = (await row.getAttribute("data-entry-id"))!;
+    const comparisonRow = fromFinder ? await row.elementHandle() : null;
+    const scroll = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scroll).toBeGreaterThan(0);
+
+    async function expectPausedPosition() {
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(paused).toBeVisible();
+      await expect(filter).toBeHidden();
+      await expect(grid).toHaveAttribute("aria-rowcount", count);
+      await expect(row).toHaveAttribute("data-entry-id", fileId);
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+      await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+      if (comparisonRow) expect(await row.evaluate((current, initial) => current === initial, comparisonRow)).toBe(true);
+    }
+
+    if (fromFinder) {
+      await target(page).selectOption("team-share");
+      await expect(target(page)).toHaveAttribute("title", "Team share");
+      await expect(target(page)).toHaveValue("team-share");
+      await expect(coverage(page).getByText("Studio archive", { exact: true })).toBeVisible();
+      await expectPausedPosition();
+
+      await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+      await expect(target(page)).toHaveAttribute("title", "Field drive");
+      await expectPausedPosition();
+      await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
+      await expect(target(page)).toHaveAttribute("title", "Team share");
+    } else {
+      const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+      const field = sites.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
+      const studio = sites.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+      await field.press("Enter");
+      await expect(currentFolder(page)).toHaveText("Field drive");
+      await expect(field).toHaveAttribute("aria-current", "true");
+      await studio.press("Enter");
+      await expect(studio).toHaveAttribute("aria-current", "true");
+      await expect(studio).toBeFocused();
+    }
+
+    await expectPausedPosition();
+    await restoreSearch.press("Enter");
+    await expect(paused).toBeHidden();
+    await expect(filter).toHaveValue(query);
+    await expect(filter).toBeFocused();
+    await expect(grid).toHaveAttribute("aria-rowcount", "10");
+    await expect(grid.getByRole("button", { name: /^Proof 010\.jpg/ })).toBeVisible();
+  });
+}
+
 test("a pending target reports estimated coverage and can finish verification", async ({ page }) => {
   await page.goto("/mock/?scenario=partial");
   await showCoverage(page);

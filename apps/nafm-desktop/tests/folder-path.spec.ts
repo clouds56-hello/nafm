@@ -74,6 +74,35 @@ test("the toolbar reveals intermediate folders and a jump preserves Back history
   await expect(hierarchy).toBeHidden();
 });
 
+test("Back from a disappearing inline breadcrumb keeps focus in the folder path", async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 800 });
+  await openDeepFolder(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+  await filter.fill("  tRan  ");
+  const transcript = contents.getByRole("button", { name: /^Transcript\.txt/ });
+  await expect(transcript).toBeVisible();
+
+  const path = folderPath(page);
+  const parent = path.getByRole("button", { name: "Second Unit", exact: true });
+  await parent.press("Alt+ArrowLeft");
+  const heading = path.getByRole("heading", { name: "Second Unit", exact: true });
+  await expect(parent).toHaveCount(0);
+  await expect(heading).toBeFocused();
+  await expect(heading).toBeInViewport();
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+  await expect(contents).toBeVisible();
+
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(currentFolder(page)).toHaveText(current);
+  await expect(path.getByRole("heading", { name: current, exact: true })).toBeFocused();
+  await expect(filter).toHaveValue("  tRan  ");
+  await expect(transcript).toBeVisible();
+});
+
 for (const moveFocus of [false, true]) {
   test(`compact Contents Up keeps keyboard focus when its read fails${moveFocus ? " after focus moves" : ""}`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 500 });
@@ -259,6 +288,51 @@ test.describe("minimum desktop toolbar", () => {
 
 test.describe("compact touch toolbar", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
+
+  test("folder path keys keep the focused ancestor visible when the popup shrinks", async ({ page, browserName }) => {
+    await openDeepFolder(page);
+    const pathButton = folderPath(page).getByRole("button", { name: "Show folder path", exact: true });
+    const hierarchy = page.getByRole("group", { name: "Folder hierarchy", exact: true });
+    const ancestor = (name: string) => hierarchy.getByRole("button", { name, exact: true });
+    const root = ancestor("Studio archive");
+    const archive = ancestor("Production Archive");
+    const parent = ancestor("Second Unit");
+
+    await pathButton.press("ArrowDown");
+    await expect(root).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(archive).toBeFocused();
+    // macOS WebKit uses Option+Tab to include buttons with its default keyboard settings.
+    await page.keyboard.press(browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab");
+    await expect(ancestor("2025 Campaigns")).toBeFocused();
+    await page.keyboard.press("ArrowUp");
+    await expect(archive).toBeFocused();
+    await page.keyboard.press("End");
+    await expect(parent).toBeFocused();
+
+    await page.setViewportSize({ width: 320, height: 280 });
+    await expect(parent).toBeFocused();
+    await expect(parent).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(() => hierarchy.evaluate((popup) => popup.scrollTop)).toBeGreaterThan(0);
+    const outsideScroll = await page.evaluate(() => window.scrollY);
+    await page.keyboard.press("Home");
+    await expect(root).toBeFocused();
+    await expect(root).toBeInViewport({ ratio: 0.99 });
+    await page.keyboard.press("Escape");
+    await expect(hierarchy).toBeHidden();
+    await expect(pathButton).toBeFocused();
+
+    await page.keyboard.press("ArrowUp");
+    await expect(parent).toBeFocused();
+    await expect(parent).toBeInViewport({ ratio: 0.99 });
+    await page.keyboard.press("ArrowDown");
+    await expect(parent).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(outsideScroll);
+    await page.keyboard.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Second Unit");
+    await expect(hierarchy).toBeHidden();
+    await expect(pathButton).toBeFocused();
+  });
 
   test("history shortcuts leave focus in the folder path when an ancestor disappears", async ({ page }) => {
     await page.goto("/mock/");

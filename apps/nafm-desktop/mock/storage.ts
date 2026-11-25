@@ -256,7 +256,8 @@ function makeSnapshot(
   const { offset, limit } = paging(args);
   const children = orderedChildren(node, directorySort(args.sort));
   const childIndex = anchor ? children.findIndex((child) => child.id === anchor.child_id) : -1;
-  const start = childIndex >= 0 ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
+  const start = childIndex >= 0 && !anchor?.preserve_page_offset
+    ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
   const inspected = anchor?.inspect_file
     ? children[childIndex] ?? findPath(node, anchor.child_id)?.at(-1)
     : undefined;
@@ -329,12 +330,13 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   function snapshot(args: CommandArgs) {
     checkWorkspace(current(), args.expectedWorkspace);
     if (args.anchor == null) return makeSnapshot(model(args), args);
-    const { child_id, query, inspect_file } = record(args.anchor);
+    const { child_id, query, inspect_file, preserve_page_offset } = record(args.anchor);
     if (typeof child_id !== "string" || (query != null && typeof query !== "string")
-      || (inspect_file !== undefined && typeof inspect_file !== "boolean")) {
+      || (inspect_file !== undefined && typeof inspect_file !== "boolean")
+      || (preserve_page_offset !== undefined && typeof preserve_page_offset !== "boolean")) {
       throw new Error("Invalid directory anchor.");
     }
-    return makeSnapshot(model(args), args, { child_id, query: query ?? null, inspect_file });
+    return makeSnapshot(model(args), args, { child_id, query: query ?? null, inspect_file, preserve_page_offset });
   }
 
   function children(args: CommandArgs) {

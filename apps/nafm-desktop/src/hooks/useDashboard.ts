@@ -163,17 +163,24 @@ interface DirectoryAnchorLoad {
   onArrival?: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
 }
 
-function inspectFileAnchor(id: string): DirectoryAnchorLoad {
-  return { request: { child_id: id, query: null, inspect_file: true } };
+function inspectFileAnchor(id: string, preservePageOffset = false): DirectoryAnchorLoad {
+  return { request: { child_id: id, query: null, inspect_file: true, preserve_page_offset: preservePageOffset || undefined } };
+}
+
+interface ContentsFileReveal {
+  id: string;
+  inspection: AtlasInspection;
+  filter?: StorageDirectoryFilter;
+  signal: AbortSignal;
+  onArrival: (location: FileRevealLocation) => void;
 }
 
 type FileRevealDestination =
-  | { kind: "node"; siteId: string; id: string; filter?: StorageDirectoryFilter; shouldApply?: () => boolean }
+  | ({ kind: "node"; siteId: string } & ContentsFileReveal)
   | { kind: "match"; siteId: string; id: string; signal: AbortSignal; inspection: AtlasInspection; replaceCurrent?: boolean };
 
 type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">
   & { filtered_page?: StorageChildrenPage | null };
-type FileRevealResult = { location: FileRevealLocation; error: null } | { location: null; error: string };
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -476,8 +483,9 @@ export function useDashboard(
     setLoadingMoreChildren(false);
     const previousEntry = currentNavigationEntry();
     // Filtered and nested files can be outside the saved directory window and radial tree.
-    const restoring = historyAction === "switch" || historyAction === "back" || historyAction === "forward";
-    const anchor = requestedAnchor ?? (restoring && entry.selected_file ? inspectFileAnchor(entry.selected_file.id) : undefined);
+    const restoring = historyAction === "switch" || historyAction === "back" || historyAction === "forward"
+      || historyAction === "preserve";
+    const anchor = requestedAnchor ?? (restoring && entry.selected_file ? inspectFileAnchor(entry.selected_file.id, true) : undefined);
     const ownsRequest = () => locationRequestRef.current === requestId
       && childrenRequestRef.current === childrenRequestId
       && workspaceNameRef.current === workspace;
@@ -1184,7 +1192,7 @@ export function useDashboard(
     return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
   }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
 
-  const selectCoverageTarget = useCallback(async (targetSiteId: string, inspectedFileId?: string) => {
+  const selectCoverageTarget = useCallback(async (targetSiteId: string, preservePageOffset: boolean) => {
     const current = currentNavigationEntry();
     if (!current || current.site_id === targetSiteId
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
@@ -1194,9 +1202,7 @@ export function useDashboard(
         title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target",
         progress: targetName ? `Comparing with ${targetName}…` : "Changing comparison target…",
       },
-      anchor: inspectedFileId && current.selected_node_id === inspectedFileId
-        ? inspectFileAnchor(inspectedFileId)
-        : undefined,
+      anchor: current.selected_file ? inspectFileAnchor(current.selected_file.id, preservePageOffset) : undefined,
     });
   }, [currentNavigationEntry, loadFolderLocation]);
 
@@ -1521,24 +1527,22 @@ export function useDashboard(
     if (failed) void loadChildrenRange(failed.start, failed.end);
   }, [loadChildrenRange]);
 
-  const revealFile = useCallback(async (destination: FileRevealDestination): Promise<FileRevealResult> => {
+  const revealFile = useCallback(async (destination: FileRevealDestination): Promise<string | null> => {
     const requestedWorkspace = workspaceNameRef.current;
     const currentSiteId = selectedSiteRef.current;
     const currentDashboard = dashboardRef.current;
     if (navigationInProgressRef.current || childrenLoadingRef.current) {
-      return { location: null, error: "Wait for the current folder to finish loading, then try again." };
+      return "Wait for the current folder to finish loading, then try again.";
     }
     if (!requestedWorkspace || !currentSiteId || !currentDashboard) {
-      return { location: null, error: "The workspace is unavailable." };
+      return "The workspace is unavailable.";
     }
 
     const currentTarget = targetSiteRef.current;
     const previousEntry = currentNavigationEntry();
-    const isRequested = () => destination.kind === "match"
-      ? !destination.signal.aborted
-      : (selectedSiteRef.current === destination.siteId && selectionRef.current?.node.id === destination.id
-        && (destination.shouldApply?.() ?? true));
-    const cancelled = { location: null, error: "File navigation was cancelled." } as const;
+    const isRequested = () => !destination.signal.aborted && (destination.kind === "match"
+      || (selectedSiteRef.current === destination.siteId && selectionRef.current?.node.id === destination.id));
+    const cancelled = "File navigation was cancelled.";
     if (!isRequested()) return cancelled;
 
     const requestId = ++locationRequestRef.current;
@@ -1556,9 +1560,9 @@ export function useDashboard(
         setLocationProgress(null);
       }
     };
-    // IPC may still finish after closing the dialog. Release navigation immediately and discard its reply.
-    const signal = destination.kind === "match" ? destination.signal : undefined;
-    signal?.addEventListener("abort", finish, { once: true });
+    // IPC may still finish after closing the surface. Release navigation immediately and discard its reply.
+    const { signal } = destination;
+    signal.addEventListener("abort", finish, { once: true });
     childrenRequestRef.current += 1;
     pendingRangeRef.current = null;
     childrenRetryRef.current = null;
@@ -1587,9 +1591,7 @@ export function useDashboard(
       const selectedIndex = reveal.page.children.findIndex((child) => child.id === reveal.selected_file.id);
       if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
       const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
-      const previousInspection = previousEntry?.inspection;
-      const inspection = destination.kind === "match" ? destination.inspection
-        : previousInspection?.kind === "file" ? null : previousInspection;
+      const { inspection } = destination;
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
@@ -1601,6 +1603,8 @@ export function useDashboard(
         selected_node_id: reveal.selected_file.id,
         inspection,
       };
+      // Apply the Contents pane with the new selection so Details cannot take focus in between.
+      if (destination.kind === "node") destination.onArrival({ ...destinationEntry, filtered_page: reveal.filtered_page });
 
       if (previousEntry && previousEntry.site_id !== destinationEntry.site_id) {
         lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
@@ -1629,14 +1633,14 @@ export function useDashboard(
         setBackHistory(backHistoryRef.current);
         setForwardHistory([]);
       }
-      return { location: { ...destinationEntry, filtered_page: reveal.filtered_page }, error: null };
+      return null;
     } catch (revealError) {
       if (!canApply()) return cancelled;
       const message = errorMessage(revealError);
       if (destination.kind === "node") setNotice(message);
-      return { location: null, error: message };
+      return message;
     } finally {
-      signal?.removeEventListener("abort", finish);
+      signal.removeEventListener("abort", finish);
       finish();
     }
   }, [currentNavigationEntry, selectLocationNode]);
@@ -1646,8 +1650,7 @@ export function useDashboard(
     origin: FinderPosition | AnalysisInspection | ReviewInspection, replaceCurrent = false,
   ): Promise<string | null> => {
     const inspection: AtlasInspection = "kind" in origin ? origin : { kind: "finder", position: origin };
-    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection, replaceCurrent });
-    return result.error;
+    return revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection, replaceCurrent });
   }, [revealFile]);
 
   const jumpToSimilarFolder = useCallback(async (
@@ -1675,11 +1678,10 @@ export function useDashboard(
     return null;
   }, [loadFolderLocation]);
 
-  const revealSelectedFileInContents = useCallback(async (fileId: string, filter?: StorageDirectoryFilter, shouldApply?: () => boolean) => {
+  const revealSelectedFileInContents = useCallback((request: ContentsFileReveal) => {
     const siteId = selectedSiteRef.current;
-    if (!siteId || selectionRef.current?.node.kind !== "file" || childrenLoadingRef.current) return null;
-    const result = await revealFile({ kind: "node", siteId, id: fileId, filter, shouldApply });
-    return result.location;
+    if (!siteId || selectionRef.current?.node.kind !== "file" || childrenLoadingRef.current) return;
+    return revealFile({ kind: "node", siteId, ...request });
   }, [revealFile]);
 
   const updateStaged = useCallback((update: (files: DuplicateFile[]) => DuplicateFile[], history: StageHistoryState) => {

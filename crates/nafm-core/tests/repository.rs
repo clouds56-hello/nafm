@@ -3033,6 +3033,7 @@ async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
     child_id: child.id.clone(),
     query: Some("  ShOt  ".into()),
     inspect_file: false,
+    preserve_page_offset: false,
   };
   let snapshot = fixture
     .repo
@@ -3086,7 +3087,9 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   fs::create_dir(&nested).unwrap();
   fs::create_dir(&outside).unwrap();
   let file_path = nested.join("retained.bin");
+  let earlier_path = nested.join("earlier.bin");
   fs::write(&file_path, b"retained").unwrap();
+  fs::write(&earlier_path, b"other").unwrap();
   fs::write(outside.join("other.bin"), b"other").unwrap();
   fixture.create_site("inspected-source").await;
   fixture
@@ -3103,6 +3106,7 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
     child_id: file.id.clone(),
     query: Some("retained".into()),
     inspect_file: true,
+    preserve_page_offset: false,
   };
   let sort = DirectorySort {
     field: DirectorySortField::Name,
@@ -3130,10 +3134,34 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
     .storage_view_snapshot_with_anchor("inspected-source", None, &nested.id, 10, 0, 1, 1, sort, Some(&anchor))
     .await
     .unwrap();
-  assert_eq!(direct.page.offset, 0);
+  assert_eq!(direct.page.offset, 1);
   assert_eq!(direct.page.children[0].id, file.id);
   assert_eq!(direct.filtered_page.unwrap().children[0].id, file.id);
   assert_eq!(direct.inspected_file.unwrap().id, file.id);
+
+  let keep_window = StorageDirectoryAnchor {
+    preserve_page_offset: true,
+    ..anchor.clone()
+  };
+  let distant = fixture
+    .repo
+    .storage_view_snapshot_with_anchor(
+      "inspected-source",
+      None,
+      &nested.id,
+      0,
+      0,
+      1,
+      1,
+      sort,
+      Some(&keep_window),
+    )
+    .await
+    .unwrap();
+  assert_eq!(distant.page.offset, 0);
+  assert_eq!(distant.page.children[0].name, "earlier.bin");
+  assert_eq!(distant.filtered_page.unwrap().children[0].id, file.id);
+  assert_eq!(distant.inspected_file.unwrap().id, file.id);
 
   let outside_scope = fixture
     .repo
@@ -3143,6 +3171,7 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
   assert!(outside_scope.inspected_file.is_none());
 
   fs::remove_file(file_path).unwrap();
+  fs::remove_file(earlier_path).unwrap();
   fixture.repo.scan_site("inspected-source").await.unwrap();
   let removed = fixture
     .repo

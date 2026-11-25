@@ -47,12 +47,12 @@ export interface AtlasWorkspaceSession {
   location?: AtlasWorkspaceLocation;
   contentsVisit?: ContentsVisit;
   revealedContentsVisit?: RevealedContentsVisit;
+  revealedContentsView?: InspectorView;
   sitesOpen: boolean;
   inspectorOpen: boolean;
   inspectorBySite: Map<string, InspectorView>;
   lastOpened: "sites" | "inspector";
-  folderSearches: Map<string, string>;
-  pausedSearchScope: string | null;
+  folderSearches: Map<string, FolderSearch>;
   scrollPositions: Map<string, number | "end">;
   cursorPositions: Map<string, string>;
   mapMode: MapMode;
@@ -65,9 +65,13 @@ interface FinderSession {
   latestPosition: FinderPosition | null;
 }
 
+interface FolderSearch {
+  text: string;
+}
+
 interface RevealedContentsVisit {
   id: string;
-  searchPaused: boolean;
+  pausedSearch?: FolderSearch;
 }
 
 type ComparisonSession = {
@@ -161,8 +165,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string; origin?: Element | null } | null>(null);
   const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
-  const [folderSearches, setFolderSearches] = useState(() => saved?.folderSearches ?? new Map<string, string>());
-  const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(saved?.pausedSearchScope ?? null);
+  const [folderSearches, setFolderSearches] = useState(() => saved?.folderSearches ?? new Map<string, FolderSearch>());
   const [revealedContentsVisits, setRevealedContentsVisits] = useState(() => new Map<AtlasInspection, RevealedContentsVisit>(
     savedInspection && saved?.revealedContentsVisit ? [[savedInspection, saved.revealedContentsVisit]] : [],
   ));
@@ -174,7 +177,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromInspectionDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [inspectionViews, setInspectionViews] = useState(() => {
-    const view = saved?.contentsVisit ?? (saved?.revealedContentsVisit ? "contents" : null);
+    const view = saved?.contentsVisit ?? saved?.revealedContentsView;
     return new Map<AtlasInspection, InspectorPane>(savedInspection && view ? [[savedInspection, view]] : []);
   });
   const [reviewReturn, setReviewReturn] = useState<ReviewPosition | null>(null);
@@ -192,8 +195,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }, [findWorkspace]);
   const siteId = site?.id;
   const inspection = state.inspection;
+  const inspectionPane = inspection ? inspectionViews.get(inspection) ?? "details" : null;
   const pane = inspectorOpen && siteId
-    ? inspection ? inspectionViews.get(inspection) ?? "details" : inspectorBySite.get(siteId) ?? "contents"
+    ? inspectionPane ?? inspectorBySite.get(siteId) ?? "contents"
     : null;
   const visit = typeof pane === "object" ? pane : null;
   const inspectorView = typeof pane === "string" ? pane : visit?.view ?? null;
@@ -228,11 +232,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   const folder = location?.root;
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
-  const savedSearch = folderSearches.get(searchScope) ?? null;
+  const savedSearch = folderSearches.get(searchScope);
   const revealedContentsVisit = inspection ? revealedContentsVisits.get(inspection) : undefined;
-  const searchPaused = Boolean(savedSearch?.trim())
-    && (state.contentsGroup || (revealedContentsVisit?.searchPaused ?? (pausedSearchScope === searchScope)));
-  const searchText = searchPaused ? null : savedSearch;
+  // A reveal only pauses the search that was active when it opened.
+  const searchPaused = Boolean(savedSearch?.text.trim())
+    && (state.contentsGroup || revealedContentsVisit?.pausedSearch === savedSearch);
+  const searchText = searchPaused ? null : savedSearch?.text ?? null;
   const searchQuery = searchText?.trim() ?? "";
   function searchContentsKey(sort: DirectorySort, query: string) {
     return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query), revealedContentsVisit);
@@ -254,16 +259,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
 
-  useEffect(() => {
-    if (folder && pausedSearchScope && pausedSearchScope !== searchScope) setPausedSearchScope(null);
-  }, [folder, pausedSearchScope, searchScope]);
-
   function saveFolderSearch(scope: string, text: string | null) {
     setFolderSearches((saved) => {
-      if ((saved.get(scope) ?? null) === text) return saved;
+      if ((saved.get(scope)?.text ?? null) === text) return saved;
       const next = new Map(saved);
       if (text === null) next.delete(scope);
-      else next.set(scope, text);
+      else next.set(scope, { text });
       return next;
     });
   }
@@ -353,10 +354,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
   async function restoreSearch() {
     if (!await state.leaveContentsGroup()) return;
-    if (inspection && revealedContentsVisit?.searchPaused) {
-      setRevealedContentsVisits((saved) => new Map(saved).set(inspection, { ...revealedContentsVisit, searchPaused: false }));
-    } else {
-      setPausedSearchScope(null);
+    if (inspection && revealedContentsVisit?.pausedSearch) {
+      setRevealedContentsVisits((saved) => saved.get(inspection) === revealedContentsVisit
+        ? new Map(saved).set(inspection, { ...revealedContentsVisit, pausedSearch: undefined }) : saved);
     }
   }
   useLayoutEffect(() => () => pendingReveal.current?.abort(), [siteId, selected?.id, state.selectedFileUnavailable]);
@@ -406,7 +406,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     if (!workspaceName || dashboard?.workspace_name !== workspaceName || (!location && dashboard.sites.length)) return;
     const canResumeFile = selected?.kind === "file" && !state.selectedFileUnavailable;
     const contentsVisit = canResumeFile && currentVisit?.source === "contents" ? currentVisit : undefined;
-    const revealedVisit = canResumeFile && (inspectorView === "contents" || contentsVisit) ? revealedContentsVisit : undefined;
+    const revealedVisit = canResumeFile ? revealedContentsVisit : undefined;
     const file = (contentsVisit || revealedVisit) && inspection && selected ? { id: selected.id, inspection } : undefined;
     sessions.set(workspaceName, {
       location: location ? {
@@ -415,18 +415,18 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       } : undefined,
       contentsVisit,
       revealedContentsVisit: revealedVisit,
+      revealedContentsView: revealedVisit ? (typeof inspectionPane === "string" ? inspectionPane : "contents") : undefined,
       sitesOpen,
       inspectorOpen,
       inspectorBySite: file && siteId ? new Map(inspectorBySite).set(siteId, "contents") : inspectorBySite,
       lastOpened: lastOpened.current,
       folderSearches,
-      pausedSearchScope,
       scrollPositions: contentsScroll.current,
       cursorPositions: contentsCursor.current,
       mapMode,
     });
-  }, [currentVisit, dashboard, folderSearches, inspection, inspectorBySite, inspectorOpen, inspectorView, location, mapMode,
-    pausedSearchScope, revealedContentsVisit, selected, sessions, siteId, sitesOpen, state.contentsAnchorOffset, state.contentsGroup, state.selectedFileUnavailable, target, workspaceName]);
+  }, [currentVisit, dashboard, folderSearches, inspection, inspectionPane, inspectorBySite, inspectorOpen, location, mapMode,
+    revealedContentsVisit, selected, sessions, siteId, sitesOpen, state.contentsAnchorOffset, state.contentsGroup, state.selectedFileUnavailable, target, workspaceName]);
   const { setHealthMetric } = state;
   useLayoutEffect(() => {
     setHealthMetric(mapMode === "coverage_health" ? "coverage_health" : "space_health");
@@ -457,8 +457,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const coverage = mapMode === "coverage_health";
   const folderCoverage = folder && coverage ? nodeHealthPresentation(folder, "coverage_health", targetCompleteness) : null;
   const changeCoverageTarget = (id: string) => {
-    const inspectedFile = inspectorView === "details" && selected?.kind === "file" ? selected.id : undefined;
-    void state.selectCoverageTarget(id, inspectedFile);
+    void state.selectCoverageTarget(id, inspectorView !== "details");
   };
   const swapCoverageSites = () => { if (site && target) void selectSite(target.id, site.id); };
   function verificationScanState(id: string) {
@@ -548,7 +547,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       return;
     }
     const scope = directoryScope(dashboard?.workspace_name, location.site_id, ancestor.id);
-    const query = folderSearches.get(scope)?.trim() || null;
+    const query = folderSearches.get(scope)?.text.trim() || null;
     navigateBreadcrumb(ancestor, {
       request: { child_id: child.id, query },
       onArrival: (destination, page, filteredPage) => {
@@ -666,37 +665,41 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     pendingReveal.current = attempt;
     setRevealingFileId(file.id);
     try {
+      // Keep the source Details entry intact if this reveal opens another folder.
+      const revealInspection = inspection && inspection.kind !== "file" ? inspection : { kind: "file" } as const;
       const parent = fileParent(folder, file.id) ?? folder;
-      const query = folderSearches.get(directoryScope(dashboard?.workspace_name, siteId, parent.id))?.trim();
+      const query = folderSearches.get(directoryScope(dashboard?.workspace_name, siteId, parent.id))?.text.trim();
       const filter = query ? { folder_id: parent.id, query } : undefined;
-      const destination = await state.revealSelectedFileInContents(file.id, filter, () => !attempt.signal.aborted);
-      if (!destination || attempt.signal.aborted) return;
-      const scope = directoryScope(dashboard?.workspace_name, destination.site_id, destination.node_id);
-      const filtered = destination.filtered_page;
-      const index = filtered?.children.findIndex((child) => child.id === file.id) ?? -1;
-      const match = query && filtered && index >= 0 ? { query, page: filtered, row: filtered.offset + index } : null;
-      if (match) {
-        search.prime({ scope, targetId: destination.target_site_id ?? undefined, query: match.query, sort: destination.sort }, match.page);
-      }
-      const pauseSearch = !match && Boolean(folderSearches.get(scope)?.trim());
-      // Same-folder history entries retain their own viewport and paused-search state.
-      const nextVisit = inspection && inspection.kind !== "file"
-        ? { id: revealedContentsVisit?.id ?? `${contentsId}-${++nextContentsVisitId.current}`, searchPaused: pauseSearch }
-        : undefined;
-      if (inspection && nextVisit) {
-        setRevealedContentsVisits((saved) => new Map(saved).set(inspection, nextVisit));
-      } else {
-        setPausedSearchScope(pauseSearch ? scope : null);
-      }
-      const key = contentsVisitKey(directoryKey(
-        dashboard?.workspace_name, destination.site_id, destination.node_id,
-        destination.sort, match ? 0 : destination.anchor_offset, match?.query,
-      ), nextVisit);
-      // A previous visit to this list may have scrolled away from the file.
-      contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
-      inspectorOrigin.current = null;
-      openInspector("contents", inspection?.kind === "file" ? null : inspection);
-      setRevealedRow({ key, id: file.id, origin: focusOrigin });
+      await state.revealSelectedFileInContents({
+        id: file.id, inspection: revealInspection, filter, signal: attempt.signal,
+        onArrival(destination) {
+          const scope = directoryScope(dashboard?.workspace_name, destination.site_id, destination.node_id);
+          const filtered = destination.filtered_page;
+          const index = filtered?.children.findIndex((child) => child.id === file.id) ?? -1;
+          const match = query && filtered && index >= 0 ? { query, page: filtered, row: filtered.offset + index } : null;
+          if (match) {
+            search.prime({ scope, targetId: destination.target_site_id ?? undefined, query: match.query, sort: destination.sort }, match.page);
+          }
+          // Same-folder history entries retain their own viewport and paused-search state.
+          const nextVisit: RevealedContentsVisit = {
+            id: revealedContentsVisits.get(revealInspection)?.id ?? `${contentsId}-${++nextContentsVisitId.current}`,
+            pausedSearch: match ? undefined : folderSearches.get(scope),
+          };
+          setRevealedContentsVisits((saved) => new Map(saved).set(revealInspection, nextVisit));
+          const key = contentsVisitKey(directoryKey(
+            dashboard?.workspace_name, destination.site_id, destination.node_id,
+            destination.sort, match ? 0 : destination.anchor_offset, match?.query,
+          ), nextVisit);
+          // A previous visit to this list may have scrolled away from the file.
+          contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
+          inspectorOrigin.current = null;
+          if (siteId && revealInspection.kind === "file") {
+            setInspectorBySite((saved) => saved.get(siteId) === "contents" ? saved : new Map(saved).set(siteId, "contents"));
+          }
+          openInspector("contents", revealInspection);
+          setRevealedRow({ key, id: file.id, origin: focusOrigin });
+        },
+      });
     } finally {
       if (pendingReveal.current === attempt) {
         pendingReveal.current = null;
@@ -943,7 +946,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 stepSource={finderStep ? "finder" : undefined}
                 folderName={folder?.name}
                 view={inspectorView}
-                initialView={selected?.kind === "file" ? "details" : "contents"}
+                initialView={selected?.kind === "file" && inspectionPane !== "contents" ? "details" : "contents"}
                 origin={inspectorOrigin}
                 onViewChange={changeInspectorView}
                 onEnterContents={setContentsFocusOrigin}

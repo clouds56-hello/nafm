@@ -4744,10 +4744,12 @@ fn storage_view_snapshot(
   let total_children = entries.len() as u64;
   let anchor_index = anchor.and_then(|anchor| directory_entry_index(&entries, &anchor.child_id));
   let page_offset = match anchor_index {
-    Some(index) => directory_page_start(index as u64, page_limit),
-    None if total_children == 0 => 0,
-    None if offset >= total_children => directory_page_start(total_children - 1, page_limit),
-    None => offset,
+    Some(index) if !anchor.is_some_and(|anchor| anchor.preserve_page_offset) => {
+      directory_page_start(index as u64, page_limit)
+    }
+    _ if total_children == 0 => 0,
+    _ if offset >= total_children => directory_page_start(total_children - 1, page_limit),
+    _ => offset,
   };
   let page = directory_page(
     site.clone(),

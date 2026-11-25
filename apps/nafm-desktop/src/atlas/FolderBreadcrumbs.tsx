@@ -1,8 +1,10 @@
-import { useCallback, useId, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, type KeyboardEvent, type RefObject } from "react";
 import type { StorageNode } from "../lib/types";
 import { CheckIcon, DriveIcon, FolderIcon, NetworkIcon } from "../management/Icons";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { focusPopoverItem, useAnchoredPopover } from "./useAnchoredPopover";
 import "./folder-breadcrumbs.css";
+
+const ancestorButton = 'button:not(:disabled, [aria-disabled="true"])';
 
 interface FolderBreadcrumbsProps {
   breadcrumbs: readonly StorageNode[];
@@ -19,7 +21,7 @@ export function FolderBreadcrumbs({
   breadcrumbs, siteName, canBack, canForward, canUp, onNavigate, heading, onTriggerRemoved,
 }: FolderBreadcrumbsProps) {
   const id = useId();
-  const { open, trigger, panel, show, toggle, close, containerProps } = useAnchoredPopover("button", "follow", "start");
+  const { open, trigger, panel, show, toggle, close, containerProps } = useAnchoredPopover(ancestorButton, "follow", "start");
   const attachTrigger = useCallback((button: HTMLButtonElement | null) => {
     trigger.current = button;
     if (button) return () => {
@@ -27,6 +29,9 @@ export function FolderBreadcrumbs({
       onTriggerRemoved(button);
     };
   }, [onTriggerRemoved, trigger]);
+  const attachAncestor = useCallback((button: HTMLButtonElement | null) => {
+    if (button) return () => onTriggerRemoved(button);
+  }, [onTriggerRemoved]);
   const requestedFolder = useRef<string>(null);
   const current = breadcrumbs.at(-1);
   const previousFolder = useRef(current?.id);
@@ -56,6 +61,46 @@ export function FolderBreadcrumbs({
     onNavigate(node);
   }
 
+  function handleTriggerKey(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const selector = event.key === "ArrowUp" ? `li:nth-last-child(2) > ${ancestorButton}` : ancestorButton;
+    if (!open || !panel.current) {
+      show(selector);
+      return;
+    }
+    const item = panel.current.querySelector<HTMLButtonElement>(selector);
+    if (item) focusPopoverItem(panel.current, item);
+  }
+
+  function handleHierarchyKey(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.defaultPrevented) return;
+    const { altKey, ctrlKey, metaKey, shiftKey, key } = event;
+    const back = canBack && ((altKey && key === "ArrowLeft") || (metaKey && key === "["));
+    const forward = canForward && ((altKey && key === "ArrowRight") || (metaKey && key === "]"));
+    const up = canUp && (altKey || metaKey) && key === "ArrowUp";
+    if (back || forward || up) close(true);
+    if (altKey || ctrlKey || metaKey || shiftKey) return;
+
+    const popup = event.currentTarget;
+    const items = Array.from(popup.querySelectorAll<HTMLButtonElement>(ancestorButton));
+    const index = items.findIndex((item) => item === document.activeElement);
+    let next: number;
+    switch (key) {
+      case "ArrowDown": next = Math.min(items.length - 1, index + 1); break;
+      case "ArrowUp": next = Math.max(0, index < 0 ? items.length - 1 : index - 1); break;
+      case "Home": next = 0; break;
+      case "End": next = items.length - 1; break;
+      default: return;
+    }
+    const item = items[next];
+    if (item) {
+      event.preventDefault();
+      focusPopoverItem(popup, item);
+    }
+  }
+
   if (!current || !site) {
     return <h1 className="atlas-toolbar-site-fallback" ref={heading} tabIndex={-1}>{siteName ?? "Explore your storage"}</h1>;
   }
@@ -74,7 +119,7 @@ export function FolderBreadcrumbs({
           {index > 0 && (
             <span className="atlas-toolbar-separator" aria-hidden="true">{omittedFolders ? "/ … /" : "/"}</span>
           )}
-          <button type="button" title={name(node)} onClick={() => navigate(node)}>{name(node)}</button>
+          <button ref={attachAncestor} type="button" title={name(node)} onClick={() => navigate(node)}>{name(node)}</button>
         </li>
       ))}
       <li className="atlas-toolbar-location" {...containerProps}>
@@ -86,12 +131,7 @@ export function FolderBreadcrumbs({
               aria-label="Show folder path" aria-describedby={`${id}-name`}
               aria-expanded={open} aria-controls={open ? id : undefined}
               onClick={toggle}
-              onKeyDown={(event) => {
-                if (!open && event.key === "ArrowDown") {
-                  event.preventDefault();
-                  show();
-                }
-              }}
+              onKeyDown={handleTriggerKey}
             >
               {activeName}
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -102,14 +142,7 @@ export function FolderBreadcrumbs({
         </h1>
         {open && hasAncestors && (
           <div className="atlas-folder-hierarchy" id={id} ref={panel} role="group" aria-label="Folder hierarchy" popover="manual"
-            onKeyDown={(event) => {
-              if (event.defaultPrevented) return;
-              const { altKey, metaKey, key } = event;
-              const back = canBack && ((altKey && key === "ArrowLeft") || (metaKey && key === "["));
-              const forward = canForward && ((altKey && key === "ArrowRight") || (metaKey && key === "]"));
-              const up = canUp && (altKey || metaKey) && key === "ArrowUp";
-              if (back || forward || up) close(true);
-            }}>
+            onKeyDown={handleHierarchyKey}>
             <ol>
               {breadcrumbs.map((node) => {
                 const isCurrent = node.id === current.id;

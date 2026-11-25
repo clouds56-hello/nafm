@@ -1,5 +1,18 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
+function revealPopoverItem(popup: HTMLElement, item: HTMLElement) {
+  const top = popup.getBoundingClientRect().top + popup.clientTop;
+  const bottom = top + popup.clientHeight;
+  const bounds = item.getBoundingClientRect();
+  if (bounds.top < top) popup.scrollTop += bounds.top - top;
+  else if (bounds.bottom > bottom) popup.scrollTop += bounds.bottom - bottom;
+}
+
+export function focusPopoverItem(popup: HTMLElement, item: HTMLElement) {
+  item.focus({ preventScroll: true });
+  revealPopoverItem(popup, item);
+}
+
 export function useAnchoredPopover(
   initialFocus: string,
   scrollBehavior: "follow" | "dismiss" = "follow",
@@ -43,6 +56,11 @@ export function useAnchoredPopover(
       const left = align === "start" ? anchor.left : anchor.right - width;
       popup.style.left = Math.max(edge, Math.min(left, window.innerWidth - edge - width)) + "px";
     };
+    const handleResize = () => {
+      position();
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && popup.contains(active)) revealPopoverItem(popup, active);
+    };
     const handleScroll = (event: Event) => {
       if (scrollBehavior === "dismiss" && event.target instanceof Node && event.target.contains(button)) {
         const current = button.getBoundingClientRect();
@@ -61,13 +79,14 @@ export function useAnchoredPopover(
       }
     };
     position();
-    popup.querySelector<HTMLElement>(focusSelector)?.focus({ preventScroll: true });
-    window.addEventListener("resize", position);
+    const initialItem = popup.querySelector<HTMLElement>(focusSelector);
+    if (initialItem) focusPopoverItem(popup, initialItem);
+    window.addEventListener("resize", handleResize);
     document.addEventListener("scroll", handleScroll, true);
     document.addEventListener("pointerdown", dismissOutside, true);
     document.addEventListener("focusin", dismissOutside);
     return () => {
-      window.removeEventListener("resize", position);
+      window.removeEventListener("resize", handleResize);
       document.removeEventListener("scroll", handleScroll, true);
       document.removeEventListener("pointerdown", dismissOutside, true);
       document.removeEventListener("focusin", dismissOutside);

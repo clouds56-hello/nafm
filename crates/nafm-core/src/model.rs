@@ -254,6 +254,9 @@ pub struct StorageDirectoryAnchor {
   pub query: Option<String>,
   #[serde(default)]
   pub inspect_file: bool,
+  /// Keep the requested unfiltered window while resolving the anchor.
+  #[serde(default)]
+  pub preserve_page_offset: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
