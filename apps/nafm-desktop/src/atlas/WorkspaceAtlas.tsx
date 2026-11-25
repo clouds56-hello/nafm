@@ -177,8 +177,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const contentsId = useId();
   const nextContentsVisitId = useRef(0);
   const [contentsReveal, setContentsReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
-  const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
-  const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
+  const [contentsFocusOrigin, setContentsFocusOrigin] = useState<HTMLElement | null>(null);
+  const finishContentsFocus = useCallback(() => setContentsFocusOrigin(null), []);
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromInspectionDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [inspectionViews, setInspectionViews] = useState(() => {
@@ -599,7 +599,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     if (!pane || (focus !== origin && focus !== document.body && focus !== pane)) return;
     if (inspectorView === "contents") {
       if (fromInspectionDetails) revealInCompactAtlas(pane.closest("aside"));
-      setHistoryFocusOrigin(origin);
+      setContentsFocusOrigin(origin);
     } else if (inspectorView === "details" && inspection) {
       revealInCompactAtlas(pane.closest("aside"));
       setAnalysisFocusRequested(true);
@@ -937,6 +937,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 initialView={selected?.kind === "file" ? "details" : "contents"}
                 origin={inspectorOrigin}
                 onViewChange={changeInspectorView}
+                onEnterContents={setContentsFocusOrigin}
                 onBackToContents={goBack}
                 onClose={closeInspector}
                 details={location ? (
@@ -1019,8 +1020,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       returnEntryId={currentVisit?.source === "contents" && !state.selectedFileUnavailable ? currentVisit.fileId : null}
                       revealedEntry={revealedRow?.key === contentsKey ? revealedRow : undefined}
                       resumeVisibleRow={Boolean(currentVisit && (currentVisit.source === "atlas" || state.selectedFileUnavailable))}
-                      historyFocusOrigin={historyFocusOrigin}
-                      onHistoryFocusHandled={finishHistoryFocus}
+                      contentsFocusOrigin={contentsFocusOrigin}
+                      onContentsFocusHandled={finishContentsFocus}
                       active={inspectorView === "contents"}
                       loading={state.childrenLoading || search.loading}
                       loadingMore={search.enabled ? search.loadingMore : state.loadingMoreChildren}

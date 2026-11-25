@@ -27,6 +27,7 @@ interface AtlasInspectorProps {
   detailsKey: string | null;
   origin: RefObject<SVGGElement | null>;
   onViewChange: (view: InspectorView) => void;
+  onEnterContents: (tab: HTMLButtonElement) => void;
   onBackToContents: () => void;
   onClose: () => void;
   contents: ReactNode;
@@ -38,26 +39,9 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-function focusContentsRow(pane: HTMLDivElement) {
-  const bounds = pane.getBoundingClientRect();
-  const top = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? bounds.top;
-  let row: HTMLButtonElement | null = null;
-  if (pane.scrollTop > 0) {
-    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, top + 1);
-    const visible = hit?.closest('[role="row"]')?.querySelector("button");
-    if (visible && pane.contains(visible)) row = visible;
-  }
-  row ??= pane.querySelector<HTMLButtonElement>('[data-entry-id][tabindex="0"]');
-  if (!row) return false;
-  const rect = row.getBoundingClientRect();
-  row.focus({ preventScroll: true });
-  if (rect.bottom <= top || rect.top >= bounds.bottom) row.scrollIntoView({ block: "nearest" });
-  return true;
-}
-
 export function AtlasInspector({
   view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, folderName, detailsKey, origin,
-  onViewChange, onBackToContents, onClose, contents, details,
+  onViewChange, onEnterContents, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
   const drawer = useRef<HTMLElement>(null);
@@ -86,6 +70,8 @@ export function AtlasInspector({
     const previous = previousView.current;
     const file = screen === "file" ? detailsKey : null;
     const changedFile = file !== null && file !== previous.file;
+    const enteringContents = screen === "contents" && enterList.current;
+    enterList.current = false;
     previousView.current = { screen, siteId, file, inspection };
     const openedHere = inspection !== null && openedFile.current === inspection;
     if (openedHere) openedFile.current = null;
@@ -106,20 +92,17 @@ export function AtlasInspector({
     if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
-    } else if (screen === "contents" && enterList.current) {
-      if (!contentsPane.current || !focusContentsRow(contentsPane.current)) {
-        contentsTab.current?.focus({ preventScroll: true });
-      }
     } else if (screen) {
-      (screen === "contents" ? contentsTab : detailsTab).current?.focus({ preventScroll: true });
+      const tab = (screen === "contents" ? contentsTab : detailsTab).current;
+      tab?.focus({ preventScroll: true });
+      if (enteringContents && tab) onEnterContents(tab);
     } else if (previous.screen) {
       if (document.activeElement === document.body) {
         restoreAtlasPanelFocus(trigger.current, origin.current);
       }
       origin.current = null;
     }
-    enterList.current = false;
-  }, [screen, siteId, inspection, openedFile, detailsKey, contentsPane, origin, canStepFiles]);
+  }, [screen, siteId, inspection, openedFile, detailsKey, origin, canStepFiles, onEnterContents]);
 
   if (!view) {
     return (

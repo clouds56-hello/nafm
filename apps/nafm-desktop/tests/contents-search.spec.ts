@@ -55,6 +55,136 @@ async function showFoundProofInContents(page: Page) {
   await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
 }
 
+async function focusHarborCursor(page: Page) {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  const contents = await openPhotoLibrary(page, "large");
+  const search = searchInput(contents);
+  const grid = contents.getByRole("grid");
+  const query = "  hArBoR SuRvEy  ";
+  await searchButton(contents).press("Enter");
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  const cursor = grid.locator('[aria-rowindex="440"] [data-entry-id]');
+  const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 436 * height);
+  await expect(cursor).toBeInViewport({ ratio: 0.99 });
+  await cursor.focus();
+  const cursorId = (await cursor.getAttribute("data-entry-id"))!;
+  return { contents, search, grid, query, cursor, cursorId, height };
+}
+
+for (const cursorVisible of [true, false]) {
+  const behavior = cursorVisible ? "keeps the visible cursor" : "uses the first fully visible row after scrolling away";
+  test(`keyboard reopening filtered Contents ${behavior}`, async ({ page }) => {
+    const { contents, search, grid, query, cursor, cursorId, height } = await focusHarborCursor(page);
+
+    if (!cursorVisible) {
+      // Keep the old row mounted in the virtual buffer, just above the sticky header.
+      await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 441 * height);
+    }
+    const readViewport = () => contents.evaluate((pane, id) => {
+      const headerBottom = pane.querySelector(".atlas-directory-header")!.getBoundingClientRect().bottom;
+      const paneBottom = pane.getBoundingClientRect().bottom;
+      const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-entry-id]")).filter((row) => {
+        const { top, bottom } = row.getBoundingClientRect();
+        return top >= headerBottom - 0.5 && bottom <= paneBottom + 0.5;
+      });
+      return {
+        scroll: pane.scrollTop,
+        firstId: visible[0]?.dataset.entryId,
+        cursorVisible: visible.some((row) => row.dataset.entryId === id),
+      };
+    }, cursorId);
+    await expect.poll(async () => (await readViewport()).cursorVisible).toBe(cursorVisible);
+    await expect(cursor).toHaveAttribute("tabindex", cursorVisible ? "0" : "-1");
+    const { scroll, firstId } = await readViewport();
+    expect(firstId).toBeTruthy();
+    expect(firstId).not.toBe(cursorId);
+
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const launcher = page.getByRole("button", { name: "Contents & details", exact: true });
+    await inspector.getByRole("button", { name: "Close inspector", exact: true }).press("Enter");
+    await expect(launcher).toBeFocused();
+    await launcher.press("Enter");
+    await expect(search).toHaveValue(query);
+    const tabStop = grid.locator('[data-entry-id][tabindex="0"]');
+    await expect(tabStop).toHaveAttribute("data-entry-id", cursorVisible ? cursorId : firstId!);
+    await expect(tabStop).toBeFocused();
+    await expect.poll(async () => (await readViewport()).scroll).toBeCloseTo(scroll, 0);
+
+    if (!cursorVisible) {
+      const closeSearch = contents.getByRole("button", { name: "Close search", exact: true });
+      await closeSearch.focus();
+      await expect(closeSearch).toBeFocused();
+      await expect.poll(async () => (await readViewport()).scroll).toBeCloseTo(scroll, 0);
+      await page.keyboard.press("Tab");
+      await expect(tabStop).toHaveAttribute("data-entry-id", firstId!);
+      await expect(tabStop).toBeFocused();
+      await expect.poll(async () => (await readViewport()).scroll).toBeCloseTo(scroll, 0);
+    }
+  });
+}
+
+for (const moveFocus of [false, true]) {
+  const behavior = moveFocus ? "leaves newer search focus in place" : "restores the cursor when the saved range arrives";
+  test(`reopening Contents while a filter read is pending ${behavior}`, async ({ page }) => {
+    const { contents, search, grid, query, cursor, cursorId } = await focusHarborCursor(page);
+    const scroll = await contents.evaluate((pane) => pane.scrollTop);
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const path = page.getByRole("navigation", { name: "Folder path" });
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const close = inspector.getByRole("button", { name: "Close inspector", exact: true });
+    const launcher = page.getByRole("button", { name: "Contents & details", exact: true });
+
+    await close.press("Enter");
+    await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+    await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await launcher.press("Enter");
+    await searchButton(contents).press("Enter");
+    await search.fill("campaign");
+    await expect(grid).toHaveAttribute("aria-rowcount", "2");
+    await close.press("Enter");
+
+    const read = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { query?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { held: false, release };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_children" && args.query?.toLowerCase() === "harbor survey" && !state.held) {
+          state.held = true;
+          await gate;
+        }
+        return response;
+      };
+      return state;
+    });
+
+    try {
+      await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+      await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect.poll(() => read.evaluate(({ held }) => held)).toBe(true);
+      await launcher.press("Enter");
+      await expect(inspector.getByRole("tab", { name: "Contents", exact: true })).toBeFocused();
+      if (moveFocus) await search.focus();
+    } finally {
+      await read.evaluate(({ release }) => release());
+    }
+
+    await expect(search).toHaveValue(query);
+    await expect(cursor).toHaveAttribute("data-entry-id", cursorId);
+    await expect(cursor).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scroll, 0);
+    await expect(moveFocus ? search : cursor).toBeFocused();
+  });
+}
+
 test("Contents finds distant entries and returns from Details to the same filtered row", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
   const grid = contents.getByRole("grid");

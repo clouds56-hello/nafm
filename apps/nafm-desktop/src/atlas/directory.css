@@ -106,8 +106,6 @@
 
 .atlas-directory-search-pause button { padding-inline: 4px; }
 
-.atlas-inspector-pane:has(.atlas-directory-search-row, .atlas-directory-search-pause) { scroll-padding-block-start: 92px; }
-
 @media (pointer: coarse) {
   .atlas-directory-search-toggle,
   .atlas-directory-search-row button { width: 40px; height: 40px; }

@@ -15,11 +15,28 @@ interface ViewportOptions {
   scrollPositions: Map<string, number | "end">;
 }
 
+function focusableRows(list: HTMLElement, pane: HTMLElement, header: HTMLElement | null | undefined, shift: number, rowHeight: number, total: number) {
+  const paneTop = pane.getBoundingClientRect().top + pane.clientTop;
+  const top = Math.max(paneTop, header?.getBoundingClientRect().bottom ?? paneTop);
+  const origin = list.getBoundingClientRect().top - shift;
+  const start = Math.max(0, (top - origin) / rowHeight);
+  const end = Math.min(total, (paneTop + pane.clientHeight - origin) / rowHeight);
+  if (end <= start) return { focusStart: 0, focusEnd: 0 };
+
+  // Allow for subpixel alignment at either edge of a fully visible row.
+  const focusStart = Math.max(0, Math.ceil(start - 1 / rowHeight));
+  const focusEnd = Math.min(total, Math.floor(end + 1 / rowHeight));
+  if (focusStart < focusEnd) return { focusStart, focusEnd };
+
+  const middle = Math.floor((start + end) / 2);
+  return { focusStart: middle, focusEnd: middle + 1 };
+}
+
 export function useDirectoryViewport({
   contentsKey, anchorIndex, reveal, total, active, rowHeightProperty = "--directory-row-height", scrollPane, scrollPositions,
 }: ViewportOptions) {
   const listRef = useRef<HTMLUListElement>(null);
-  const [geometry, setGeometry] = useState({ key: "", first: 0, capacity: 8, rowHeight: 38, shift: 0 });
+  const [geometry, setGeometry] = useState({ key: "", first: 0, capacity: 8, rowHeight: 38, shift: 0, focusStart: 0, focusEnd: 0 });
   const scale = useRef(1);
 
   useLayoutEffect(() => {
@@ -43,14 +60,15 @@ export function useDirectoryViewport({
       const maxTop = pane.scrollHeight - pane.clientHeight;
       const atEnd = maxTop > 0 && top >= maxTop - 1;
       scrollPositions.set(contentsKey, atEnd ? "end" : logicalTop / rowHeight);
+      const { focusStart, focusEnd } = focusableRows(list, pane, header, shift, rowHeight, total);
       const focusedRow = document.activeElement?.closest<HTMLElement>("[data-virtual-row]");
       if (focusedRow && list.contains(focusedRow)) {
         const index = Number(focusedRow.dataset.virtualRow);
         if (index < first - OVERSCAN || index > first + capacity + OVERSCAN) list.focus({ preventScroll: true });
       }
       setGeometry((old) => old.key === contentsKey && old.first === first && old.capacity === capacity
-        && old.rowHeight === rowHeight && old.shift === shift
-        ? old : { key: contentsKey, first, capacity, rowHeight, shift });
+        && old.rowHeight === rowHeight && old.shift === shift && old.focusStart === focusStart && old.focusEnd === focusEnd
+        ? old : { key: contentsKey, first, capacity, rowHeight, shift, focusStart, focusEnd });
     };
 
     const measure = () => {
@@ -60,7 +78,9 @@ export function useDirectoryViewport({
       rowHeight = Number.parseFloat(getComputedStyle(list).getPropertyValue(rowHeightProperty));
       // Wait for the new track before consuming a reveal that may be clamped by the previous list's height.
       if (pendingReveal && Math.abs(list.offsetHeight - Math.min(MAX_TRACK_HEIGHT, total * rowHeight)) > 1) return;
-      const visibleRows = (pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight;
+      const headerHeight = header?.getBoundingClientRect().height ?? 0;
+      if (header) pane.style.setProperty("--atlas-scroll-header-height", `${headerHeight}px`);
+      const visibleRows = (pane.clientHeight - headerHeight) / rowHeight;
       const resized = measuredHeight > 0 && (measuredHeight !== pane.clientHeight || oldHeight !== rowHeight);
       measuredHeight = pane.clientHeight;
       capacity = Math.max(1, Math.ceil(visibleRows));
@@ -84,7 +104,7 @@ export function useDirectoryViewport({
           const index = Number(focusedRow.dataset.virtualRow);
           const rowTop = list.getBoundingClientRect().top + index * rowHeight - pane.scrollTop * (scale.current - 1);
           const paneTop = pane.getBoundingClientRect().top + pane.clientTop;
-          const top = paneTop + (header && pane.contains(header) ? header.offsetHeight : 0);
+          const top = paneTop + headerHeight;
           const bottom = paneTop + pane.clientHeight;
           if (rowTop < top) pane.scrollTop += (rowTop - top) / scale.current;
           else if (rowTop + rowHeight > bottom) pane.scrollTop += (rowTop + rowHeight - bottom) / scale.current;
@@ -104,6 +124,7 @@ export function useDirectoryViewport({
     return () => {
       resize.disconnect();
       pane.removeEventListener("scroll", readPosition);
+      if (header) pane.style.removeProperty("--atlas-scroll-header-height");
     };
   }, [active, contentsKey, anchorIndex, reveal, rowHeightProperty, scrollPane, scrollPositions, total]);
 
@@ -118,7 +139,7 @@ export function useDirectoryViewport({
     if (pane) pane.scrollTop = index * geometry.rowHeight / scale.current;
   }
   return {
-    listRef, start, end, first, capacity: geometry.capacity, ready,
+    listRef, start, end, first, capacity: geometry.capacity, focusStart: geometry.focusStart, focusEnd: geometry.focusEnd, ready,
     trackHeight: `min(${MAX_TRACK_HEIGHT}px, calc(${total} * var(${rowHeightProperty})))`,
     rowTop: (index: number) => ready ? index * geometry.rowHeight - geometry.shift : `calc(${index} * var(${rowHeightProperty}))`,
     scrollToRow,

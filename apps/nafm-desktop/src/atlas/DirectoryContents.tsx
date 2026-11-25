@@ -34,8 +34,8 @@ interface DirectoryContentsProps {
   returnEntryId: string | null;
   revealedEntry?: { id: string; origin?: Element | null };
   resumeVisibleRow: boolean;
-  historyFocusOrigin: HTMLElement | null;
-  onHistoryFocusHandled: () => void;
+  contentsFocusOrigin: HTMLElement | null;
+  onContentsFocusHandled: () => void;
   active: boolean;
   loading: boolean;
   loadingMore: boolean;
@@ -48,17 +48,14 @@ interface DirectoryContentsProps {
   onRetry: () => void;
 }
 
-function visibleEntry(list: HTMLUListElement | null, first: number, capacity: number, cursor?: string) {
-  const preferred = cursor && list?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(cursor)}"]`);
-  const preferredIndex = Number(preferred ? preferred.closest("[aria-rowindex]")?.getAttribute("aria-rowindex") : NaN) - 1;
-  return preferredIndex >= first && preferredIndex < first + capacity ? preferred
-    : list?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+function entryTabStop(list: HTMLUListElement | null) {
+  return list?.querySelector<HTMLButtonElement>('[data-entry-id][tabindex="0"]');
 }
 
 export function DirectoryContents({
   location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
   scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
-  historyFocusOrigin, onHistoryFocusHandled,
+  contentsFocusOrigin, onContentsFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -89,7 +86,9 @@ export function DirectoryContents({
     contentsKey, anchorIndex, total, active, scrollPane, scrollPositions,
     reveal: reveal ?? committedReveal,
   });
-  const { listRef, first, start, end, ready, scrollToRow } = viewport;
+  const { listRef, first, start, end, focusStart, focusEnd, ready, scrollToRow } = viewport;
+  const hasVisibleRows = focusStart < focusEnd;
+  const firstVisibleRow = hasVisibleRows ? focusStart : first;
   const rowPreview = useDirectoryPreview({
     root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
   });
@@ -121,8 +120,8 @@ export function DirectoryContents({
     if (focus === pane || focus === tab || (request.origin && (focus === request.origin || focus === document.body))) {
       const row = request.id
         ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(request.id)}"]`)
-        : visibleEntry(listRef.current, first, viewport.capacity, cursor);
-      if (!row && total && !error) {
+        : entryTabStop(listRef.current);
+      if (!row && total && !error && (request.id || hasVisibleRows)) {
         // The file's page can arrive after Contents has already reopened.
         const index = request.id ? page?.children.findIndex((entry) => entry.id === request.id) ?? -1 : -1;
         if (index >= 0) {
@@ -141,7 +140,7 @@ export function DirectoryContents({
       }
     }
     returningEntry.current = null;
-  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, cursor, ready, loading, total, error, page, offset, first, start, end, viewport.capacity, listRef, scrollPane, scrollToRow]);
+  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, cursor, focusStart, focusEnd, hasVisibleRows, ready, loading, total, error, page, offset, listRef, scrollPane, scrollToRow]);
 
   useEffect(() => {
     if (!active || !ready || loading || placingRefresh || !page || end <= start) return;
@@ -209,18 +208,19 @@ export function DirectoryContents({
   }, [active, contentsKey, directoryId, error, first, listRef, loading, page, ready, scrollPane, start, end, total]);
 
   useLayoutEffect(() => {
-    if (!historyFocusOrigin) return;
+    if (!contentsFocusOrigin) return;
     const focus = document.activeElement;
-    if (!active || (focus !== historyFocusOrigin && focus !== document.body && focus !== scrollPane.current)) {
-      onHistoryFocusHandled();
+    const originRemoved = focus === document.body && !contentsFocusOrigin.isConnected;
+    if (!active || (focus !== contentsFocusOrigin && focus !== scrollPane.current && !originRemoved)) {
+      onContentsFocusHandled();
       return;
     }
     if (loading || (total > 0 && !ready)) return;
-    const row = visibleEntry(listRef.current, first, viewport.capacity, cursor);
-    if (!row && total && !error) return;
-    (row || headingRef.current)?.focus({ preventScroll: true });
-    onHistoryFocusHandled();
-  }, [active, cursor, error, first, historyFocusOrigin, listRef, loading, onHistoryFocusHandled, page, ready, scrollPane, total, viewport.capacity]);
+    const row = entryTabStop(listRef.current);
+    if (!row && total && hasVisibleRows && !error) return;
+    (row ?? (error ? retryButton.current : null) ?? searchInput.current ?? headingRef.current)?.focus({ preventScroll: true });
+    onContentsFocusHandled();
+  }, [active, contentsFocusOrigin, cursor, error, focusStart, focusEnd, hasVisibleRows, listRef, loading, onContentsFocusHandled, page, ready, scrollPane, total]);
 
   if (!location) return null;
   const parent = location.breadcrumbs.at(-2);
@@ -228,10 +228,8 @@ export function DirectoryContents({
     const index = start + i;
     return { index, node: page?.children[index - offset] };
   });
-  const loaded = visible.flatMap(({ node }) => node ? [node] : []);
-  const tabStop = loaded.find((node) => node.id === cursor)?.id
-    ?? loaded.find((node) => node.id === selection?.id)?.id
-    ?? visible.find((row) => row.index >= first && row.node)?.node?.id ?? loaded[0]?.id;
+  const visibleEntries = visible.flatMap(({ index, node }) => node && index >= focusStart && index < focusEnd ? [node] : []);
+  const tabStop = visibleEntries.find((node) => node.id === (cursor ?? selection?.id))?.id ?? visibleEntries[0]?.id;
 
   function readResultFocus() {
     const list = listRef.current;
@@ -244,7 +242,7 @@ export function DirectoryContents({
   }
 
   function getUnfilteredPosition(): DirectoryRefreshPosition | null {
-    if (filtering || loading || !ready || reveal || historyFocusOrigin || keyboardFolder.current || returningEntry.current
+    if (filtering || loading || !ready || reveal || contentsFocusOrigin || keyboardFolder.current || returningEntry.current
       || !location || !page || page.parent.id !== location.root.id) return null;
     const { pending, focusedIndex } = readResultFocus();
     if (pending?.refreshPage && pending.refreshPage !== page) return null;
@@ -347,11 +345,11 @@ export function DirectoryContents({
     if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
     const pending = keyboardRow.current;
     const cursorIndex = index ?? (pending?.key === contentsKey ? pending.index : undefined);
-    const current = cursorIndex ?? first;
+    const current = cursorIndex ?? firstVisibleRow;
     let target: number;
     switch (event.key) {
-      case "ArrowDown": target = cursorIndex === undefined ? first : current + 1; break;
-      case "ArrowUp": target = cursorIndex === undefined ? first : current - 1; break;
+      case "ArrowDown": target = cursorIndex === undefined ? current : current + 1; break;
+      case "ArrowUp": target = cursorIndex === undefined ? current : current - 1; break;
       case "Home": target = 0; break;
       case "End": target = total - 1; break;
       case "PageDown": target = current + viewport.capacity; break;
@@ -455,7 +453,7 @@ export function DirectoryContents({
               }}
               onKeyDown={(event) => {
                 if (event.key !== "ArrowDown" || event.altKey || event.ctrlKey || event.metaKey || loading || error) return;
-                const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+                const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${firstVisibleRow + 1}"] [data-entry-id]`);
                 if (row) {
                   event.preventDefault();
                   row.focus();
