@@ -327,3 +327,66 @@ test("compact Contents previews leave nearby rows readable and scrollable", asyn
   await expect(editorial).toHaveAccessibleDescription(/Editorial/);
   await expectClearInspector();
 });
+
+test("scrolling back to the atlas dismisses an offscreen Contents preview and keeps its cursor", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 520 });
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const editorial = contents.getByRole("button", { name: /^Editorial/ });
+  const preview = page.getByRole("tooltip");
+  await contents.getByRole("button", { name: /^Studio portraits/ }).press("ArrowDown");
+  await expect(editorial).toBeFocused();
+  await expect(preview).toContainText("Editorial");
+  await expect(editorial).toBeInViewport();
+  const toolbar = await page.locator(".atlas-toolbar").boundingBox();
+  expect((await preview.boundingBox())!.y).toBeGreaterThanOrEqual(toolbar!.y + toolbar!.height);
+
+  // Wheel over the page gutter so the document moves while the directory keeps its own position.
+  await page.mouse.move(5, 84);
+  await page.mouse.wheel(0, -1500);
+  await expect(contents).not.toBeInViewport();
+  await expect(preview).toBeHidden();
+  await expect(editorial).toBeFocused();
+  await expect(editorial).not.toHaveAttribute("aria-describedby");
+
+  await page.mouse.wheel(0, 1500);
+  await expect(editorial).toBeInViewport();
+  await page.keyboard.press("ArrowDown");
+  await expect(contents.getByRole("button", { name: /^Location scouting/ })).toBeFocused();
+  await expect(preview).toContainText("Location scouting");
+  await page.keyboard.press("Enter");
+  await expect(contents.getByRole("heading", { name: "Location scouting", exact: true })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+});
+
+test("a tablet Contents preview leaves both panels clear for a site switch", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 650 });
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const preview = page.getByRole("tooltip");
+  const field = sites.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
+  await expect(field).toBeInViewport();
+  await contents.getByRole("button", { name: /^Studio portraits/ }).hover();
+  await expect(preview).toContainText("Studio portraits");
+  const card = (await preview.boundingBox())!;
+  for (const panel of [sites, inspector]) {
+    const box = (await panel.boundingBox())!;
+    const overlapWidth = Math.min(card.x + card.width, box.x + box.width) - Math.max(card.x, box.x);
+    const overlapHeight = Math.min(card.y + card.height, box.y + box.height) - Math.max(card.y, box.y);
+    expect(Math.min(overlapWidth, overlapHeight)).toBeLessThanOrEqual(0);
+  }
+
+  await field.click();
+  await expect(contents.getByRole("heading", { name: "Field drive", exact: true })).toBeVisible();
+  await expect(preview).toBeHidden();
+});

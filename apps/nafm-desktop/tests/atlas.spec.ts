@@ -74,6 +74,52 @@ test("keyboard exploration takes over a stationary pointer and returns to the sa
   await expect(projects).toBeFocused();
 });
 
+test.describe("compact passive Atlas previews", () => {
+  test.use({ viewport: { width: 390, height: 320 }, reducedMotion: "reduce" });
+
+  test("a passive Atlas preview dismisses only when the sticky toolbar covers its arc", async ({ page }) => {
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const referenceImages = arc(page, /^Reference images,/);
+    const hitArea = referenceImages.locator(".radial-atlas__target");
+    const preview = page.locator('.atlas-sector-preview[data-input="keyboard"]');
+    const visibleBelowToolbar = () => hitArea.evaluate((element) => {
+      const toolbar = document.querySelector(".atlas-toolbar")!.getBoundingClientRect();
+      return element.getBoundingClientRect().bottom - toolbar.bottom;
+    });
+    const scrollPage = (top: number) => page.evaluate((offset) => window.scrollTo({ top: offset, behavior: "instant" }), top);
+
+    await expect(async () => {
+      await scrollPage(0);
+      await referenceImages.press("ArrowRight");
+      await page.keyboard.press("ArrowLeft");
+      // Firefox may settle the compact panels' preceding focus scroll over the next frame.
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      await expect(referenceImages).toBeFocused();
+      await expect(preview).toContainText("Reference images", { timeout: 750 });
+      expect(await visibleBelowToolbar()).toBeGreaterThan(12);
+    }).toPass({ timeout: 5_000 });
+
+    const distanceToCover = await visibleBelowToolbar();
+    expect(distanceToCover).toBeGreaterThan(12);
+    await scrollPage(distanceToCover - 3);
+    await expect.poll(visibleBelowToolbar).toBeGreaterThan(0);
+    await expect.poll(visibleBelowToolbar).toBeLessThan(6);
+    await expect(preview).toBeVisible();
+
+    await scrollPage(distanceToCover + 6);
+    await expect.poll(visibleBelowToolbar).toBeLessThan(0);
+    await expect(preview).toBeHidden();
+    await expect(referenceImages).toBeFocused();
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+
+    await scrollPage(0);
+    await page.keyboard.press("ArrowLeft");
+    await expect(arc(page, /^Location scouting,/)).toBeFocused();
+    await expect(preview).toContainText("Location scouting");
+  });
+});
+
 test("the Atlas tab stop remembers the visited arc after returning from the toolbar", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 620 });
   await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");

@@ -51,7 +51,7 @@ interface RowPreview {
   input: "pointer" | "keyboard";
 }
 
-function DirectoryHoverCard({ anchor, input, pane, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave }: {
+function DirectoryHoverCard({ anchor, input, pane, node, root, metric, score, awaitingInventory, color, id, onEnter, onLeave, onDismiss }: {
   anchor: HTMLButtonElement;
   input: RowPreview["input"];
   pane: HTMLDivElement;
@@ -64,53 +64,83 @@ function DirectoryHoverCard({ anchor, input, pane, node, root, metric, score, aw
   id: string;
   onEnter: () => void;
   onLeave: () => void;
+  onDismiss: () => void;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!card) return;
     const inspector = pane.closest(".atlas-inspector-drawer") ?? pane;
+    const header = pane.querySelector(".atlas-directory-header");
+    const shell = pane.closest(".atlas-shell");
+    const toolbar = shell?.querySelector(".atlas-toolbar");
+    const sites = shell?.querySelector('[data-atlas-panel="sites"]');
     const position = () => {
       const row = anchor.getBoundingClientRect();
+      const bounds = pane.getBoundingClientRect();
+      const viewportTop = Math.max(0, toolbar?.getBoundingClientRect().bottom ?? 0);
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = window.innerHeight;
+      const visibleTop = Math.max(viewportTop, bounds.top, header?.getBoundingClientRect().bottom ?? 0);
+      if (!pane.contains(anchor) || Math.min(row.bottom, bounds.bottom, viewportHeight) <= Math.max(row.top, visibleTop)
+        || Math.min(row.right, bounds.right, viewportWidth) <= Math.max(row.left, bounds.left, 0)) {
+        onDismiss();
+        return;
+      }
       const panel = inspector.getBoundingClientRect();
       const gap = 8;
-      const viewportHeight = window.innerHeight;
       const { width } = card.getBoundingClientRect();
-      const maxX = document.documentElement.clientWidth - width - gap;
+      const maxX = viewportWidth - width - gap;
       const left = panel.left - width - gap;
       const right = panel.right + gap;
+      const sitesBounds = sites?.getBoundingClientRect();
+      const fitsBesideInspector = (x: number) => x >= gap && x <= maxX && (
+        !sitesBounds || sitesBounds.bottom <= viewportTop || sitesBounds.top >= viewportHeight
+        || x + width + gap <= sitesBounds.left || x - gap >= sitesBounds.right
+      );
+      const side = fitsBesideInspector(left) ? left : fitsBesideInspector(right) ? right : null;
       let x = row.left;
       let y: number;
-      if (left >= gap || right <= maxX) {
-        card.style.maxHeight = "";
-        x = left >= gap ? left : right;
+      if (side !== null) {
+        card.style.maxHeight = `${Math.max(0, viewportHeight - viewportTop - 2 * gap)}px`;
+        x = side;
         y = row.top + (row.height - card.getBoundingClientRect().height) / 2;
       } else {
         // Compact layouts need a clear scroll surface and unobstructed inspector controls.
-        const top = Math.min(viewportHeight, panel.top);
-        const bottom = Math.max(0, panel.bottom);
-        const above = top - 2 * gap;
-        const below = viewportHeight - bottom - 2 * gap;
+        const panelTop = Math.min(viewportHeight, panel.top);
+        const panelBottom = Math.max(0, panel.bottom);
+        const above = panelTop - viewportTop - 2 * gap;
+        const below = viewportHeight - panelBottom - 2 * gap;
         card.style.maxHeight = `${Math.max(0, above, below)}px`;
-        y = above >= below ? top - gap - card.getBoundingClientRect().height : bottom + gap;
+        y = above >= below ? panelTop - gap - card.getBoundingClientRect().height : panelBottom + gap;
       }
       const maxY = viewportHeight - card.getBoundingClientRect().height - gap;
       card.style.left = `${Math.max(gap, Math.min(maxX, x))}px`;
-      card.style.top = `${Math.max(gap, Math.min(maxY, y))}px`;
+      card.style.top = `${Math.max(viewportTop + gap, Math.min(maxY, y))}px`;
+    };
+    const handleScroll = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node) || !target.contains(anchor)) return;
+      if (target === pane && (input !== "keyboard" || document.activeElement !== anchor)) onDismiss();
+      else position();
     };
     position();
     const observer = new ResizeObserver(position);
     observer.observe(card);
     observer.observe(anchor);
     observer.observe(inspector);
+    if (inspector !== pane) observer.observe(pane);
+    if (header) observer.observe(header);
+    if (toolbar) observer.observe(toolbar);
+    if (sites) observer.observe(sites);
     window.addEventListener("resize", position);
-    document.addEventListener("scroll", position, true);
+    document.addEventListener("scroll", handleScroll, true);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", position);
-      document.removeEventListener("scroll", position, true);
+      document.removeEventListener("scroll", handleScroll, true);
     };
-  }, [anchor, pane]);
+  }, [anchor, input, onDismiss, pane]);
 
   return createPortal(
     <div ref={cardRef} id={id} className="atlas-directory-preview" role="tooltip" data-input={input}
@@ -144,6 +174,10 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   };
   const entry = preview && entries?.find((node) => node.id === preview.nodeId);
   const shown = active && entry && preview?.key === contentsKey ? preview : null;
+  const dismissCard = useCallback(() => {
+    cancelTimers();
+    setPreview((current) => current === shown ? null : current);
+  }, [cancelTimers, shown]);
 
   // An old tooltip must not follow a recycled row, an inactive tab, or a newly sorted directory.
   useLayoutEffect(() => {
@@ -152,7 +186,6 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   useEffect(() => cancelTimers, [cancelTimers]);
   useEffect(() => {
     if (!shown) return;
-    const pane = scrollPane.current;
     const dismissKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector("dialog[open]")) {
         event.preventDefault();
@@ -162,27 +195,15 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
     const dismissOutside = (event: Event) => {
       if (event.target instanceof Element && !event.target.closest(".atlas-directory-preview") && !shown.anchor.contains(event.target)) close();
     };
-    const handleScroll = () => {
-      if (pane && shown.input === "keyboard" && document.activeElement === shown.anchor) {
-        const bounds = pane.getBoundingClientRect();
-        const top = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? bounds.top;
-        const row = shown.anchor.getBoundingClientRect();
-        if (row.bottom > top && row.top < bounds.bottom) return;
-      }
-      cancelTimers();
-      setPreview((current) => current === shown ? null : current);
-    };
     window.addEventListener("keydown", dismissKey, true);
     document.addEventListener("pointerdown", dismissOutside, true);
     document.addEventListener("focusin", dismissOutside, true);
-    pane?.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
       window.removeEventListener("keydown", dismissKey, true);
       document.removeEventListener("pointerdown", dismissOutside, true);
       document.removeEventListener("focusin", dismissOutside, true);
-      pane?.removeEventListener("scroll", handleScroll);
     };
-  }, [shown, scrollPane, close, cancelTimers]);
+  }, [shown, close]);
 
   function colorFor(node: StorageNode, score: HealthPresentation | null) {
     return score?.color ?? branchColor?.(node) ?? "var(--atlas-muted)";
@@ -232,7 +253,7 @@ export function useDirectoryPreview({ root, entries, metric, targetCompleteness,
   const pane = scrollPane.current;
   const card = root && shown && entry && pane ? (
     <DirectoryHoverCard anchor={shown.anchor} input={shown.input} pane={pane} node={entry} root={root} metric={metric} score={score} awaitingInventory={awaitingInventory}
-      color={colorFor(entry, score)} id={id} onEnter={cancelTimers} onLeave={leave} />
+      color={colorFor(entry, score)} id={id} onEnter={cancelTimers} onLeave={leave} onDismiss={dismissCard} />
   ) : null;
   return { bind, card };
 }

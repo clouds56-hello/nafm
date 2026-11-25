@@ -37,6 +37,21 @@ const ORIENTATIONS = [0, 90, 180, 270].map((angle) => ({
   end: positionAt(284, angle),
 }));
 
+function isHitAreaVisible(area: SVGPathElement, toolbar: HTMLElement | null | undefined) {
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const bounds = area.getBoundingClientRect();
+  const left = Math.max(bounds.left, viewportLeft);
+  const top = Math.max(bounds.top, viewportTop);
+  const right = Math.min(bounds.right, viewportLeft + (viewport?.width ?? window.innerWidth));
+  const bottom = Math.min(bounds.bottom, viewportTop + (viewport?.height ?? window.innerHeight));
+  if (left >= right || top >= bottom) return false;
+
+  const cover = toolbar?.getBoundingClientRect();
+  return !cover || left < cover.left || top < cover.top || right > cover.right || bottom > cover.bottom;
+}
+
 export function RadialAtlas(props: RadialAtlasProps) {
   const plot = useRef<HTMLElement>(null);
   const lastControl = useRef<Element | null>(null);
@@ -140,6 +155,35 @@ function RadialPlot({
   const sectorElement = useCallback((id: string | undefined) => {
     return id ? plotRef.current?.querySelector<SVGGElement>(`[data-node-id="${CSS.escape(id)}"]`) : null;
   }, [plotRef]);
+
+  useEffect(() => {
+    if (!preview || preview.input === "touch") return;
+    const area = sectorElement(preview.id)?.querySelector<SVGPathElement>(".radial-atlas__target");
+    if (!area) return;
+    const toolbar = area.closest(".atlas-shell")?.querySelector<HTMLElement>(".atlas-toolbar");
+    const viewport = window.visualViewport;
+    let frame: number | null = null;
+    const checkAfterScrollOrResize = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        if (!area.isConnected || !isHitAreaVisible(area, toolbar)) {
+          setPreview((current) => current === preview ? null : current);
+        }
+      });
+    };
+    window.addEventListener("scroll", checkAfterScrollOrResize, { passive: true });
+    window.addEventListener("resize", checkAfterScrollOrResize);
+    viewport?.addEventListener("scroll", checkAfterScrollOrResize, { passive: true });
+    viewport?.addEventListener("resize", checkAfterScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", checkAfterScrollOrResize);
+      window.removeEventListener("resize", checkAfterScrollOrResize);
+      viewport?.removeEventListener("scroll", checkAfterScrollOrResize);
+      viewport?.removeEventListener("resize", checkAfterScrollOrResize);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [preview, sectorElement]);
 
   const closeTouchPreview = useCallback((id: string) => {
     const origin = sectorElement(id);
