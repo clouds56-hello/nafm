@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { siteAnalysisReady } from "../lib/analysis";
+import { formatCount } from "../lib/format";
 import { readSiteDirectorySort, writeSiteDirectorySort } from "../lib/siteDirectorySort";
 import {
   cancelScan,
@@ -1305,7 +1306,13 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         return [...byId.values()];
       });
       if (report.warnings.length > 0) {
-        setNotice("Some copies could not be staged because they were unsafe or unavailable.");
+        const kept = report.warnings.filter((warning) => warning.reason === "would_remove_last_copy").length;
+        const other = report.warnings.length - kept;
+        const notes = [
+          kept > 0 && `${formatCount(kept)} ${kept === 1 ? "copy was" : "copies were"} kept to preserve the last verified copy in each group.`,
+          other > 0 && "Some copies were already staged or are no longer available for staging.",
+        ].filter(Boolean);
+        setNotice(notes.join(" "));
       }
     } catch (stageError) {
       setNotice(errorMessage(stageError));
@@ -1333,6 +1340,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
   const runPreview = useCallback(async () => {
     const currentDashboard = dashboardRef.current;
+    const workspace = workspaceNameRef.current;
+    if (!workspace || !currentDashboard?.staged.length) return;
     if (currentDashboard && !currentDashboard.staged_cleanup_ready) {
       setReviewError(currentDashboard.staged_hashes_pending > 0
         ? "Hashes are pending for staged copies. Finish hashing before running the cleanup safety check."
@@ -1341,11 +1350,12 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
     const requestId = cleanupPreviewRequestRef.current + 1;
     cleanupPreviewRequestRef.current = requestId;
+    setPreview(null);
     setPreviewLoading(true);
     setReviewError(null);
     try {
-      const report = await previewCleanup();
-      if (cleanupPreviewRequestRef.current !== requestId) return;
+      const report = await previewCleanup(workspace);
+      if (cleanupPreviewRequestRef.current !== requestId || workspaceNameRef.current !== workspace) return;
       setPreview(report);
       const current = dashboardRef.current;
       if (current) {

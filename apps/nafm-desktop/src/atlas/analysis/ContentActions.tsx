@@ -26,6 +26,7 @@ interface ContentActionsProps {
   sourceAnalysisReady?: boolean;
   onStage: () => void;
   onUnstage: () => void;
+  onReview: () => void;
   onJumpDuplicate: (match: FileContentMatch, signal: AbortSignal) => Promise<string | null>;
 }
 
@@ -47,6 +48,7 @@ function ContentActionsView({
   sourceAnalysisReady = true,
   onStage,
   onUnstage,
+  onReview,
   onJumpDuplicate,
 }: ContentActionsProps) {
   const [view, setView] = useState<AnalysisKind | null>(null);
@@ -55,7 +57,7 @@ function ContentActionsView({
   const canCheckCopies = node.kind === "file" && path !== null;
   const canShowStage = metric === "space_health" && path !== null && (canCompare || canCheckCopies);
   const analysisReady = sourceAnalysisReady && node.pending_hash_count === 0;
-  const canStage = analysisReady && node.duplicate_bytes > 0;
+  const canStage = analysisReady && (canCheckCopies ? node.duplicate_file_count > 0 : node.duplicate_bytes > 0);
 
   if (!canCompare && !canCheckCopies) return null;
 
@@ -85,6 +87,14 @@ function ContentActionsView({
             {stagingBusy
               ? "Updating review…"
               : staged ? "Remove from review" : "Stage for review"}
+          </button>
+        )}
+        {staged && (
+          <button type="button" aria-haspopup="dialog" onClick={(event) => {
+            event.currentTarget.focus({ preventScroll: true });
+            onReview();
+          }}>
+            Open review <span aria-hidden="true">↗</span>
           </button>
         )}
       </div>

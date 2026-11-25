@@ -241,7 +241,10 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     find_similar_folders: (args) => storage.similarFolders(record(args.request)),
     stage_path: storage.stage,
     unstage_path: storage.unstage,
-    preview_cleanup: storage.cleanup,
+    preview_cleanup(args) {
+      checkWorkspace(management.current(), args.expectedWorkspace);
+      return storage.cleanup();
+    },
     start_scan(args) {
       checkWorkspace(management.current(), args.expectedWorkspace);
       const selector = record(args.selector);

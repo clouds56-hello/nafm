@@ -406,6 +406,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
+                        onReview={() => state.setReviewOpen(true)}
                         onJumpDuplicate={showCopyInAtlas}
                       />
                     )}
@@ -487,6 +488,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
         <ReviewDrawer
           open={state.reviewOpen}
           staged={dashboard.staged}
+          sites={dashboard.sites}
           hashesPending={dashboard.staged_hashes_pending}
           cleanupReady={dashboard.staged_cleanup_ready}
           warnings={dashboard.staged_warnings}

@@ -385,6 +385,13 @@ pub struct StageHistoryReport {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StageReviewGroup {
+  pub group_id: String,
+  pub staged_file_ids: Vec<String>,
+  pub retained_files: Vec<DuplicateFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StageCommitDryRun {
   pub staged_files: Vec<DuplicateFile>,
   pub hashes_pending: u64,
@@ -398,4 +405,7 @@ pub struct StageCommitDryRun {
   pub duplicate_file_count_after: u64,
   pub db_entry_count_stable: bool,
   pub duplicate_groups_after: Vec<DuplicateGroup>,
+  /// Verified groups affected by a ready cleanup, including groups with one remaining copy.
+  #[serde(default)]
+  pub review_groups: Vec<StageReviewGroup>,
 }

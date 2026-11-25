@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import "./analysis.css";
 
 interface AnalysisDialogProps {
@@ -15,12 +15,19 @@ export function AnalysisDialog({ title, subtitle, drawer, children, footer, onCl
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialog.showModal();
     closeRef.current?.focus();
-    return () => dialog.close();
+    return () => {
+      const active = document.activeElement;
+      dialog.close();
+      if ((active === document.body || dialog.contains(active)) && opener?.isConnected) {
+        opener.focus({ preventScroll: true });
+      }
+    };
   }, []);
 
   return (

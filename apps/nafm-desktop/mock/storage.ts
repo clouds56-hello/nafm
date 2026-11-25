@@ -423,6 +423,15 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     const ready = warnings.length === 0;
     const remaining = ready ? files.filter((file) => !workspace.staged.has(file.file_id)) : files;
     const after = duplicateGroups(remaining);
+    const reviewGroups = ready ? before.flatMap((group) => {
+      const stagedFileIds = group.filter((file) => workspace.staged.has(file.file_id)).map((file) => file.file_id);
+      if (!stagedFileIds.length) return [];
+      return [{
+        group_id: group[0].file_id,
+        staged_file_ids: stagedFileIds,
+        retained_files: group.filter((file) => !workspace.staged.has(file.file_id)).map(duplicateFile),
+      }];
+    }) : [];
     return {
       staged_files: staged, hashes_pending: pending,
       cleanup_ready: ready, warnings,
@@ -434,6 +443,7 @@ export function createStorageApi(current: () => PreviewWorkspace) {
       duplicate_groups_after: after.map((group) => ({
         group_id: group[0].file_id, size_bytes: group[0].size_bytes, files: group.map(duplicateFile),
       })),
+      review_groups: reviewGroups,
     };
   }
 

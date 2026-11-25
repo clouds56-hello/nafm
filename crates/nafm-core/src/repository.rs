@@ -19,8 +19,8 @@ use crate::model::{
   FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, MissingContentGroup, RemoteMachine, RemotePathMapping,
   ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus,
   SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport, StageRemoveReport,
-  StageResetReport, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal, StorageLocation,
-  StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
+  StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage, StorageFileReveal,
+  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -3735,16 +3735,14 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
   })?;
   let all_staged_ids = staged_files
     .iter()
-    .map(|file| file.file_id.clone())
+    .map(|file| file.file_id.as_str())
     .collect::<std::collections::HashSet<_>>();
   for group in &duplicate_groups_before {
-    let staged_in_group = group
+    if group
       .files
       .iter()
-      .filter(|file| all_staged_ids.contains(&file.file_id))
-      .collect::<Vec<_>>();
-    if staged_in_group.len() == group.files.len()
-      && let Some(file) = staged_in_group.last()
+      .all(|file| all_staged_ids.contains(file.file_id.as_str()))
+      && let Some(file) = group.files.last()
     {
       warnings.push(StageWarning {
         path: file.path.clone(),
@@ -3759,26 +3757,27 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     std::collections::HashSet::new()
   };
 
+  let mut review_groups = Vec::new();
   let duplicate_groups_after = duplicate_groups_before
-    .iter()
-    .filter_map(|group| {
-      let remaining_files = group
-        .files
-        .iter()
-        .filter(|file| !staged_ids.contains(&file.file_id))
-        .cloned()
-        .collect::<Vec<_>>();
-      if remaining_files.len() > 1 {
-        Some(DuplicateGroup {
+    .into_iter()
+    .filter_map(|mut group| {
+      let mut staged_file_ids = Vec::new();
+      group.files.retain(|file| {
+        if staged_ids.contains(file.file_id.as_str()) {
+          staged_file_ids.push(file.file_id.clone());
+          false
+        } else {
+          true
+        }
+      });
+      if !staged_file_ids.is_empty() {
+        review_groups.push(StageReviewGroup {
           group_id: group.group_id.clone(),
-          hash_algorithm: group.hash_algorithm.clone(),
-          hash: group.hash.clone(),
-          size_bytes: group.size_bytes,
-          files: remaining_files,
-        })
-      } else {
-        None
+          staged_file_ids,
+          retained_files: group.files.clone(),
+        });
       }
+      (group.files.len() > 1).then_some(group)
     })
     .collect::<Vec<_>>();
   let duplicate_group_count_after = duplicate_groups_after.len() as u64;
@@ -3802,6 +3801,7 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     duplicate_file_count_after,
     db_entry_count_stable,
     duplicate_groups_after,
+    review_groups,
   })
 }
 

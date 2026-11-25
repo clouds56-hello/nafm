@@ -34,8 +34,11 @@ pub async fn unstage_path(
 }
 
 #[tauri::command]
-pub async fn preview_cleanup(state: State<'_, AppState>) -> Result<StageCommitDryRun, String> {
-  let repository = state.repository().await;
+pub async fn preview_cleanup(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+) -> Result<StageCommitDryRun, String> {
+  let repository = state.repository_for(&expected_workspace).await?;
   repository
     .stage_commit_dry_run()
     .await

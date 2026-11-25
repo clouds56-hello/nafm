@@ -330,8 +330,8 @@ export function unstagePath(path: string, expectedWorkspace: string): Promise<St
   return invoke<StageRemoveReport>("unstage_path", { path, expectedWorkspace });
 }
 
-export function previewCleanup(): Promise<CleanupPreview> {
-  return invoke<CleanupPreview>("preview_cleanup");
+export function previewCleanup(expectedWorkspace: string): Promise<CleanupPreview> {
+  return invoke<CleanupPreview>("preview_cleanup", { expectedWorkspace });
 }
 
 export function onScanTaskEvent(handler: (event: ScanTaskEvent) => void): Promise<UnlistenFn> {

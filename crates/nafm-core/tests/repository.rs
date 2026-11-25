@@ -2843,6 +2843,7 @@ async fn timestamp_only_change_retains_stale_digest_until_resume_verifies_it() {
   assert_eq!(suspended_cleanup.staged_files.len(), 1);
   assert_eq!(suspended_cleanup.hashes_pending, 1);
   assert!(!suspended_cleanup.cleanup_ready);
+  assert!(suspended_cleanup.review_groups.is_empty());
   assert!(
     suspended_cleanup
       .warnings
@@ -3820,7 +3821,7 @@ async fn stage_add_folder_recursively_stages_duplicate_files_and_warns_on_last_c
 }
 
 #[tokio::test]
-async fn stage_commit_dry_run_reports_remaining_duplicates() {
+async fn stage_commit_dry_run_reports_remaining_duplicates_and_retained_copies() {
   let fixture = Fixture::new().await;
   let first = fixture.mkdir("first");
   let second = fixture.mkdir("second");
@@ -3828,6 +3829,8 @@ async fn stage_commit_dry_run_reports_remaining_duplicates() {
   fs::write(first.join("a.txt"), "same").unwrap();
   fs::write(second.join("b.txt"), "same").unwrap();
   fs::write(third.join("c.txt"), "same").unwrap();
+  fs::write(first.join("d.txt"), "unrelated").unwrap();
+  fs::write(second.join("e.txt"), "unrelated").unwrap();
 
   fixture.create_site("docs").await;
   fixture.add_site_folder("docs", &first, HiddenPolicy::Include).await;
@@ -3839,11 +3842,38 @@ async fn stage_commit_dry_run_reports_remaining_duplicates() {
   let report = fixture.repo.stage_commit_dry_run().await.unwrap();
 
   assert_eq!(report.staged_files.len(), 1);
+  assert!(report.cleanup_ready);
   assert!(report.db_entry_count_stable);
-  assert_eq!(report.duplicate_group_count_before, 1);
+  assert_eq!(report.duplicate_group_count_before, 2);
+  assert_eq!(report.duplicate_group_count_after, 2);
+  assert_eq!(report.duplicate_file_count_before, 5);
+  assert_eq!(report.duplicate_file_count_after, 4);
+  assert_eq!(report.review_groups.len(), 1);
+  let affected = &report.review_groups[0];
+  assert_eq!(affected.staged_file_ids, vec![report.staged_files[0].file_id.clone()]);
+  let retained_names = affected
+    .retained_files
+    .iter()
+    .map(|file| file.path.file_name().unwrap().to_str().unwrap())
+    .collect::<BTreeSet<_>>();
+  assert_eq!(retained_names, BTreeSet::from(["b.txt", "c.txt"]));
+
+  fixture.repo.stage_add_path(&second.join("b.txt")).await.unwrap();
+  let report = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert!(report.cleanup_ready);
+  assert!(report.db_entry_count_stable);
+  assert_eq!(report.tracked_file_count_before, 5);
+  assert_eq!(report.tracked_file_count_after, 3);
   assert_eq!(report.duplicate_group_count_after, 1);
-  assert_eq!(report.duplicate_file_count_before, 3);
   assert_eq!(report.duplicate_file_count_after, 2);
+  assert_eq!(report.review_groups.len(), 1);
+  let singleton = &report.review_groups[0];
+  assert_eq!(singleton.group_id, affected.group_id);
+  assert_eq!(singleton.staged_file_ids.len(), 2);
+  assert_eq!(singleton.retained_files.len(), 1);
+  assert!(singleton.retained_files[0].path.ends_with("c.txt"));
+  assert_ne!(report.duplicate_groups_after[0].group_id, singleton.group_id);
+  assert!(first.join("a.txt").is_file() && second.join("b.txt").is_file());
 }
 
 #[tokio::test]

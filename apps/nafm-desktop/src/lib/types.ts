@@ -403,11 +403,18 @@ export interface CleanupPreview {
   duplicate_file_count_before: number;
   duplicate_file_count_after: number;
   db_entry_count_stable: boolean;
+  review_groups: StageReviewGroup[];
   duplicate_groups_after: Array<{
     group_id: string;
     size_bytes: number;
     files: DuplicateFile[];
   }>;
+}
+
+export interface StageReviewGroup {
+  group_id: string;
+  staged_file_ids: string[];
+  retained_files: DuplicateFile[];
 }
 
 export interface ScanProgressView {
