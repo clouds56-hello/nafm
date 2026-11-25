@@ -73,6 +73,106 @@ test("changing the target keeps the folder, and Back restores the direction afte
   await expect(map.locator(".radial-atlas__size")).toContainText("89/100");
 });
 
+for (const view of ["all entries", "filtered matches"] as const) {
+  test(`changing Coverage target keeps the same Contents position with ${view}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.goto("/mock/?scenario=large");
+    await page.getByRole("figure").getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).click();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    await showCoverage(page);
+    await expect(target(page)).toHaveValue("field-drive");
+
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const results = contents.getByRole("region", { name: "Directory entries" });
+    const grid = contents.getByRole("grid");
+    const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+    await sort.click();
+    await page.getByRole("radio", { name: "Name", exact: true }).click();
+    await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(sort).toHaveAttribute("title", "Name, ascending");
+
+    const search = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+      .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+    const query = "  hArBoR SuRvEy  ";
+    const filtered = view === "filtered matches";
+    if (filtered) {
+      await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+      await search.fill(query);
+    }
+    const total = filtered ? "666" : "4096";
+    const rank = filtered ? 440 : 1188;
+    const row = grid.locator(`[aria-rowindex="${rank}"] [data-entry-id]`);
+    await expect(grid).toHaveAttribute("aria-rowcount", total);
+    await expect(results).not.toHaveAttribute("aria-busy", "true");
+    const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (rank - 4) * height);
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    const fileId = (await row.getAttribute("data-entry-id"))!;
+    const scroll = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scroll).toBeGreaterThan(0);
+
+    const replies = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { targetSiteId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const targets: string[] = [];
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_view_snapshot" && args.targetSiteId) targets.push(args.targetSiteId);
+        return response;
+      };
+      return targets;
+    });
+
+    async function expectPosition(comparison: string) {
+      await expect(target(page)).toHaveValue(comparison);
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(sites).toBeVisible();
+      await expect(results).not.toHaveAttribute("aria-busy", "true");
+      await expect(sort).toHaveAttribute("title", "Name, ascending");
+      await expect(grid).toHaveAttribute("aria-rowcount", total);
+      if (filtered) await expect(search).toHaveValue(query);
+      else await expect(search).toBeHidden();
+      await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+      await expect(row).toHaveAttribute("data-entry-id", fileId);
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+    }
+
+    await target(page).selectOption("team-share");
+    await expect.poll(() => replies.evaluate((targets) => targets.includes("team-share"))).toBe(true);
+    await expectPosition("team-share");
+    await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+    await expectPosition("field-drive");
+    await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
+    await expectPosition("team-share");
+
+    if (filtered) {
+      const fileName = (await row.locator(".atlas-directory-identity > span").first().textContent())!;
+      await row.press("Enter");
+      const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+      const fileDetails = inspector.getByRole("heading", { name: fileName, exact: true });
+      const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+      await expect(fileDetails).toBeVisible();
+      await expect(back).toBeVisible();
+
+      const before = await replies.evaluate((targets) => targets.length);
+      await target(page).selectOption("field-drive");
+      await expect.poll(() => replies.evaluate((targets, start) => targets.slice(start).includes("field-drive"), before)).toBe(true);
+      await expect(target(page)).toHaveValue("field-drive");
+      await expect(fileDetails).toBeVisible();
+      await expect(back).toBeVisible();
+      await back.press("Enter");
+      await expectPosition("field-drive");
+      await expect(row).toBeFocused();
+    }
+  });
+}
+
 test("a pending target reports estimated coverage and can finish verification", async ({ page }) => {
   await page.goto("/mock/?scenario=partial");
   await showCoverage(page);

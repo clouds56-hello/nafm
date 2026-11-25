@@ -238,6 +238,48 @@ test.describe("touch exploration", () => {
     await page.keyboard.press("ArrowRight");
     await expect(arc(page, /^Camera originals\.mxf,/)).toBeFocused();
   });
+
+  test("Back and Forward reveal a compact file inspection from outside the inspector", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 620 });
+    await arc(page, /^Photo Library,/).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+
+    const sites = page.getByRole("complementary", { name: "Sites" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+    const file = contents.getByRole("grid").getByRole("button", { name: /^Proof 093\.jpg/ });
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    await expect(file).toBeAttached();
+    await file.scrollIntoViewIfNeeded();
+    const savedScroll = await contents.evaluate((pane) => pane.scrollTop);
+    expect(savedScroll).toBeGreaterThan(0);
+    await file.tap();
+    await back.tap();
+    await expect(file).toBeFocused();
+
+    const toolbar = page.getByRole("button", { name: "Workspace actions", exact: true });
+    await page.evaluate(() => { window.scrollTo(0, 0); });
+    await toolbar.focus();
+    await expect(back).toBeHidden();
+    await expect(inspector).not.toBeInViewport();
+    await page.keyboard.press("Alt+ArrowRight");
+
+    await expect(back).toBeFocused();
+    await expect(back).toBeInViewport({ ratio: 0.99 });
+    await expect(sites).toBeVisible();
+    await page.evaluate(() => { window.scrollTo(0, 0); });
+    await toolbar.focus();
+    await expect(back).not.toBeInViewport();
+    await page.keyboard.press("Alt+ArrowLeft");
+
+    await expect(file).toBeFocused();
+    await expect(file).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(savedScroll);
+    await expect(sites).toBeVisible();
+  });
 });
 
 test("the full scrollbar seeks directly to a distant file and restores it after inspection", async ({ page }) => {

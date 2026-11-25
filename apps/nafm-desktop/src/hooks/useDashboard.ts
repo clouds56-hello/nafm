@@ -125,7 +125,7 @@ interface LocationLoadOptions {
 
 interface DirectoryAnchorLoad {
   request?: StorageDirectoryAnchor;
-  onArrival: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
+  onArrival?: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => boolean | void;
 }
 
 type FileRevealDestination =
@@ -482,7 +482,7 @@ export function useDashboard(
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
 
-      if (sameFolder && anchor?.onArrival(nextLocation, page, snapshot.filtered_page) === false) return "superseded";
+      if (sameFolder && anchor?.onArrival?.(nextLocation, page, snapshot.filtered_page) === false) return "superseded";
       if (previousEntry && previousEntry.site_id !== entry.site_id) {
         lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
       }
@@ -1067,13 +1067,16 @@ export function useDashboard(
     return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
   }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
 
-  const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
+  const selectCoverageTarget = useCallback(async (targetSiteId: string, inspectedFileId?: string) => {
     const current = currentNavigationEntry();
     if (!current || current.site_id === targetSiteId
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
     const targetName = dashboardRef.current?.sites.find((site) => site.id === targetSiteId)?.name;
     await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push", {
       action: { title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target" },
+      anchor: inspectedFileId && current.selected_node_id === inspectedFileId
+        ? { request: { child_id: inspectedFileId, query: null } }
+        : undefined,
     });
   }, [currentNavigationEntry, loadFolderLocation]);
 

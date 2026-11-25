@@ -14,6 +14,7 @@ import "./directory.css";
 interface DirectoryContentsProps {
   location: StorageLocation | null;
   page: StorageChildrenPage | null;
+  total: number;
   directoryTotal: number;
   searchText: string | null;
   onSearchChange: (text: string | null) => void;
@@ -54,7 +55,7 @@ function visibleEntry(list: HTMLUListElement | null, first: number, capacity: nu
 }
 
 export function DirectoryContents({
-  location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
+  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
   scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
@@ -78,7 +79,6 @@ export function DirectoryContents({
   } | null>(null);
   const [missingRefreshKey, setMissingRefreshKey] = useState<string | null>(null);
   const directoryId = location?.root.id;
-  const total = page?.total_children ?? 0;
   const offset = page?.offset ?? 0;
   const committedReveal = refreshReveal?.key === contentsKey && refreshReveal.page === page ? refreshReveal : undefined;
   const placingRefresh = Boolean(committedReveal);

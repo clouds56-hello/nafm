@@ -77,7 +77,8 @@ export function AtlasInspector({
     const active = document.activeElement;
     if ((previous.screen === screen && !changedFile)
       || (previous.siteId !== siteId && active && active !== document.body && !drawer.current?.contains(active))) return;
-    if (screen && (!previous.screen || origin.current)) revealInCompactAtlas(drawer.current);
+    const inspectingFile = screen === "file" || previous.screen === "file";
+    if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
     } else if (screen === "contents" && enterList.current) {

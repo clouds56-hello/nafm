@@ -11,6 +11,11 @@ interface DirectoryRequest {
   preferredIndex?: number;
 }
 
+interface DirectoryRead extends DirectoryRequest {
+  targetId: string | undefined;
+  revision: number;
+}
+
 interface DirectorySearchOptions {
   scope: string;
   siteId?: string;
@@ -22,34 +27,35 @@ interface DirectorySearchOptions {
   onRefresh?: (update: DirectoryRefresh) => boolean | void;
 }
 
-function directorySearchKey(scope: string, targetId: string | undefined, query: string, sort: DirectorySort) {
-  return JSON.stringify([scope, targetId, query, sort.field, sort.direction]);
+function directorySearchKey(scope: string, query: string, sort: DirectorySort) {
+  return JSON.stringify([scope, query, sort.field, sort.direction]);
 }
 
 export function useDirectorySearch({
   scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, onRefresh,
 }: DirectorySearchOptions) {
   const enabled = Boolean(query && siteId && folderId);
-  const key = directorySearchKey(scope, targetId, query, { field, direction });
+  const key = directorySearchKey(scope, query, { field, direction });
   const [requested, setRequested] = useState<DirectoryRequest | null>(null);
-  const [result, setResult] = useState<(DirectoryRequest & { revision: number; page: StorageChildrenPage }) | null>(null);
-  const [failure, setFailure] = useState<(DirectoryRequest & { revision: number; refreshIndex?: number; message: string }) | null>(null);
+  const [result, setResult] = useState<(DirectoryRead & { page: StorageChildrenPage }) | null>(null);
+  const [failure, setFailure] = useState<(DirectoryRead & { refreshIndex?: number; message: string }) | null>(null);
   const request = requested?.key === key ? requested : null;
   const delivered = result?.key === key ? result : null;
   const page = delivered?.page ?? null;
   const range = request?.range ?? delivered?.range ?? firstWindow;
   const preferredIndex = request?.preferredIndex;
-  const refreshing = delivered !== null && delivered.revision !== contentRevision;
+  const changingTarget = delivered !== null && delivered.targetId !== targetId;
+  const refreshing = delivered !== null && !changingTarget && delivered.revision !== contentRevision;
   const refreshIndex = refreshing ? preferredIndex ?? range.offset : undefined;
   const anchor = page && refreshIndex !== undefined ? page.children[refreshIndex - page.offset]?.id : undefined;
-  const error = failure?.key === key && failure.revision === contentRevision && failure.range === range
+  const error = failure?.key === key && failure.targetId === targetId && failure.revision === contentRevision && failure.range === range
     && failure.refreshIndex === refreshIndex ? failure.message : null;
-  const pending = enabled && !error && (refreshing || delivered?.range !== range);
-  const latest = useRef({ key, revision: contentRevision, range, preferredIndex, onRefresh });
+  const pending = enabled && !error && (changingTarget || refreshing || delivered?.range !== range);
+  const latest = useRef({ key, targetId, revision: contentRevision, range, preferredIndex, onRefresh });
 
   useLayoutEffect(() => {
-    latest.current = { key, revision: contentRevision, range, preferredIndex, onRefresh };
-  }, [key, contentRevision, range, preferredIndex, onRefresh]);
+    latest.current = { key, targetId, revision: contentRevision, range, preferredIndex, onRefresh };
+  }, [key, targetId, contentRevision, range, preferredIndex, onRefresh]);
 
   const requestWindow = useCallback((next: DirectoryRequest) => {
     latest.current = { ...latest.current, ...next };
@@ -62,7 +68,8 @@ export function useDirectorySearch({
     const timer = window.setTimeout(async () => {
       const stillWanted = () => {
         const active = latest.current;
-        return current && active.key === key && active.revision === contentRevision && active.range === range
+        return current && active.key === key && active.targetId === targetId
+          && active.revision === contentRevision && active.range === range
           && (refreshIndex === undefined || (active.preferredIndex ?? range.offset) === refreshIndex);
       };
       if (!stillWanted()) return;
@@ -87,11 +94,11 @@ export function useDirectorySearch({
           nextRange = { offset: next.offset, limit: next.limit };
           requestWindow({ key, range: nextRange, preferredIndex: index });
         }
-        setResult({ key, revision: contentRevision, range: nextRange, page: next });
+        setResult({ key, targetId, revision: contentRevision, range: nextRange, page: next });
         setFailure(null);
       } catch (error) {
         if (stillWanted()) setFailure({
-          key, revision: contentRevision, range, refreshIndex, message: error instanceof Error ? error.message : String(error),
+          key, targetId, revision: contentRevision, range, refreshIndex, message: error instanceof Error ? error.message : String(error),
         });
       }
     }, !page && range === firstWindow ? 160 : 0);
@@ -119,19 +126,21 @@ export function useDirectorySearch({
   const prime = useCallback((
     destination: Pick<DirectorySearchOptions, "scope" | "targetId" | "query" | "sort">, page: StorageChildrenPage,
   ) => {
-    const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort);
+    const key = directorySearchKey(destination.scope, destination.query, destination.sort);
     const range = { offset: page.offset, limit: page.limit };
     requestWindow({ key, range });
-    setResult({ key, revision: contentRevision, range, page });
+    setResult({ key, targetId: destination.targetId, revision: contentRevision, range, page });
     setFailure(null);
   }, [contentRevision, requestWindow]);
 
   return {
     enabled,
-    page,
+    // Keep the scroll track and window while waiting for coverage from the new target.
+    total: page?.total_children ?? 0,
+    page: changingTarget ? null : page,
     error,
-    loading: pending && !page,
-    loadingMore: pending && Boolean(page),
+    loading: pending && (changingTarget || !page),
+    loadingMore: pending && !changingTarget && Boolean(page),
     loadRange,
     retry: () => requestWindow({ key, range: { ...range }, preferredIndex }),
     prime,

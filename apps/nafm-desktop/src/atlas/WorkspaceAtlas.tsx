@@ -65,10 +65,10 @@ function directoryScope(workspace: string | undefined, site: string | undefined,
 }
 
 function directoryKey(
-  workspace: string | undefined, site: string | undefined, target: string | null | undefined, folder: string | undefined,
+  workspace: string | undefined, site: string | undefined, folder: string | undefined,
   sort: DirectorySort, anchor: number, query?: string,
 ) {
-  return JSON.stringify([workspace, site, target, folder, sort.field, sort.direction, anchor, query]);
+  return JSON.stringify([workspace, site, folder, sort.field, sort.direction, anchor, query]);
 }
 
 function fileParent(root: StorageNode, fileId: string): StorageNode | null {
@@ -250,10 +250,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     state.setReviewOpen(false);
   }
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
-    return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
+    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor);
   }
   function searchContentsKey(sort: DirectorySort, query: string) {
-    return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, 0, query);
+    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query);
   }
   const contentsKey = search.enabled ? searchContentsKey(state.directorySort, searchQuery)
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
@@ -306,7 +306,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const targetOptions = dashboard?.sites.filter((candidate) => candidate.id !== site?.id) ?? [];
   const coverage = mapMode === "coverage_health";
   const folderCoverage = folder && coverage ? nodeHealthPresentation(folder, "coverage_health", targetCompleteness) : null;
-  const changeCoverageTarget = (id: string) => void state.selectCoverageTarget(id);
+  const changeCoverageTarget = (id: string) => {
+    const inspectedFile = inspectorView === "details" && selected?.kind === "file" ? selected.id : undefined;
+    void state.selectCoverageTarget(id, inspectedFile);
+  };
   const swapCoverageSites = () => { if (site && target) void selectSite(target.id, site.id); };
   function verificationScanState(id: string) {
     const requestId = state.scanRequestBySite.get(id);
@@ -389,7 +392,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
         const targetId = destination.coverage_target?.id;
         if (query) search.prime({ scope, targetId, query, sort: page.sort }, visiblePage);
         const key = directoryKey(
-          dashboard?.workspace_name, destination.site_id, targetId, destination.root.id,
+          dashboard?.workspace_name, destination.site_id, destination.root.id,
           page.sort, query ? 0 : page.anchor_offset, query ?? undefined,
         );
         setContentsReveal({ key, index: visiblePage.offset + childIndex, onApplied: () => setContentsReveal(null) });
@@ -477,7 +480,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       }
       setPausedSearchScope(!match && folderSearches.get(scope)?.trim() ? scope : null);
       const key = directoryKey(
-        dashboard?.workspace_name, destination.site_id, destination.target_site_id, destination.node_id,
+        dashboard?.workspace_name, destination.site_id, destination.node_id,
         destination.sort, match ? 0 : destination.anchor_offset, match?.query,
       );
       // A previous visit to this list may have scrolled away from the file.
@@ -514,7 +517,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
         const index = page.anchor_offset;
         const firstGrouped = page.children[index - page.offset];
         const key = directoryKey(
-          dashboard?.workspace_name, destination.site_id, destination.coverage_target?.id, destination.root.id, page.sort, index,
+          dashboard?.workspace_name, destination.site_id, destination.root.id, page.sort, index,
         );
         inspectorOrigin.current = origin ?? null;
         openInspector("contents");
@@ -768,6 +771,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       onOpenFolder={state.openFolderExternally}
                       location={location}
                       page={directoryPage}
+                      total={search.enabled ? search.total : directoryPage?.total_children ?? 0}
                       directoryTotal={state.childrenPage?.total_children ?? 0}
                       searchText={searchText}
                       onSearchChange={changeSearch}
