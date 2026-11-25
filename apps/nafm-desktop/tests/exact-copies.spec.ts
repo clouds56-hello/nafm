@@ -336,6 +336,83 @@ for (const scanSite of ["Field drive", "Studio archive"]) {
   });
 }
 
+for (const chooseBackup of [false, true]) {
+  const result = chooseBackup ? "keeps the replacement the user chose" : "restores the intended copy after verification";
+  test(`Exact copies ${result}`, async ({ page }) => {
+    await inspectOriginalFile(page);
+    if (chooseBackup) await page.setViewportSize({ width: 320, height: 480 });
+    await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+
+    const reveals = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { fileId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const files: string[] = [];
+      bridge.invoke = (command, args) => {
+        if (command === "get_storage_file_reveal" && args.fileId) files.push(args.fileId);
+        return invoke(command, args);
+      };
+      return files;
+    });
+
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    await sites.getByRole("button", { name: "Scan Team share", exact: true }).press("Enter");
+    await expect(sites.getByRole("button", { name: "Stop scan of Team share", exact: true })).toBeEnabled();
+    await sites.getByRole("button", { name: "Close sites", exact: true }).press("Enter");
+    await inspector(page).getByRole("button", { name: "Exact copies", exact: true }).press("Enter");
+
+    const dialog = page.getByRole("dialog", { name: "Exact copies", exact: true });
+    const shared = dialog.getByRole("button", { name: /^Team share.*Campaign mirror/ });
+    const backup = dialog.getByRole("button", { name: /^Studio archive.*Backup campaign/ });
+    const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
+    const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+    const unavailable = dialog.getByRole("status").filter({ hasText: /selected copy is (?:temporarily )?unavailable/i });
+    await page.clock.runFor(20);
+    await shared.press("Enter");
+    await expect(shared).toBeFocused();
+    await expect(shared).toHaveAttribute("aria-pressed", "true");
+    await expect(match).toContainText(sharedPath);
+
+    // Let the retained copy become unavailable while the mock publishes Team share's inventory.
+    await page.clock.runFor(3_800);
+    await expect(unavailable).toBeVisible();
+    await expect(match).toContainText(sharedPath);
+    await expect(backup).toBeFocused();
+    await expect(backup).toBeInViewport({ ratio: 0.98 });
+    await expect(backup).toHaveAttribute("aria-pressed", "false");
+    await expect(show).toBeDisabled();
+    await expect(show).toHaveAccessibleDescription("The selected copy is unavailable in the current results.");
+    await show.press("Enter");
+    await expect(dialog).toBeVisible();
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    expect(await reveals.jsonValue()).toEqual([]);
+
+    if (chooseBackup) {
+      await backup.press("Enter");
+      await expect(match).toContainText(backupPath);
+      await expect(show).toBeEnabled();
+    } else {
+      await backup.focus();
+    }
+    await page.clock.runFor(2_500);
+    await expect(unavailable).toBeHidden();
+    await expect(shared).toHaveAttribute("aria-pressed", chooseBackup ? "false" : "true");
+    await expect(backup).toBeFocused();
+    await expect(backup).toHaveAttribute("aria-pressed", chooseBackup ? "true" : "false");
+    await expect(match).toContainText(chooseBackup ? backupPath : sharedPath);
+    await expect(show).toBeEnabled();
+
+    await show.press("Enter");
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText(chooseBackup ? "Backup campaign" : "Campaign mirror");
+    await expect(inspector(page)).toContainText(chooseBackup ? backupPath : sharedPath);
+    expect(await reveals.jsonValue()).toHaveLength(1);
+  });
+}
+
 test("dismissing an exact-copy comparison cancels its pending navigation", async ({ page }) => {
   await inspectOriginalFile(page);
   const dialog = await openExactCopies(page);

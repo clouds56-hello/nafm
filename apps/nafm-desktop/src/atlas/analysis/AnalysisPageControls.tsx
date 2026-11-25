@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { Ref, RefObject } from "react";
 import { formatCount } from "../../lib/format";
 
 interface AnalysisPageControlsProps {
@@ -6,15 +6,16 @@ interface AnalysisPageControlsProps {
   loading: boolean;
   goTo: (offset: number) => void;
   pageNumbers?: boolean;
+  focusRef?: Ref<HTMLDivElement>;
 }
 
-export function AnalysisPageControls({ page, loading, goTo, pageNumbers }: AnalysisPageControlsProps) {
+export function AnalysisPageControls({ page, loading, goTo, pageNumbers, focusRef }: AnalysisPageControlsProps) {
   if (!page.total_matches) return null;
   const end = page.offset + page.matches.length;
   const previousDisabled = loading || page.offset === 0;
   const nextDisabled = loading || end >= page.total_matches;
   return (
-    <div className="atlas-analysis-pagination" role="group" aria-label="Result pages">
+    <div className="atlas-analysis-pagination" role="group" aria-label="Result pages" ref={focusRef}>
       <span aria-live="polite">
         {pageNumbers
           ? `Page ${formatCount(Math.floor(page.offset / page.limit) + 1)} of ${formatCount(Math.ceil(page.total_matches / page.limit))}`

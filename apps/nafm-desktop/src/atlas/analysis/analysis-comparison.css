@@ -18,8 +18,11 @@
 }
 
 .atlas-analysis-entity + .atlas-analysis-entity { border-color: #4d527a; background: #20233a; }
+.atlas-analysis-entity[data-unavailable] { border-color: var(--atlas-border); border-style: dashed; background: #181a29; }
 .atlas-analysis-entity h3 { margin: 0; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
 .atlas-analysis-entity > p { color: var(--atlas-accent); font-size: 11px; }
+.atlas-analysis-entity > .atlas-analysis-warning { color: #e7b59e; font-size: 12px; }
+.atlas-analysis-availability:empty { position: absolute; }
 
 .atlas-analysis-entity-meta {
   display: flex;

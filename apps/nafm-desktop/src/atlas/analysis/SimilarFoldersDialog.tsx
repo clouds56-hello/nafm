@@ -5,11 +5,12 @@ import type { FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
 import { CheckIcon } from "../../management/Icons";
 import type { ScanSite, SiteVerification } from "../siteVerification";
 import { VerificationScanButton } from "../VerificationScanButton";
-import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
 import { useAnalysisPage, type AnalysisPosition } from "./useAnalysisPage";
+import { useAnalysisSelection } from "./useAnalysisSelection";
 import "./folder-comparison.css";
 
 const MATCH_PAGE_SIZE = 10;
@@ -85,35 +86,41 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
   const closeButton = useRef<HTMLButtonElement>(null);
   const refreshButton = useRef<HTMLButtonElement>(null);
   const verificationNoteId = useId();
+  const availabilityNoteId = useId();
   const [scanError, setScanError] = useState<string | null>(null);
   const load = useCallback((offset: number) => findSimilarFolders({
     workspace_name: workspaceName, site_id: siteId, node_id: nodeId, offset, limit: MATCH_PAGE_SIZE,
   }), [workspaceName, siteId, nodeId]);
-  const { page, loading, error, goTo, retry } = useAnalysisPage(load, contentRevision, position?.page.offset,
+  const { page, pageSequence, loading, error, goTo, retry } = useAnalysisPage(load, contentRevision, position?.page.offset,
     position?.revision === contentRevision ? position.page : undefined);
-  const [selectedKey, setSelectedKey] = useState<string | null>(position?.selected_id ?? null);
+  const matches = page?.matches ?? [];
+  const initialMatch = position?.page.matches.find((match) => folderKey(match) === position.selected_id);
+  const { selected, unavailable: missingMatch, choose } = useAnalysisSelection(matches, folderKey, pageSequence, !loading && !error, initialMatch);
+  const displayedMatch = selected ?? missingMatch;
+  const unavailable = page && missingMatch;
   const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, Boolean(page && !loading && !error));
+  const recoverRemovedFocus = useRemovedComparisonFocus(results, closeButton);
   const navigation = useAnalysisNavigation(onJump, onClose, (match) => {
     if (page) onShown(match, { page, selected_id: folderKey(match), scroll_top: readScroll(), revision: contentRevision });
   });
   const busy = loading || Boolean(error) || navigation.opening;
-  const selectedMatch = page?.matches.find((match) => folderKey(match) === selectedKey);
-  const selected = selectedMatch ?? page?.matches[0];
-  const matchChanged = selectedKey !== null && page && !loading && !error && !selectedMatch;
+  const pickerDisabled = busy || !matches.length;
+  const selectedKey = selected && folderKey(selected);
   const source = page?.source;
   const emptyFolder = source?.inventory_ready && source.file_count === 0;
   const needsVerification = source?.distinct_content_count === 0 && (!source.inventory_ready || source.pending_hash_count > 0);
   const scan = needsVerification ? verification?.action : undefined;
   const scanFailure = scan && verification?.tone !== "active" ? scanError ?? verification?.failure : null;
+  const showNavigation = displayedMatch || navigation.opening || navigation.error;
+  const verificationAction = !selected && !navigation.opening && scan;
 
   function browse(offset: number) {
-    setSelectedKey(null);
     navigation.clearError();
     goTo(offset);
   }
 
-  function choose(key: string) {
-    setSelectedKey(key);
+  function chooseMatch(match: FolderSimilarityMatch) {
+    choose(match);
     navigation.clearError();
   }
 
@@ -122,28 +129,42 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
       title="Similar folders"
       closeButtonRef={closeButton}
       onClose={navigation.close}
-      footer={selected || navigation.opening || navigation.error ? (
-        <AnalysisNavigationFooter
-          error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
-          pendingLabel="Opening folder…" buttonRef={showButton} onShow={selected ? () => void navigation.show(selected) : undefined}
-        />
-      ) : scan && (
-        <VerificationScanButton action={{ ...scan, disabled: scan.disabled || busy }} onScanSite={onScanSite}
-          onScanError={setScanError}
-          focusTarget={closeButton} describedBy={verificationNoteId} className="atlas-analysis-primary atlas-analysis-reveal-button" />
+      footer={(showNavigation || verificationAction) && (
+        <>
+          {showNavigation && (
+            <AnalysisNavigationFooter
+              error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
+              showWhenUnavailable={Boolean(missingMatch)} describedBy={unavailable ? availabilityNoteId : undefined}
+              pendingLabel="Opening folder…" buttonRef={showButton} onShow={selected ? () => void navigation.show(selected) : undefined}
+            />
+          )}
+          {verificationAction && (
+            <VerificationScanButton action={{ ...verificationAction, disabled: verificationAction.disabled || busy }} onScanSite={onScanSite}
+              onScanError={setScanError} focusTarget={closeButton} describedBy={verificationNoteId}
+              className="atlas-analysis-primary atlas-analysis-reveal-button" />
+          )}
+        </>
       )}
     >
       <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
-        {page && selected && (
+        {page && displayedMatch && (
           <label className="atlas-folder-match-select">
             Compare with
             <select
-              aria-disabled={busy || undefined} value={folderKey(selected)}
-              onPointerDown={busy ? (event) => event.preventDefault() : undefined}
-              onKeyDown={busy ? (event) => { if (event.key !== "Tab" && event.key !== "Escape") event.preventDefault(); } : undefined}
-              onChange={busy ? undefined : (event) => choose(event.currentTarget.value)}
+              ref={recoverRemovedFocus} data-comparison-choice aria-disabled={pickerDisabled || undefined} value={folderKey(displayedMatch)}
+              onPointerDown={pickerDisabled ? (event) => event.preventDefault() : undefined}
+              onKeyDown={pickerDisabled ? (event) => { if (event.key !== "Tab" && event.key !== "Escape") event.preventDefault(); } : undefined}
+              onChange={pickerDisabled ? undefined : (event) => {
+                const match = matches.find((candidate) => folderKey(candidate) === event.currentTarget.value);
+                if (match) chooseMatch(match);
+              }}
             >
-              {page.matches.map((match) => (
+              {unavailable && (
+                <option value={folderKey(unavailable)} disabled>
+                  {fileName(unavailable.folder.path)} · {unavailable.folder.site_name} · Unavailable
+                </option>
+              )}
+              {matches.map((match) => (
                 <option key={folderKey(match)} value={folderKey(match)}>
                   {fileName(match.folder.path)} · {match.folder.site_name} · {percent(match.similarity, match.partial)}
                 </option>
@@ -151,7 +172,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
             </select>
           </label>
         )}
-        <div className="atlas-analysis-comparison atlas-folder-comparison" data-comparing={selected ? "" : undefined}>
+        <div className="atlas-analysis-comparison atlas-folder-comparison" data-comparing={displayedMatch ? "" : undefined}>
           <AnalysisLocation
             label="Selected folder" name={node.name} site={siteName} path={source?.path ?? node.path}
             detail={source ? formatBytes(source.distinct_bytes) : undefined}
@@ -164,23 +185,30 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
               />
             )}
           </AnalysisLocation>
-          {selected && (
+          {displayedMatch && (
             <AnalysisLocation
-              label="Matching folder" name={fileName(selected.folder.path)} site={selected.folder.site_name}
-              path={selected.folder.path} detail={formatBytes(selected.folder.distinct_bytes)}
+              label="Matching folder" name={fileName(displayedMatch.folder.path)} site={displayedMatch.folder.site_name}
+              path={displayedMatch.folder.path} detail={selected ? formatBytes(selected.folder.distinct_bytes) : undefined}
+              unavailable={Boolean(unavailable)}
             >
-              <FolderEvidence folder={selected.folder} />
-              <Coverage
-                label={selected.folder.distinct_bytes ? "Size also in selected folder" : "Content also in selected folder"}
-                value={selected.target_coverage} partial={selected.partial} allMatched={selected.target_only_count === 0}
-              />
+              {selected && (
+                <>
+                  <FolderEvidence folder={selected.folder} />
+                  <Coverage
+                    label={selected.folder.distinct_bytes ? "Size also in selected folder" : "Content also in selected folder"}
+                    value={selected.target_coverage} partial={selected.partial} allMatched={selected.target_only_count === 0}
+                  />
+                </>
+              )}
+              <p id={availabilityNoteId} className="atlas-analysis-warning atlas-analysis-availability" role="status">
+                {unavailable ? "The selected folder is unavailable in the current results." : ""}
+              </p>
             </AnalysisLocation>
           )}
         </div>
         {loading && !page && <p role="status">Comparing indexed contents…</p>}
         {loading && page && <p role="status">Refreshing similar folders…</p>}
         {error && <AnalysisError error={error} retry={retry} focusTarget={page ? refreshButton : closeButton} />}
-        {matchChanged && <p role="status">The comparison results changed.</p>}
         {page && (
           <>
             <VerificationNote pending={page.workspace_pending_hash_count} incomplete={page.workspace_incomplete_site_count} />
@@ -190,7 +218,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
                 <ContentBreakdown match={selected} />
                 {selected.partial && <p role="status" className="atlas-analysis-warning">This comparison covers the verified portions of both folders.</p>}
               </section>
-            ) : (
+            ) : (!unavailable || needsVerification) && (
               <p id={verificationNoteId} role="status">{page.source.distinct_content_count > 0
                 ? "No other indexed folders share verified content."
                 : emptyFolder ? "This folder has no files to compare."
@@ -206,18 +234,18 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
                 retry();
               }}>Refresh results</button>
             </div>
-            {page.matches.length > 0 && (
+            {matches.length > 0 && (
               <ul className="atlas-analysis-list atlas-analysis-choices atlas-folder-match-list" aria-label="Matching folders">
-                {page.matches.map((match) => {
+                {matches.map((match) => {
                   const key = folderKey(match);
                   const same = match.identical_content && !match.partial;
                   const unit = page.source.distinct_bytes || match.folder.distinct_bytes ? "size" : "count";
                   return (
                     <li key={key}>
                       <button
-                        className="atlas-analysis-row" type="button" aria-disabled={busy || undefined}
-                        aria-pressed={selected === match} aria-description={match.folder.path}
-                        onClick={busy ? undefined : () => choose(key)}
+                        className="atlas-analysis-row" type="button" ref={recoverRemovedFocus} data-comparison-choice aria-disabled={busy || undefined}
+                        aria-pressed={selectedKey === key} aria-description={match.folder.path}
+                        onClick={busy ? undefined : () => chooseMatch(match)}
                       >
                         <span className="atlas-analysis-location">
                           <strong>{match.folder.site_name}</strong><span>{fileName(match.folder.path)}</span>
@@ -232,7 +260,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
                 })}
               </ul>
             )}
-            {page.total_matches > page.limit && <AnalysisPageControls page={page} loading={busy} goTo={browse} />}
+            {page.total_matches > page.limit && <AnalysisPageControls page={page} loading={busy} goTo={browse} focusRef={recoverRemovedFocus} />}
             <time className="atlas-analysis-timestamp" dateTime={page.generated_at}>Snapshot {new Date(page.generated_at).toLocaleString()}</time>
           </>
         )}

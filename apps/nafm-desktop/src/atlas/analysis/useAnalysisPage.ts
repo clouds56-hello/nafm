@@ -17,7 +17,7 @@ export interface AnalysisPosition<Page> {
 export function useAnalysisPage<Page extends AnalysisPage>(
   load: (offset: number) => Promise<Page>, revision: number, initialOffset = 0, cachedPage?: Page,
 ) {
-  const [request, setRequest] = useState({ offset: initialOffset });
+  const [request, setRequest] = useState({ offset: initialOffset, sequence: 0 });
   const [result, setResult] = useState<{ request: typeof request; revision: number; page: Page } | null>(
     () => cachedPage ? { request, revision, page: cachedPage } : null,
   );
@@ -39,7 +39,7 @@ export function useAnalysisPage<Page extends AnalysisPage>(
           // A newer index snapshot can leave the saved page past the end.
           const limit = Math.max(1, next.limit);
           const offset = Math.max(0, Math.floor((next.total_matches - 1) / limit) * limit);
-          setRequest((current) => current === request ? { offset } : current);
+          setRequest((current) => current === request ? { ...current, offset } : current);
           return;
         }
         setResult({ request, revision, page: next });
@@ -55,9 +55,10 @@ export function useAnalysisPage<Page extends AnalysisPage>(
 
   return {
     page,
+    pageSequence: result?.request.sequence ?? 0,
     loading,
     error,
-    goTo: (offset: number) => setRequest({ offset }),
-    retry: () => setRequest({ offset: request.offset }),
+    goTo: (offset: number) => setRequest((current) => ({ offset, sequence: current.sequence + 1 })),
+    retry: () => setRequest((current) => ({ ...current })),
   };
 }

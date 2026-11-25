@@ -224,12 +224,14 @@ test("Atlas history keeps each inspected match’s own comparison position", asy
   await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(backupScroll, 0);
 });
 
-test("refresh keeps the chosen folder while it remains a match", async ({ page }) => {
+test("refresh keeps the comparison on its chosen folder when a match disappears or returns", async ({ page }) => {
   const dialog = await openComparison(page);
   const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
   const backup = dialog.getByRole("button", { name: /Studio archive.*Backup campaign/ });
   const mirror = dialog.getByRole("button", { name: /Team share.*Campaign mirror/ });
   const refresh = dialog.getByRole("button", { name: "Refresh results", exact: true });
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  const unavailable = dialog.getByRole("status").filter({ hasText: "The selected folder is unavailable in the current results." });
   const refreshes = await page.evaluateHandle((backupPath) => {
     const { __TAURI_INTERNALS__: bridge } = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
@@ -260,10 +262,92 @@ test("refresh keeps the chosen folder while it remains a match", async ({ page }
   await refreshes.evaluate((state) => { state.remove_backup = true; });
   await refresh.press("Enter");
   await expect(backup).toHaveCount(0);
-  await expect(mirror).toHaveAttribute("aria-pressed", "true");
-  await expect(match).toContainText(mirrorPath);
-  await expect(dialog.getByRole("status").filter({ hasText: /^The comparison results changed\.$/ })).toBeVisible();
+  await expect(mirror).toHaveAttribute("aria-pressed", "false");
+  await expect(match).toContainText(backupPath);
+  await expect(unavailable).toBeVisible();
+  await expect(show).toBeDisabled();
   await expect(refresh).toBeFocused();
+
+  await refreshes.evaluate((state) => { state.remove_backup = false; });
+  await refresh.press("Enter");
+  await expect(backup).toHaveAttribute("aria-pressed", "true");
+  await expect(match).toContainText(backupPath);
+  await expect(unavailable).toBeHidden();
+  await expect(show).toBeEnabled();
+});
+
+test("a compact folder jump keeps its match when an index refresh removes it from Similar folders", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 580 });
+  await inspectSource(page);
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  const reads = await page.evaluateHandle((backupPath) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { held: false, refreshes: 0, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "get_storage_view_snapshot" && args.nodeId?.endsWith("/Backup campaign") && !read.held) {
+        read.held = true;
+        await gate;
+      }
+      if (command !== "find_similar_folders" || !read.held) return response;
+      read.refreshes += 1;
+      const result = response as FolderSimilarityPage;
+      const matches = result.matches.filter(({ folder }) => folder.path !== backupPath);
+      return { ...result, matches, total_matches: matches.length };
+    };
+    return read;
+  }, backupPath);
+
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await sites.getByRole("button", { name: "Scan Field drive", exact: true }).press("Enter");
+  await expect(sites.getByRole("button", { name: "Stop scan of Field drive", exact: true })).toBeEnabled();
+  await sites.getByRole("button", { name: "Close sites", exact: true }).press("Enter");
+  await similarFoldersButton(page).press("Enter");
+  await page.clock.runFor(10);
+  const dialog = page.getByRole("dialog", { name: "Similar folders", exact: true });
+  const picker = dialog.getByRole("combobox", { name: "Compare with", exact: true });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  const opening = dialog.getByRole("button", { name: "Opening folder…", exact: true });
+  const unavailable = dialog.getByRole("status").filter({ hasText: "The selected folder is unavailable in the current results." });
+  const backupOption = picker.locator("option:checked");
+  await picker.selectOption({ label: "Backup campaign · Studio archive · 62%" });
+  await expect(match).toContainText(backupPath);
+
+  try {
+    await show.press("Enter");
+    await expect.poll(() => reads.evaluate((read) => read.held)).toBe(true);
+    await expect(opening).toBeFocused();
+    await page.clock.runFor(5_700);
+    await expect.poll(() => reads.evaluate((read) => read.refreshes)).toBeGreaterThan(0);
+    await expect(unavailable).toBeVisible();
+    await expect(opening).toBeFocused();
+    await expect(match).toContainText(backupPath);
+    await expect(backupOption).toContainText("Backup campaign · Studio archive · Unavailable");
+    await expect(backupOption).toBeDisabled();
+  } finally {
+    await reads.evaluate((read) => read.release());
+  }
+
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(folderDetails(page)).toContainText(backupPath);
+  await folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await page.clock.runFor(10);
+  await expect(unavailable).toBeVisible();
+  await expect(match).toContainText(backupPath);
+  await expect(show).toBeDisabled();
+  await picker.selectOption({ label: "Campaign mirror · Team share · 89%" });
+  await expect(match).toContainText(mirrorPath);
+  await expect(unavailable).toBeHidden();
+  await expect(show).toBeEnabled();
 });
 
 test("refreshing and reopening a comparison keep the same result page", async ({ page }) => {
