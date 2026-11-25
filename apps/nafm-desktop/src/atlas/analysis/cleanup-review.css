@@ -67,7 +67,48 @@
   font: 11px/1.35 var(--atlas-mono);
 }
 
+.atlas-review-file-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.atlas-cleanup-review .atlas-review-file-buttons button[aria-disabled="true"] {
+  opacity: .5;
+  cursor: default;
+}
+
+.atlas-cleanup-review button.atlas-review-unstage {
+  background: transparent;
+  color: var(--atlas-muted);
+}
+
+.atlas-cleanup-review .atlas-analysis-footer {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.atlas-review-inspect-error {
+  flex: 0 0 100%;
+  margin: 0;
+  color: #f3b2ba;
+  overflow-wrap: anywhere;
+}
+
 .atlas-review-file-warning { color: #e7b59e; font-size: 12px; }
+
+@media (max-width: 420px) {
+  .atlas-review-file { grid-template-columns: minmax(0, 1fr); }
+
+  .atlas-review-file-actions {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: start;
+  }
+
+  .atlas-review-file-buttons { justify-self: end; }
+}
 
 @media (pointer: coarse) {
   .atlas-analysis-dialog.is-drawer .atlas-review-file button,

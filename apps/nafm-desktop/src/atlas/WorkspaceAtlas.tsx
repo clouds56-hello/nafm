@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { ContentActions } from "./analysis/ContentActions";
-import { ReviewDrawer } from "./analysis/ReviewDrawer";
+import { ReviewDrawer, type ReviewPosition } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type AtlasToolbarExtension, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
@@ -34,6 +34,14 @@ interface FinderSession {
   workspace: string;
   openedFrom: "atlas" | "details" | null;
   latestPosition: FinderPosition | null;
+}
+
+interface ReviewInspection {
+  workspace: string;
+  siteId: string;
+  path: string;
+  position: ReviewPosition;
+  returning: boolean;
 }
 
 function directoryScope(workspace: string | undefined, site: string | undefined, folder: string | undefined) {
@@ -90,6 +98,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
+  const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
@@ -168,6 +177,20 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   const finderPosition = selected?.kind === "file" && state.finderPosition?.session === finder?.id
     ? state.finderPosition : null;
+  const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
+  const returnToReview = !finderPosition && reviewed && selected?.kind === "file"
+    && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
+
+  function openReview() {
+    setReviewInspection(null);
+    state.setReviewOpen(true);
+  }
+
+  function closeReview() {
+    if (reviewed?.returning) setAnalysisFocusRequested(true);
+    setReviewInspection(null);
+    state.setReviewOpen(false);
+  }
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
@@ -436,7 +459,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           canFind: findWorkspace !== null,
           onFind: openFileFinder,
           onScanAll: () => void state.scan(),
-          onReview: () => state.setReviewOpen(true),
+          onReview: openReview,
           onSettings: () => workspace.openManagement("workspaces"),
           onSources: () => setSourcesOpen(true),
         }}
@@ -563,8 +586,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
-                    onBackToResults={findWorkspace && finderPosition ? () => {
-                      setFinderSession((session) => session && { ...session, openedFrom: "details" });
+                    returnAction={findWorkspace && finderPosition ? {
+                      label: "Back to results",
+                      run: () => setFinderSession((session) => session && { ...session, openedFrom: "details" }),
+                    } : returnToReview ? {
+                      label: "Back to review",
+                      run: () => {
+                        setReviewInspection({ ...returnToReview, returning: true });
+                        state.setReviewOpen(true);
+                      },
                     } : undefined}
                     onShowInContents={selected?.kind === "file" && !fileOpen
                       ? () => void showFileInContents(selected) : undefined}
@@ -583,7 +613,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                        onReview={() => state.setReviewOpen(true)}
+                        onReview={returnToReview ? undefined : openReview}
                         onJumpDuplicate={showIndexedFileInAtlas}
                         onJumpFolder={showSimilarFolderInAtlas}
                       />
@@ -695,12 +725,18 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           cleanupReady={dashboard.staged_cleanup_ready}
           warnings={dashboard.staged_warnings}
           preview={state.preview}
+          position={reviewed?.returning ? reviewed.position : null}
           loadingPreview={state.previewLoading}
           error={state.reviewError}
           stagingBusy={state.stagingBusy}
-          onClose={() => state.setReviewOpen(false)}
+          onClose={closeReview}
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
+          onInspect={showIndexedFileInAtlas}
+          onInspected={(file, position) => {
+            setReviewInspection({ workspace: dashboard.workspace_name, siteId: file.site_id, path: file.path, position, returning: false });
+            state.setReviewOpen(false);
+          }}
         />
       )}
     </div>

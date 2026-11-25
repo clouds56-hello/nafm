@@ -20,7 +20,7 @@ interface ContentActionsProps {
   sourceAnalysisReady?: boolean;
   onStage: () => void;
   onUnstage: () => void;
-  onReview: () => void;
+  onReview?: () => void;
   onJumpDuplicate: (match: FileContentMatch, signal: AbortSignal) => Promise<string | null>;
   onJumpFolder: (match: FolderSimilarityMatch, signal: AbortSignal) => Promise<string | null>;
 }
@@ -88,7 +88,7 @@ function ContentActionsView({
               : staged ? "Remove from review" : "Stage for review"}
           </button>
         )}
-        {staged && (
+        {staged && onReview && (
           <button type="button" aria-haspopup="dialog" onClick={(event) => {
             event.currentTarget.focus({ preventScroll: true });
             onReview();

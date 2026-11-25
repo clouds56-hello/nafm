@@ -1,8 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type { CleanupPreview, DuplicateFile, SiteOverview, StageWarning, StageWarningReason } from "../../lib/types";
 import { AnalysisDialog } from "./AnalysisDialog";
+import { useAnalysisNavigation } from "./useAnalysisNavigation";
 import "./cleanup-review.css";
+
+export interface ReviewPosition {
+  file_id: string;
+  scroll_top: number;
+}
 
 interface ReviewDrawerProps {
   open: boolean;
@@ -15,9 +21,12 @@ interface ReviewDrawerProps {
   loadingPreview: boolean;
   stagingBusy?: boolean;
   error: string | null;
+  position: ReviewPosition | null;
   onClose: () => void;
   onPreview: () => void;
   onRemove: (path: string) => void;
+  onInspect: (file: DuplicateFile, signal: AbortSignal) => Promise<string | null>;
+  onInspected: (file: DuplicateFile, position: ReviewPosition) => void;
 }
 
 const warningLabels: Record<StageWarningReason, string> = {
@@ -34,10 +43,12 @@ interface ReviewFileProps {
   warning?: string;
   disabled: boolean;
   onRemove?: (path: string) => void;
+  onInspect?: (file: DuplicateFile) => void;
 }
 
-function ReviewFile({ file, site, warning, disabled, onRemove }: ReviewFileProps) {
+function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: ReviewFileProps) {
   const name = fileName(file.path);
+  const description = site ? `${site} · ${file.path}` : file.path;
   return (
     <li className="atlas-review-file">
       <div>
@@ -48,23 +59,41 @@ function ReviewFile({ file, site, warning, disabled, onRemove }: ReviewFileProps
       </div>
       <div className="atlas-review-file-actions">
         <span>{formatBytes(file.size_bytes)}</span>
-        {onRemove && (
-          <button
-            type="button" disabled={disabled}
-            aria-label={`Remove ${name} from review`}
-            aria-description={site ? `${site} · ${file.path}` : file.path}
-            onClick={() => onRemove(file.path)}
-          >
-            Remove
-          </button>
+        {(onInspect || onRemove) && (
+          <div className="atlas-review-file-buttons">
+            {onInspect && (
+              <button
+                type="button" data-review-inspect={file.file_id} aria-disabled={disabled || undefined}
+                aria-label={`Inspect ${name} in Atlas`} aria-description={description}
+                onClick={disabled ? undefined : (event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  onInspect(file);
+                }}
+              >
+                Inspect
+              </button>
+            )}
+            {onRemove && (
+              <button
+                type="button" className="atlas-review-unstage" disabled={disabled}
+                aria-label={`Remove ${name} from review`} aria-description={description}
+                onClick={() => onRemove(file.path)}
+              >
+                Remove from review
+              </button>
+            )}
+          </div>
         )}
       </div>
     </li>
   );
 }
 
-export function ReviewDrawer({
-  open,
+export function ReviewDrawer({ open, ...props }: ReviewDrawerProps) {
+  return open ? <OpenReviewDrawer {...props} /> : null;
+}
+
+function OpenReviewDrawer({
   staged,
   sites,
   hashesPending,
@@ -74,45 +103,85 @@ export function ReviewDrawer({
   loadingPreview,
   stagingBusy,
   error,
+  position,
   onClose,
   onPreview,
   onRemove,
-}: ReviewDrawerProps) {
+  onInspect,
+  onInspected,
+}: Omit<ReviewDrawerProps, "open">) {
+  const results = useRef<HTMLDivElement>(null);
+  const previewButton = useRef<HTMLButtonElement>(null);
   const previewSummary = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (open && preview) previewSummary.current?.focus();
-  }, [open, preview]);
+  const initialPosition = useRef(position);
+  const previousPreview = useRef(preview);
+  const navigation = useAnalysisNavigation(
+    ({ file }: { file: DuplicateFile; position: ReviewPosition }, signal) => onInspect(file, signal),
+    onClose,
+    ({ file, position }) => onInspected(file, position),
+  );
 
-  if (!open) return null;
+  useLayoutEffect(() => {
+    const saved = initialPosition.current;
+    if (!saved) return;
+    const button = results.current?.querySelector<HTMLButtonElement>(
+      `[data-review-inspect="${CSS.escape(saved.file_id)}"]:not([aria-disabled="true"])`,
+    );
+    const body = results.current?.closest(".atlas-analysis-body");
+    if (!button || !body) {
+      const previewAction = previewButton.current;
+      (previewSummary.current ?? (previewAction?.disabled ? null : previewAction))?.focus();
+      return;
+    }
+
+    body.scrollTop = saved.scroll_top;
+    button.focus({ preventScroll: true });
+    const bounds = body.getBoundingClientRect();
+    const row = button.getBoundingClientRect();
+    if (row.top < bounds.top || row.bottom > bounds.bottom) button.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  useEffect(() => {
+    if (preview && (!initialPosition.current || preview !== previousPreview.current)) previewSummary.current?.focus();
+    previousPreview.current = preview;
+  }, [preview]);
+
   const totalBytes = staged.reduce((sum, file) => sum + file.size_bytes, 0);
   const pending = Math.max(hashesPending, preview?.hashes_pending ?? 0);
   const blockedWarnings = preview && !preview.cleanup_ready ? preview.warnings : warnings;
   const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0;
-  const canPreview = staged.length > 0 && effectiveReady && !loadingPreview && !stagingBusy;
-  const blockedPaths = new Map(blockedWarnings.map(({ path, reason }) => [path, warningLabels[reason]]));
+  const busy = Boolean(loadingPreview || stagingBusy || navigation.opening);
+  const canPreview = staged.length > 0 && effectiveReady && !busy;
+  const blockedPaths = new Map(blockedWarnings.map(({ path, reason }) => [path, reason]));
   const siteNames = new Map(sites.map((site) => [site.id, site.name]));
   const stagedById = new Map(staged.map((file) => [file.file_id, file]));
   const readyPreview = effectiveReady && preview?.db_entry_count_stable ? preview : null;
   const groups = readyPreview?.review_groups ?? [];
   const groupedIds = new Set(groups.flatMap((group) => group.staged_file_ids));
   const ungrouped = staged.filter((file) => !groupedIds.has(file.file_id));
-  const busy = Boolean(loadingPreview || stagingBusy);
+
+  function inspectFile(file: DuplicateFile) {
+    const body = results.current?.closest(".atlas-analysis-body");
+    void navigation.show({ file, position: { file_id: file.file_id, scroll_top: body?.scrollTop ?? 0 } });
+  }
 
   return (
     <AnalysisDialog
       title="Cleanup review"
+      className="atlas-cleanup-review"
       drawer
-      onClose={onClose}
+      onClose={navigation.close}
       footer={
         <>
-          <span>Preview only</span>
-          <button type="button" className="atlas-analysis-primary" onClick={onPreview} disabled={!canPreview}>
+          {navigation.error && <p className="atlas-review-inspect-error" role="alert">{navigation.error}</p>}
+          <span role={navigation.opening ? "status" : undefined}>{navigation.opening ? "Opening file…" : "Preview only"}</span>
+          <button type="button" className="atlas-analysis-primary" ref={previewButton} onClick={onPreview} disabled={!canPreview}>
             {loadingPreview ? "Checking…" : "Preview cleanup"}
           </button>
         </>
       }
     >
-      <div className="atlas-analysis-results">
+      <div className="atlas-analysis-results" ref={results}>
         <dl className="atlas-analysis-facts">
           <div><dt>Staged copies</dt><dd>{formatCount(staged.length)}</dd></div>
           <div><dt>Staged file size</dt><dd>{formatBytes(totalBytes)}</dd></div>
@@ -164,7 +233,8 @@ export function ReviewDrawer({
                 <h3>Staged for cleanup</h3>
                 <ul className="atlas-review-files" aria-label="Staged for cleanup">
                   {removing.map((file) => (
-                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)} disabled={busy} onRemove={onRemove} />
+                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
+                      disabled={busy} onInspect={inspectFile} onRemove={onRemove} />
                   ))}
                 </ul>
               </div>
@@ -172,7 +242,7 @@ export function ReviewDrawer({
                 <h3>Would remain</h3>
                 <ul className="atlas-review-files" aria-label="Would remain">
                   {group.retained_files.map((file) => (
-                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)} disabled={busy} />
+                    <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)} disabled={busy} onInspect={inspectFile} />
                   ))}
                 </ul>
               </div>
@@ -181,12 +251,15 @@ export function ReviewDrawer({
         })}
         {ungrouped.length > 0 && (
           <ul className="atlas-review-files" aria-label="Staged copies">
-            {ungrouped.map((file) => (
-              <ReviewFile
-                key={file.file_id} file={file} site={siteNames.get(file.site_id)}
-                warning={blockedPaths.get(file.path)} disabled={busy} onRemove={onRemove}
-              />
-            ))}
+            {ungrouped.map((file) => {
+              const warning = blockedPaths.get(file.path);
+              return (
+                <ReviewFile
+                  key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warning ? warningLabels[warning] : undefined}
+                  disabled={busy} onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={onRemove}
+                />
+              );
+            })}
           </ul>
         )}
       </div>

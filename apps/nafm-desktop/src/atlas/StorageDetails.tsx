@@ -16,7 +16,7 @@ interface StorageDetailsProps {
   targetCompleteness: number;
   targetName: string | null;
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
-  onBackToResults?: () => void;
+  returnAction?: { label: string; run: () => void };
   onShowInContents?: () => void;
   revealing: boolean;
   children?: ReactNode;
@@ -50,7 +50,7 @@ function HealthDetail({
 
 export function StorageDetails({
   location, entries, selected, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
-  onBackToResults, onShowInContents, revealing, children,
+  returnAction, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -81,14 +81,14 @@ export function StorageDetails({
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
         </div>
       </header>
-      {(onBackToResults || onShowInContents) && (
+      {(returnAction || onShowInContents) && (
         <div className="atlas-detail-actions">
-          {onBackToResults && (
-            <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog" onClick={onBackToResults}>
+          {returnAction && (
+            <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog" onClick={returnAction.run}>
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M13 8H3m5-5L3 8l5 5" />
               </svg>
-              Back to results
+              {returnAction.label}
             </button>
           )}
           {onShowInContents && (
