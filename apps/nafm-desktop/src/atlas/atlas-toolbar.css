@@ -120,14 +120,14 @@
 }
 
 .atlas-toolbar-button svg { width: 16px; height: 16px; flex: none; color: var(--atlas-accent); }
-.atlas-toolbar-button:hover:not(:disabled),
+.atlas-toolbar-button:hover:not(:disabled, [aria-disabled="true"]),
 .atlas-toolbar-button[aria-expanded="true"] {
   border-color: #4e5377;
   background: #252742;
   color: #dedfff;
 }
 
-.atlas-toolbar-button:disabled { opacity: .43; }
+.atlas-toolbar-button:is(:disabled, [aria-disabled="true"]) { opacity: .43; }
 .atlas-toolbar-button:focus-visible { outline-offset: 1px; }
 
 .atlas-toolbar-label { display: flex; align-items: center; gap: 6px; }

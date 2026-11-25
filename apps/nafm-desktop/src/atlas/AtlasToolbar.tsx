@@ -80,14 +80,20 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
     <nav className="atlas-toolbar-navigation" aria-label="Folder path">
       {navigation.siteName && (
         <div className="atlas-toolbar-history">
-          <button className="atlas-toolbar-button" type="button" title="Previous location" aria-label="Previous location" disabled={!navigation.canBack} onClick={navigation.onBack}>
+          <button className="atlas-toolbar-button" type="button" title="Previous location" aria-label="Previous location"
+            aria-disabled={!navigation.canBack} tabIndex={navigation.canBack ? 0 : -1}
+            onClick={() => { if (navigation.canBack) navigation.onBack(); }}>
             <ToolbarIcon><path d="M15 10H5m4-4-4 4 4 4" /></ToolbarIcon>
           </button>
-          <button className="atlas-toolbar-button" type="button" title="Next location" aria-label="Next location" disabled={!navigation.canForward} onClick={navigation.onForward}>
+          <button className="atlas-toolbar-button" type="button" title="Next location" aria-label="Next location"
+            aria-disabled={!navigation.canForward} tabIndex={navigation.canForward ? 0 : -1}
+            onClick={() => { if (navigation.canForward) navigation.onForward(); }}>
             <ToolbarIcon><path d="M5 10h10m-4-4 4 4-4 4" /></ToolbarIcon>
           </button>
           {parent && (
-            <button className="atlas-toolbar-button" type="button" title={`Up to ${parent.name}`} aria-label={`Up to ${parent.name}`} disabled={!navigation.canUp} onClick={navigation.onUp}>
+            <button className="atlas-toolbar-button" type="button" title={`Up to ${parent.name}`} aria-label={`Up to ${parent.name}`}
+              aria-disabled={!navigation.canUp} tabIndex={navigation.canUp ? 0 : -1}
+              onClick={() => { if (navigation.canUp) navigation.onUp(); }}>
               <ToolbarIcon><path d="M10 15V5m-4 4 4-4 4 4" /></ToolbarIcon>
             </button>
           )}

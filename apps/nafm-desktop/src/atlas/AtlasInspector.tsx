@@ -75,7 +75,8 @@ export function AtlasInspector({
     const switchingSites = previousSite.current !== siteId;
     previousSite.current = siteId;
     previousScreen.current = screen;
-    if (previous === screen || (switchingSites && document.activeElement?.closest('[data-atlas-panel="sites"]'))) return;
+    const active = document.activeElement;
+    if (previous === screen || (switchingSites && active && active !== document.body && !drawer.current?.contains(active))) return;
     if (screen && (!previous || origin.current)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });

@@ -1150,13 +1150,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [loadFolderLocation]);
 
-  const goBack = useCallback(() => {
-    void navigateHistory("back");
-  }, [navigateHistory]);
+  const goBack = useCallback(() => navigateHistory("back"), [navigateHistory]);
 
-  const goForward = useCallback(() => {
-    void navigateHistory("forward");
-  }, [navigateHistory]);
+  const goForward = useCallback(() => navigateHistory("forward"), [navigateHistory]);
 
   const navigateBreadcrumb = useCallback((node: StorageNode) => {
     const siteId = selectedSiteRef.current;

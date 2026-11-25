@@ -92,28 +92,66 @@ test("Contents finds distant entries and returns from Details to the same filter
   await expect(first).toHaveAccessibleName(/^Studio portraits/);
 });
 
-test("Contents searches immediate entries and clears the filter on folder navigation", async ({ page }) => {
+test("Contents restores each folder's search and the selected row across history", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
+  const grid = contents.getByRole("grid");
   await searchButton(contents).click();
   const search = searchInput(contents);
   await search.fill("Surfaces.tif");
   await expect(contents.getByText(/no matches|0 matches/i).first()).toBeVisible();
-  await expect(contents.getByRole("grid")).toBeHidden();
+  await expect(grid).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Photo Library");
 
-  await search.fill("Reference images");
-  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
-  await entry(contents, /^Reference images/).click();
+  const parentQuery = "  R  ";
+  await search.fill(parentQuery);
+  await expect(grid).toHaveAttribute("aria-rowcount", "99");
+  // Name order puts the matching subfolder near the end of the virtual list.
+  await contents.getByRole("button", { name: "Sort contents", exact: true }).click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Editorial/);
+  const folder = entry(contents, /^Reference images/);
+  await expect(folder).toHaveCount(0);
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(folder).toBeInViewport({ ratio: 1 });
+  const parentScroll = await contents.evaluate((pane) => pane.scrollTop);
+  expect(parentScroll).toBeGreaterThan(0);
+
+  await folder.press("Enter");
   await expect(currentFolder(page)).toHaveText("Reference images");
-  await expect(entry(contents, /^Surfaces\.tif/)).toBeVisible();
   await expect(search).toBeHidden();
+  await expect(grid).toHaveAttribute("aria-rowcount", "2");
 
   await searchButton(contents).click();
   await search.fill("Surfaces");
-  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  const childFile = entry(contents, /^Surfaces\.tif/);
+  await childFile.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toHaveValue(parentQuery);
+  await expect(folder).toBeFocused();
+  await expect(folder).toBeInViewport({ ratio: 1 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(parentScroll, 0);
+
+  await folder.press("Alt+ArrowRight");
+  await expect(currentFolder(page)).toHaveText("Reference images");
+  await expect(search).toHaveValue("Surfaces");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+
+  await childFile.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toHaveValue(parentQuery);
   await contents.getByRole("button", { name: "Close search", exact: true }).click();
   await expect(searchButton(contents)).toBeFocused();
-  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "2");
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
+  await searchButton(contents).press("Alt+ArrowRight");
+  await expect(currentFolder(page)).toHaveText("Reference images");
+  await expect(search).toHaveValue("Surfaces");
+  await childFile.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toBeHidden();
+  await expect(grid).toHaveAttribute("aria-rowcount", "100");
 });
 
 test("a late folder search cannot replace the results of a newer query", async ({ page }) => {

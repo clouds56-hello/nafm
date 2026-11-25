@@ -24,6 +24,8 @@ interface DirectoryContentsProps {
   contentsKey: string;
   anchorIndex: number;
   returnFileId: string | null;
+  historyFocusOrigin: HTMLElement | null;
+  onHistoryFocusHandled: () => void;
   active: boolean;
   loading: boolean;
   loadingMore: boolean;
@@ -38,7 +40,7 @@ interface DirectoryContentsProps {
 
 export function DirectoryContents({
   location, page, directoryTotal, searchText, onSearchChange, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId, historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -48,7 +50,8 @@ export function DirectoryContents({
   const searchOpen = searchText !== null;
   const filtering = Boolean(searchText?.trim());
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [cursors, setCursors] = useState(() => new Map<string, string>());
+  const cursor = cursors.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; row?: string } | null>(null);
   const keyboardRow = useRef<{ key: string; index: number } | null>(null);
   const returningFile = useRef<string | null>(null);
@@ -123,6 +126,24 @@ export function DirectoryContents({
       (row ?? headingRef.current)?.focus();
     }
   }, [active, contentsKey, directoryId, error, first, listRef, loading, page, ready, scrollPane, start, end, total]);
+
+  useLayoutEffect(() => {
+    if (!historyFocusOrigin) return;
+    const focus = document.activeElement;
+    if (!active || (focus !== historyFocusOrigin && focus !== document.body && focus !== scrollPane.current)) {
+      onHistoryFocusHandled();
+      return;
+    }
+    if (loading || (total > 0 && !ready)) return;
+    const list = listRef.current;
+    const preferred = cursor && list?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(cursor)}"]`);
+    const preferredIndex = Number(preferred ? preferred.closest("[aria-rowindex]")?.getAttribute("aria-rowindex") : NaN) - 1;
+    const row = preferredIndex >= first && preferredIndex < first + viewport.capacity ? preferred
+      : list?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+    if (!row && total && !error) return;
+    (row || headingRef.current)?.focus({ preventScroll: true });
+    onHistoryFocusHandled();
+  }, [active, cursor, error, first, historyFocusOrigin, listRef, loading, onHistoryFocusHandled, page, ready, scrollPane, total, viewport.capacity]);
 
   if (!location) return null;
   const parent = location.breadcrumbs.at(-2);
@@ -250,7 +271,9 @@ export function DirectoryContents({
               const isFile = node.kind === "file";
               return (
                 <li key={node.id} style={style} role="row" aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
-                  <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => setCursor(node.id)}>
+                  <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => {
+                    setCursors((saved) => saved.get(contentsKey) === node.id ? saved : new Map(saved).set(contentsKey, node.id));
+                  }}>
                     <button
                       type="button"
                       className="atlas-directory-entry"

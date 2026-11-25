@@ -70,6 +70,53 @@ test("Find files distinguishes same names across sites and Back restores the sta
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
+test("Atlas Back restores the filtered Contents list after opening a Finder result on another site", async ({ page }) => {
+  await page.goto("/mock/");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+    .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+  const lateProof = grid.getByRole("button", { name: /^Proof 096\.jpg/ });
+  const filterText = "  pRoOf  ";
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  await filter.fill(filterText);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(lateProof).toHaveCount(0);
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(lateProof).toBeInViewport({ ratio: 0.99 });
+  const scrollPosition = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scrollPosition).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  await query(dialog).fill("trailer master");
+  await result(dialog, /Trailer master\.mov/i).filter({ hasText: mirroredTrailer }).click();
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Campaign mirror");
+  await expect(details(page)).toContainText(mirroredTrailer);
+
+  const back = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  await back.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(filter).toHaveValue(filterText);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await expect(lateProof).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollPosition, 0);
+  await expect(back).toBeFocused();
+
+  await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
+  await expect(details(page)).toContainText(mirroredTrailer);
+  await page.getByRole("tab", { name: "Contents", exact: true }).click();
+  await expect(contents).toBeVisible();
+  await expect(filter).toHaveCount(0);
+  await expect(grid.getByRole("button", { name: /^Trailer master\.mov/ })).toBeVisible();
+});
+
 test("Find files restores a late result and its scroll position while Atlas Back follows inspected files", async ({ page }) => {
   await page.goto("/mock/");
   const opener = page.getByRole("button", { name: "Find files", exact: true });

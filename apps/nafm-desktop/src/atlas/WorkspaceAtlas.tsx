@@ -35,6 +35,10 @@ interface FinderSession {
   result: Pick<IndexedFileSearchResult, "site_id" | "path"> | null;
 }
 
+function directoryScope(workspace: string | undefined, site: string | undefined, folder: string | undefined) {
+  return JSON.stringify([workspace, site, folder]);
+}
+
 function directoryKey(
   workspace: string | undefined, site: string | undefined, target: string | null | undefined, folder: string | undefined,
   sort: DirectorySort, anchor: number,
@@ -81,7 +85,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string } | null>(null);
   const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
-  const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
+  const [folderSearches, setFolderSearches] = useState(() => new Map<string, string>());
+  const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
+  const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope);
@@ -121,8 +127,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
     : undefined;
 
   const folder = location?.root;
-  const searchScope = JSON.stringify([dashboard?.workspace_name, location?.site_id, folder?.id]);
-  const searchText = folderSearch?.scope === searchScope ? folderSearch.text : null;
+  const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
+  const searchText = folderSearches.get(searchScope) ?? null;
   const searchQuery = searchText?.trim() ?? "";
   const search = useDirectorySearch({
     scope: searchScope,
@@ -135,9 +141,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
 
-  useEffect(() => {
-    if (folderSearch && folderSearch.scope !== searchScope) setFolderSearch(null);
-  }, [folderSearch, searchScope]);
+  function saveFolderSearch(scope: string, text: string | null) {
+    setFolderSearches((saved) => {
+      if ((saved.get(scope) ?? null) === text) return saved;
+      const next = new Map(saved);
+      if (text === null) next.delete(scope);
+      else next.set(scope, text);
+      return next;
+    });
+  }
   const requestId = site ? state.scanRequestBySite.get(site.id) : undefined;
   const siteRoot = state.activeTree?.root;
   const awaitingInventory = site && site.hash_status === "unscanned" && !site.latest_inventory_at
@@ -161,19 +173,22 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
-  const baseContentsKey = contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
-  const contentsKey = search.enabled ? JSON.stringify([baseContentsKey, searchQuery]) : baseContentsKey;
+  function searchContentsKey(sort: DirectorySort, query: string) {
+    return JSON.stringify([contentsKeyFor(sort, 0), query]);
+  }
+  const contentsKey = search.enabled ? searchContentsKey(state.directorySort, searchQuery)
+    : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
   function changeSearch(text: string | null) {
     const query = text?.trim();
-    if (query && query !== searchQuery) contentsScroll.current.delete(JSON.stringify([baseContentsKey, query]));
-    setFolderSearch(text === null ? null : { scope: searchScope, text });
+    if (query && query !== searchQuery) contentsScroll.current.delete(searchContentsKey(state.directorySort, query));
+    saveFolderSearch(searchScope, text);
   }
   useLayoutEffect(() => () => pendingReveal.current?.abort(), [inspectorView, siteId, selected?.id]);
   useEffect(() => {
     if (revealedRow && revealedRow.key !== contentsKey) setRevealedRow(null);
   }, [contentsKey, revealedRow]);
   function changeDirectorySort(sort: DirectorySort) {
-    contentsScroll.current.delete(contentsKeyFor(sort, 0));
+    contentsScroll.current.delete(search.enabled ? searchContentsKey(sort, searchQuery) : contentsKeyFor(sort, 0));
     return state.setDirectorySort(sort);
   }
   const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id
@@ -263,13 +278,25 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
   const goBack = useCallback(() => {
     if (currentVisit?.view === "details") openInspector({ ...currentVisit, view: "contents" });
-    else backLocation();
+    else return backLocation();
   }, [currentVisit, backLocation, openInspector]);
   const goForward = useCallback(() => {
     if (currentVisit?.view === "contents") openInspector({ ...currentVisit, view: "details" });
-    else forwardLocation();
+    else return forwardLocation();
   }, [currentVisit, forwardLocation, openInspector]);
   useEffect(() => {
+    function moveHistory(move: () => Promise<boolean> | undefined, target: EventTarget | null) {
+      const pane = contentsPane.current;
+      const result = move();
+      if (!result || !(target instanceof HTMLElement) || !pane?.contains(target)) return;
+      void result.then((moved) => {
+        const focus = document.activeElement;
+        if (moved && contentsPane.current === pane && (focus === target || focus === document.body || focus === pane)) {
+          setHistoryFocusOrigin(target);
+        }
+      });
+    }
+
     function navigate(event: KeyboardEvent) {
       if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
       if (findWorkspace && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f"
@@ -290,10 +317,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
       if (((event.altKey && event.key === "ArrowLeft") || (event.metaKey && event.key === "[")) && canGoBack) {
         event.preventDefault();
-        goBack();
+        moveHistory(goBack, event.target);
       } else if (((event.altKey && event.key === "ArrowRight") || (event.metaKey && event.key === "]")) && canGoForward) {
         event.preventDefault();
-        goForward();
+        moveHistory(goForward, event.target);
       } else if ((event.altKey || event.metaKey) && event.key === "ArrowUp" && canGoUp) {
         event.preventDefault();
         goUp();
@@ -317,7 +344,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
       );
       // A previous visit to this directory may have scrolled away from the file.
       contentsScroll.current.set(key, destination.anchor_offset);
-      setFolderSearch(null);
+      saveFolderSearch(directoryScope(dashboard?.workspace_name, destination.site_id, destination.node_id), null);
       inspectorOrigin.current = null;
       openInspector("contents");
       setRevealedRow({ key, id: file.id });
@@ -589,6 +616,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
+                      historyFocusOrigin={historyFocusOrigin}
+                      onHistoryFocusHandled={finishHistoryFocus}
                       active={inspectorView === "contents"}
                       loading={state.childrenLoading || search.loading}
                       loadingMore={search.enabled ? search.loadingMore : state.loadingMoreChildren}
