@@ -1,0 +1,72 @@
+.atlas-analysis-comparison {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.atlas-analysis-comparison[data-comparing] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.atlas-analysis-entity {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 5px;
+  padding: 11px 12px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 6px;
+  background: #181a29;
+}
+
+.atlas-analysis-entity + .atlas-analysis-entity { border-color: #4d527a; background: #20233a; }
+.atlas-analysis-entity h3 { margin: 0; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.atlas-analysis-entity > p { color: var(--atlas-accent); font-size: 11px; }
+
+.atlas-analysis-entity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  color: var(--atlas-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.atlas-analysis-entity code {
+  margin-top: 2px;
+  color: var(--atlas-ink);
+  font: 11px/1.45 var(--atlas-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.atlas-analysis-choices .atlas-analysis-location > span {
+  min-width: 0;
+  color: var(--atlas-muted);
+  overflow-wrap: anywhere;
+}
+
+.atlas-analysis-choices .atlas-analysis-row > svg,
+.atlas-analysis-reveal-button > svg { width: 15px; height: 15px; flex: none; color: var(--atlas-accent); }
+.atlas-analysis-choices .atlas-analysis-row { padding-inline: 10px; }
+.atlas-analysis-choices .atlas-analysis-row:focus-visible { outline-offset: -2px; }
+
+.atlas-analysis-reveal-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  margin-inline-start: auto;
+}
+
+.atlas-analysis-reveal-button[aria-disabled="true"] { opacity: .65; }
+.atlas-analysis-reveal-error { margin: 0; color: #f3b2ba; line-height: 1.4; overflow-wrap: anywhere; }
+
+@media (max-width: 540px) {
+  .atlas-analysis-comparison[data-comparing] { grid-template-columns: minmax(0, 1fr); }
+  .atlas-analysis-reveal-error { flex: 1 0 100%; }
+  .atlas-analysis-footer:has(.atlas-analysis-reveal-button) { flex-wrap: wrap; gap: 7px; }
+}
+
+@media (pointer: coarse) {
+  .atlas-analysis-dialog button.atlas-analysis-reveal-button { min-height: 44px; }
+}

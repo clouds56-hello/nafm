@@ -14,7 +14,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { siteCompleteness } from "../lib/health";
-import type { DirectorySort, FileContentMatch, HealthMetric, StorageNode } from "../lib/types";
+import type { DirectorySort, FileContentMatch, FolderSimilarityMatch, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -57,6 +57,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const pendingReveal = useRef<AbortController | null>(null);
   const [revealingFileId, setRevealingFileId] = useState<string | null>(null);
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string } | null>(null);
+  const [analysisFocusRevision, setAnalysisFocusRevision] = useState(0);
   const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
@@ -245,15 +246,24 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
     }
   }
 
+  function showAnalysisDetails(siteId: string) {
+    inspectorOrigin.current = null;
+    lastOpened.current = "inspector";
+    setRevealedRow(null);
+    setInspectorBySite((saved) => new Map(saved).set(siteId, "details"));
+    setInspectorOpen(true);
+    setAnalysisFocusRevision((revision) => revision + 1);
+  }
+
   async function showCopyInAtlas(match: FileContentMatch, signal: AbortSignal) {
     const error = await state.jumpToContentMatch(match, signal);
-    if (error === null) {
-      inspectorOrigin.current = null;
-      lastOpened.current = "inspector";
-      setRevealedRow(null);
-      setInspectorBySite((saved) => new Map(saved).set(match.site_id, "details"));
-      setInspectorOpen(true);
-    }
+    if (error === null) showAnalysisDetails(match.site_id);
+    return error;
+  }
+
+  async function showSimilarFolderInAtlas(match: FolderSimilarityMatch, signal: AbortSignal) {
+    const error = await state.jumpToSimilarFolder(match, signal);
+    if (error === null) showAnalysisDetails(match.folder.site_id);
     return error;
   }
 
@@ -411,7 +421,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     onOpenFolder={state.openFolderExternally}
                     entries={directoryPage?.children ?? []}
                     selected={selected}
-                    focusRevision={state.duplicateJumpRevision}
+                    focusRevision={analysisFocusRevision}
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
@@ -434,6 +444,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
                         onReview={() => state.setReviewOpen(true)}
                         onJumpDuplicate={showCopyInAtlas}
+                        onJumpFolder={showSimilarFolderInAtlas}
                       />
                     )}
                   </StorageDetails>

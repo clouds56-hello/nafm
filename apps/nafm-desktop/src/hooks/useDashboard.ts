@@ -35,6 +35,7 @@ import type {
   DuplicateFile,
   FileContentMatch,
   FolderOpenDestination,
+  FolderSimilarityMatch,
   HealthMetric,
   ScanCompletionView,
   ScanProgressView,
@@ -78,6 +79,12 @@ interface RowRange {
 }
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
+
+interface LocationLoadOptions {
+  silent?: boolean;
+  signal?: AbortSignal;
+  onError?: (message: string) => void;
+}
 
 type FileRevealDestination =
   | { kind: "node"; siteId: string; id: string; shouldApply?: () => boolean }
@@ -316,18 +323,27 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const loadFolderLocation = useCallback(async (
     entry: NavigationEntry,
     historyAction: "push" | "switch" | "back" | "forward" | "reset" | "preserve",
-    silent = false,
+    { silent = false, signal, onError }: LocationLoadOptions = {},
   ): Promise<LocationLoadResult> => {
     const workspace = workspaceNameRef.current;
     if (!workspace) return "failed";
+    if (signal?.aborted) return "superseded";
     const requestId = ++locationRequestRef.current;
     const childrenRequestId = ++childrenRequestRef.current;
     pendingRangeRef.current = null;
     setLoadingMoreChildren(false);
     const previousEntry = currentNavigationEntry();
-    const isCurrent = () => locationRequestRef.current === requestId
+    const ownsRequest = () => locationRequestRef.current === requestId
       && childrenRequestRef.current === childrenRequestId
       && workspaceNameRef.current === workspace;
+    const isCurrent = () => ownsRequest() && !signal?.aborted;
+    const finish = () => {
+      if (!silent && ownsRequest()) {
+        childrenLoadingRef.current = false;
+        setChildrenLoading(false);
+      }
+    };
+    signal?.addEventListener("abort", finish, { once: true });
     if (!silent) {
       if (historyAction !== "back" && historyAction !== "forward") {
         navigationOperationRef.current += 1;
@@ -338,7 +354,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setChildrenLoading(true);
       setChildrenError(null);
       setTreeError(null);
-      setNotice(null);
+      if (!onError) setNotice(null);
     }
 
     const read = (destination: NavigationEntry) => getStorageViewSnapshot(
@@ -414,16 +430,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       if (!isCurrent()) return "superseded";
       const message = errorMessage(locationError);
       const unavailable = isUnavailableLocationError(message);
-      if (!silent) {
+      if (onError) {
+        onError(message);
+      } else if (!silent) {
         if (!previousEntry) setTreeError(message);
         else if (!unavailable || (historyAction !== "back" && historyAction !== "forward")) setNotice(message);
       }
       return unavailable ? "unavailable" : "failed";
     } finally {
-      if (!silent && isCurrent()) {
-        childrenLoadingRef.current = false;
-        setChildrenLoading(false);
-      }
+      signal?.removeEventListener("abort", finish);
+      finish();
     }
   }, [currentNavigationEntry]);
 
@@ -447,7 +463,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const entry = preserve
       ? { ...current, target_site_id: targetSiteId }
       : siteRootEntry(siteId, targetSiteId, readSiteDirectorySort(workspaceNameRef.current, siteId));
-    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", !foreground);
+    const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground });
     return result === "loaded";
   }, [currentNavigationEntry, loadFolderLocation]);
 
@@ -1265,6 +1281,29 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     return result.error;
   }, [revealFile]);
 
+  const jumpToSimilarFolder = useCallback(async (match: FolderSimilarityMatch, signal: AbortSignal): Promise<string | null> => {
+    const workspace = workspaceNameRef.current;
+    const currentSiteId = selectedSiteRef.current;
+    const currentDashboard = dashboardRef.current;
+    if (!workspace || !currentSiteId || !currentDashboard) return "The workspace is unavailable.";
+    if (childrenLoadingRef.current || navigationInProgressRef.current) {
+      return "Wait for the current folder to finish loading, then try again.";
+    }
+    const { site_id, node_id } = match.folder;
+    const currentTarget = targetSiteRef.current;
+    const preferredTarget = currentTarget && currentTarget !== site_id ? currentTarget : currentSiteId;
+    const target = validTarget(currentDashboard.sites, site_id, preferredTarget);
+    const sort = readSiteDirectorySort(workspace, site_id);
+    let message = "The matched folder could not be opened.";
+    const result = await loadFolderLocation({
+      site_id, node_id, target_site_id: target, selected_node_id: node_id,
+      offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, sort,
+    }, "push", { signal, onError: (error) => { message = error; } });
+    if (result === "superseded") return "Folder navigation was cancelled.";
+    if (result !== "loaded") return message;
+    return null;
+  }, [loadFolderLocation]);
+
   const revealSelectedFileInContents = useCallback(async (fileId: string, shouldApply?: () => boolean) => {
     const siteId = selectedSiteRef.current;
     if (!siteId || selectedNodeRef.current?.kind !== "file" || childrenLoadingRef.current) return null;
@@ -1438,6 +1477,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     selectedNode: activeSelectedNode,
     selectNode,
     jumpToContentMatch,
+    jumpToSimilarFolder,
     revealSelectedFileInContents,
     duplicateJumpRevision,
     childrenPage,
@@ -1509,6 +1549,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     healthMetric,
     isSelectedStaged,
     jumpToContentMatch,
+    jumpToSimilarFolder,
     revealSelectedFileInContents,
     loading,
     openFolderExternally,
