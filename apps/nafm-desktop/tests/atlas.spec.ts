@@ -162,6 +162,46 @@ test.describe("touch exploration", () => {
     await expect(grid.getByRole("button", { name: /^Proof 094\.jpg/ })).toBeFocused();
   });
 
+  test("Back from a nested file arc resumes a distant Contents list with Sites open", async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 760 });
+    await page.goto("/mock/?scenario=large");
+    const preview = page.locator(".atlas-sector-preview");
+    await tapArc(page, /^Photo Library,/);
+    await preview.getByRole("button", { name: "Open folder", exact: true }).tap();
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+    const sites = page.getByRole("complementary", { name: "Sites" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+    const grid = contents.getByRole("grid");
+    await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+    await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    const last = grid.locator('[aria-rowindex="4096"]');
+    await expect(last).toBeInViewport();
+    const savedScroll = await contents.evaluate((pane) => pane.scrollTop);
+    expect(savedScroll).toBeGreaterThan(0);
+
+    await page.locator(".radial-atlas").scrollIntoViewIfNeeded();
+    await tapArc(page, /^Surfaces\.tif,/);
+    await preview.getByRole("button", { name: "View details", exact: true }).tap();
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    await expect(inspector.getByRole("heading", { name: "Surfaces.tif", exact: true })).toBeInViewport();
+    await expect(back).toBeFocused();
+    await expect(sites).toBeVisible();
+    await back.tap();
+
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(sites).toBeVisible();
+    await expect(last).toBeInViewport();
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(savedScroll);
+    const focusedRow = grid.locator(":focus[data-entry-id]");
+    await expect(focusedRow).toBeInViewport({ ratio: 0.99 });
+    const index = await focusedRow.evaluate((button) => Number(button.closest("[aria-rowindex]")?.getAttribute("aria-rowindex")));
+    await page.keyboard.press("ArrowDown");
+    await expect(grid.locator(`[aria-rowindex="${index + 1}"] [data-entry-id]`)).toBeFocused();
+  });
+
   test("opening and closing Contents leaves the Sites panel available", async ({ page }) => {
     const rail = page.getByRole("complementary", { name: "Sites" });
     const inspector = page.getByRole("complementary", { name: "Inspector" });

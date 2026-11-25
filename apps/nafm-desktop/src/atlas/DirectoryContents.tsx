@@ -25,7 +25,8 @@ interface DirectoryContentsProps {
   contentsKey: string;
   anchorIndex: number;
   reveal?: { index: number; onApplied: () => void };
-  returnFileId: string | null;
+  returnEntryId: string | null;
+  resumeVisibleRow: boolean;
   historyFocusOrigin: HTMLElement | null;
   onHistoryFocusHandled: () => void;
   active: boolean;
@@ -40,9 +41,16 @@ interface DirectoryContentsProps {
   onRetry: () => void;
 }
 
+function visibleEntry(list: HTMLUListElement | null, first: number, capacity: number, cursor?: string) {
+  const preferred = cursor && list?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(cursor)}"]`);
+  const preferredIndex = Number(preferred ? preferred.closest("[aria-rowindex]")?.getAttribute("aria-rowindex") : NaN) - 1;
+  return preferredIndex >= first && preferredIndex < first + capacity ? preferred
+    : list?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+}
+
 export function DirectoryContents({
   location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, returnFileId, historyFocusOrigin, onHistoryFocusHandled,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, returnEntryId, resumeVisibleRow, historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -56,7 +64,7 @@ export function DirectoryContents({
   const cursor = cursors.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
   const keyboardRow = useRef<{ key: string; index: number } | null>(null);
-  const returningFile = useRef<string | null>(null);
+  const returningEntry = useRef<{ id: string | null } | null>(null);
   const directoryId = location?.root.id;
   const total = page?.total_children ?? 0;
   const offset = page?.offset ?? 0;
@@ -83,21 +91,29 @@ export function DirectoryContents({
   }, [active, ready, loading, start, end, page, offset, onLoadRange]);
 
   useEffect(() => {
-    returningFile.current = active ? returnFileId : null;
-  }, [active, returnFileId, contentsKey]);
+    returningEntry.current = active && (returnEntryId || resumeVisibleRow) ? { id: returnEntryId } : null;
+  }, [active, returnEntryId, resumeVisibleRow, contentsKey]);
 
   useEffect(() => {
-    const fileId = returningFile.current;
+    const request = returningEntry.current;
     const pane = scrollPane.current;
-    if (!fileId || !pane || !ready) return;
+    if (!request || !pane || loading || (total > 0 && !ready)) return;
     const tab = document.getElementById(pane.getAttribute("aria-labelledby") ?? "");
     if (document.activeElement === pane || document.activeElement === tab) {
-      const row = listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(fileId)}"]`);
-      if (!row) return;
-      row.focus({ preventScroll: true });
+      const row = request.id
+        ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(request.id)}"]`)
+        : visibleEntry(listRef.current, first, viewport.capacity, cursor);
+      if (!row && total && !error) return;
+      (row || searchInput.current || headingRef.current)?.focus({ preventScroll: true });
+      if (row && request.id) {
+        const paneBounds = pane.getBoundingClientRect();
+        const headerBottom = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? paneBounds.top;
+        const rect = row.getBoundingClientRect();
+        if (rect.bottom <= headerBottom || rect.top >= paneBounds.bottom) row.scrollIntoView({ block: "nearest" });
+      }
     }
-    returningFile.current = null;
-  }, [active, returnFileId, ready, page, start, end, listRef, scrollPane]);
+    returningEntry.current = null;
+  }, [active, returnEntryId, resumeVisibleRow, cursor, ready, loading, total, error, page, first, start, end, viewport.capacity, listRef, scrollPane]);
 
   useLayoutEffect(() => {
     if (!active || loading) return;
@@ -143,11 +159,7 @@ export function DirectoryContents({
       return;
     }
     if (loading || (total > 0 && !ready)) return;
-    const list = listRef.current;
-    const preferred = cursor && list?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(cursor)}"]`);
-    const preferredIndex = Number(preferred ? preferred.closest("[aria-rowindex]")?.getAttribute("aria-rowindex") : NaN) - 1;
-    const row = preferredIndex >= first && preferredIndex < first + viewport.capacity ? preferred
-      : list?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);
+    const row = visibleEntry(listRef.current, first, viewport.capacity, cursor);
     if (!row && total && !error) return;
     (row || headingRef.current)?.focus({ preventScroll: true });
     onHistoryFocusHandled();

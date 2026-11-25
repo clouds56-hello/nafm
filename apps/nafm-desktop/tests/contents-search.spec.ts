@@ -167,7 +167,7 @@ test("Show in Contents can restore an excluding search and keeps the Finder jump
   await expect(currentFolder(page)).toHaveText("Studio archive");
 });
 
-test("a file arc reveals in the matching search saved in its containing folder", async ({ page }) => {
+test("a nested file arc returns to the source search or reveals in its containing search", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });
   const path = page.getByRole("navigation", { name: "Folder path" });
@@ -186,9 +186,43 @@ test("a file arc reveals in the matching search saved in its containing folder",
 
   await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Studio archive");
+  const sourceQuery = "  o  ";
+  const sourceRow = entry(contents, /^Photo Library/);
+  await searchButton(contents).press("Enter");
+  await search.fill(sourceQuery);
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Projects/);
+  await sourceRow.focus();
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const details = inspector.getByRole("heading", { name: "Trailer master.mov", exact: true });
+  const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+  const expectSourceContents = async () => {
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await expect(search).toHaveValue(sourceQuery);
+    await expect(sourceRow).toBeFocused();
+    await expect(sourceRow).toBeInViewport();
+  };
+
   await map.getByRole("button", { name: /^Trailer master\.mov,/ })
     .and(page.locator('[data-node-id*="/Brand campaign/"]')).press("Enter");
-  await page.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+  await expect(details).toBeVisible();
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await back.press("Enter");
+  await expectSourceContents();
+
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(details).toBeVisible();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expectSourceContents();
+
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(details).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expectSourceContents();
+
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(details).toBeVisible();
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
 
   await expect(currentFolder(page)).toHaveText("Brand campaign");
   await expect(search).toHaveValue("Trailer master");

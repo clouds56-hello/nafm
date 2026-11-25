@@ -11,7 +11,7 @@ interface AtlasInspectorProps {
   initialView: InspectorView;
   siteId: string;
   contentsPane: RefObject<HTMLDivElement | null>;
-  contentsFileId: string | null;
+  fileOpen: boolean;
   folderName?: string;
   detailsKey: string | null;
   origin: RefObject<SVGGElement | null>;
@@ -27,13 +27,11 @@ const tabs = [
   { view: "details", label: "Details" },
 ] as const;
 
-function focusContentsRow(pane: HTMLDivElement, fileId: string | null) {
+function focusContentsRow(pane: HTMLDivElement) {
   const bounds = pane.getBoundingClientRect();
   const top = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? bounds.top;
-  const file = fileId ? pane.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(fileId)}"]`) : null;
-  if (fileId && !file) return false;
-  let row = file;
-  if (!row && pane.scrollTop > 0) {
+  let row: HTMLButtonElement | null = null;
+  if (pane.scrollTop > 0) {
     const hit = document.elementFromPoint(bounds.left + bounds.width / 2, top + 1);
     const visible = hit?.closest('[role="row"]')?.querySelector("button");
     if (visible && pane.contains(visible)) row = visible;
@@ -47,7 +45,7 @@ function focusContentsRow(pane: HTMLDivElement, fileId: string | null) {
 }
 
 export function AtlasInspector({
-  view, initialView, siteId, contentsPane, contentsFileId, folderName, detailsKey, origin,
+  view, initialView, siteId, contentsPane, fileOpen, folderName, detailsKey, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -57,12 +55,13 @@ export function AtlasInspector({
   const detailsTab = useRef<HTMLButtonElement>(null);
   const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const backButton = useRef<HTMLButtonElement>(null);
-  const previousScreen = useRef<InspectorView | "file" | null>(null);
-  const previousSite = useRef(siteId);
+  const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null }>({
+    screen: null, siteId, file: null,
+  });
   const enterList = useRef(false);
   const detailsPane = useRef<HTMLDivElement>(null);
   const detailsScroll = useRef({ target: detailsKey, top: 0 });
-  const screen = contentsFileId !== null && view === "details" ? "file" : view;
+  const screen = fileOpen ? "file" : view;
 
   useLayoutEffect(() => {
     if (view) lastView.current = { view: screen === "file" ? "contents" : view, target: detailsKey };
@@ -71,29 +70,30 @@ export function AtlasInspector({
   }, [view, screen, detailsKey]);
 
   useLayoutEffect(() => {
-    const previous = previousScreen.current;
-    const switchingSites = previousSite.current !== siteId;
-    previousSite.current = siteId;
-    previousScreen.current = screen;
+    const previous = previousView.current;
+    const file = screen === "file" ? detailsKey : null;
+    const changedFile = file !== null && file !== previous.file;
+    previousView.current = { screen, siteId, file };
     const active = document.activeElement;
-    if (previous === screen || (switchingSites && active && active !== document.body && !drawer.current?.contains(active))) return;
-    if (screen && (!previous || origin.current)) revealInCompactAtlas(drawer.current);
+    if ((previous.screen === screen && !changedFile)
+      || (previous.siteId !== siteId && active && active !== document.body && !drawer.current?.contains(active))) return;
+    if (screen && (!previous.screen || origin.current)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
-    } else if (screen === "contents" && (previous === "file" || enterList.current)) {
-      if (!contentsPane.current || !focusContentsRow(contentsPane.current, contentsFileId)) {
+    } else if (screen === "contents" && enterList.current) {
+      if (!contentsPane.current || !focusContentsRow(contentsPane.current)) {
         contentsTab.current?.focus({ preventScroll: true });
       }
     } else if (screen) {
       (screen === "contents" ? contentsTab : detailsTab).current?.focus({ preventScroll: true });
-    } else if (previous) {
+    } else if (previous.screen) {
       if (document.activeElement === document.body) {
         restoreAtlasPanelFocus(trigger.current, origin.current);
       }
       origin.current = null;
     }
     enterList.current = false;
-  }, [screen, siteId, contentsFileId, contentsPane, origin]);
+  }, [screen, siteId, detailsKey, contentsPane, origin]);
 
   if (!view) {
     return (

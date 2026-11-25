@@ -32,6 +32,7 @@ interface ContentsVisit {
   contentsKey: string;
   fileId: string;
   revealRevision: number;
+  source: "contents" | "atlas";
 }
 
 type InspectorPane = InspectorView | ContentsVisit;
@@ -494,15 +495,21 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
 
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
-    if (node.kind === "file" && !origin) {
-      inspectorOrigin.current = null;
-      openInspector({ view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision });
-    } else if (node.kind === "file" || node.kind === "smaller_items") {
-      const view = node.kind === "file" ? "details" : "contents";
-      if (origin) inspectorOrigin.current = origin;
-      if (origin && inspectorView === view) {
+    if (node.kind !== "file" && node.kind !== "smaller_items") return;
+    const view = node.kind === "file" ? "details" : "contents";
+    if (origin) {
+      inspectorOrigin.current = origin;
+      if (inspectorView === view) {
         revealInCompactAtlas(mapRegion.current?.querySelector('[data-atlas-panel="inspector"]') ?? null);
       }
+    }
+    if (node.kind === "file" && (!origin || inspectorView === "contents" || currentVisit)) {
+      if (!origin) inspectorOrigin.current = null;
+      openInspector({
+        view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision,
+        source: origin ? "atlas" : "contents",
+      });
+    } else {
       openInspector(view);
     }
   }
@@ -660,7 +667,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                 detailsKey={selected?.id ?? folder?.id ?? null}
                 contentsPane={contentsPane}
                 siteId={site.id}
-                contentsFileId={currentVisit?.fileId ?? null}
+                fileOpen={fileOpen}
                 folderName={folder?.name}
                 view={inspectorView}
                 initialView={selected?.kind === "file" ? "details" : "contents"}
@@ -692,7 +699,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                         state.setReviewOpen(true);
                       },
                     } : undefined}
-                    onShowInContents={selected?.kind === "file" && !fileOpen
+                    onShowInContents={selected?.kind === "file" && (!fileOpen || currentVisit?.source === "atlas")
                       ? () => void showFileInContents(selected) : undefined}
                     revealing={revealingFileId === selected?.id}
                   >
@@ -738,7 +745,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       reveal={ancestorAnchor?.key === contentsKey ? ancestorAnchor : undefined}
-                      returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
+                      returnEntryId={currentVisit?.source === "contents"
+                        ? currentVisit.fileId : revealedRow?.key === contentsKey ? revealedRow.id : null}
+                      resumeVisibleRow={currentVisit?.source === "atlas"}
                       historyFocusOrigin={historyFocusOrigin}
                       onHistoryFocusHandled={finishHistoryFocus}
                       active={inspectorView === "contents"}
