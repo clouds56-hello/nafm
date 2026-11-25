@@ -268,14 +268,16 @@ export interface StorageViewSnapshot {
   tree: StorageTree;
   location: StorageLocation;
   page: StorageChildrenPage;
+  filtered_page?: StorageChildrenPage | null;
 }
 
-export interface StorageFileReveal {
-  tree: StorageTree;
-  location: StorageLocation;
-  page: StorageChildrenPage;
-  filtered_page?: StorageChildrenPage | null;
+export interface StorageFileReveal extends StorageViewSnapshot {
   selected_file: StorageNode;
+}
+
+export interface StorageDirectoryAnchor {
+  child_id: string;
+  query: string | null;
 }
 
 export interface StorageDirectoryFilter {

@@ -53,6 +53,7 @@ import type {
   StageHistoryState,
   StorageNode,
   StorageChildrenPage,
+  StorageDirectoryAnchor,
   StorageDirectoryFilter,
   StorageLocation,
   StorageTree,
@@ -116,6 +117,12 @@ interface LocationLoadOptions {
   onError?: (message: string) => void;
   action?: LocationAction;
   retrying?: boolean;
+  anchor?: DirectoryAnchorLoad;
+}
+
+interface DirectoryAnchorLoad {
+  request: StorageDirectoryAnchor;
+  onArrival: (location: StorageLocation, page: DirectoryWindow, filteredPage?: StorageChildrenPage | null) => void;
 }
 
 type FileRevealDestination =
@@ -392,7 +399,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const loadFolderLocation = useCallback(async function loadFolderLocation(
     entry: NavigationEntry,
     historyAction: "push" | "switch" | "back" | "forward" | "reset" | "preserve",
-    { silent = false, signal, onError, action, retrying = false }: LocationLoadOptions = {},
+    { silent = false, signal, onError, action, retrying = false, anchor }: LocationLoadOptions = {},
   ): Promise<LocationLoadResult> {
     const workspace = workspaceNameRef.current;
     if (!workspace) return "failed";
@@ -430,6 +437,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const read = (destination: NavigationEntry) => getStorageViewSnapshot(
       workspace, destination.site_id, destination.target_site_id, destination.node_id,
       destination.offset, 5, 12, Math.min(destination.limit, MAX_CHILDREN_BATCH), destination.sort,
+      anchor?.request,
     );
 
     try {
@@ -461,6 +469,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
 
+      anchor?.onArrival(nextLocation, page, snapshot.filtered_page);
       if (previousEntry && previousEntry.site_id !== entry.site_id) {
         lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
       }
@@ -514,7 +523,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
             sourceSwitch: action.sourceSwitch,
             message: unavailable ? "This location is no longer available in the index." : message,
             retry: unavailable ? null : action.retry ?? (async () =>
-              (await loadFolderLocation(entry, historyAction, { action, retrying: true })) === "loaded"),
+              (await loadFolderLocation(entry, historyAction, { action, retrying: true, anchor })) === "loaded"),
           });
         } else if (!previousEntry) {
           setTreeError(message);
@@ -1218,7 +1227,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
   const goForward = useCallback(() => navigateHistory("forward"), [navigateHistory]);
 
-  const navigateBreadcrumb = useCallback((node: StorageNode) => {
+  const navigateBreadcrumb = useCallback((node: StorageNode, anchor?: DirectoryAnchorLoad) => {
     const siteId = selectedSiteRef.current;
     if (!siteId || node.id === locationRef.current?.root.id) return;
     const targetSiteId = targetSiteRef.current;
@@ -1238,14 +1247,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         sort,
       },
       "push",
-      { action: { title: `Couldn’t open ${node.name}` } },
+      { action: { title: `Couldn’t open ${node.name}` }, anchor },
     );
   }, [loadFolderLocation]);
 
-  const goUp = useCallback(() => {
+  const goUp = useCallback((anchor?: DirectoryAnchorLoad) => {
     const breadcrumbs = locationRef.current?.breadcrumbs ?? [];
     const parent = breadcrumbs.at(-2);
-    if (parent) navigateBreadcrumb(parent);
+    if (parent) navigateBreadcrumb(parent, anchor);
   }, [navigateBreadcrumb]);
 
   const loadChildrenRange = useCallback(async (start: number, end: number) => {

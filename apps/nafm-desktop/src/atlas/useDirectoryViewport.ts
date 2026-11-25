@@ -7,13 +7,14 @@ const OVERSCAN = 4;
 interface ViewportOptions {
   contentsKey: string;
   anchorIndex: number;
+  reveal?: { index: number; onApplied: () => void };
   total: number;
   active: boolean;
   scrollPane: RefObject<HTMLDivElement | null>;
   scrollPositions: Map<string, number | "end">;
 }
 
-export function useDirectoryViewport({ contentsKey, anchorIndex, total, active, scrollPane, scrollPositions }: ViewportOptions) {
+export function useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, active, scrollPane, scrollPositions }: ViewportOptions) {
   const listRef = useRef<HTMLUListElement>(null);
   const [geometry, setGeometry] = useState({ key: "", first: 0, capacity: 8, rowHeight: 38, shift: 0 });
   const scale = useRef(1);
@@ -26,6 +27,7 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, total, active, 
     let rowHeight = 0;
     let capacity = 0;
     let physicalRange = 0;
+    let pendingReveal = reveal;
 
     const readPosition = () => {
       if (!rowHeight || !pane.clientHeight) return;
@@ -51,16 +53,25 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, total, active, 
       const oldHeight = rowHeight;
       const oldScale = scale.current;
       rowHeight = Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height"));
-      capacity = Math.max(1, Math.ceil((pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight));
+      const visibleRows = (pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight;
+      capacity = Math.max(1, Math.ceil(visibleRows));
       const oldRange = physicalRange;
       physicalRange = Math.max(0, pane.scrollHeight - pane.clientHeight);
       const excess = Math.max(0, total * rowHeight - MAX_TRACK_HEIGHT);
       scale.current = physicalRange ? 1 + excess / physicalRange : 1;
-      const position = scrollPositions.get(contentsKey) ?? anchorIndex;
-      if (oldHeight !== rowHeight || oldScale !== scale.current || (position === "end" && physicalRange !== oldRange)) {
+      let position = scrollPositions.get(contentsKey) ?? anchorIndex;
+      if (pendingReveal) {
+        const savedTop = position === "end" ? physicalRange * scale.current / rowHeight : position;
+        if (pendingReveal.index < savedTop || pendingReveal.index + 1 > savedTop + visibleRows) {
+          position = pendingReveal.index;
+        }
+      }
+      if (pendingReveal || oldHeight !== rowHeight || oldScale !== scale.current || (position === "end" && physicalRange !== oldRange)) {
         pane.scrollTop = position === "end" ? physicalRange : position * rowHeight / scale.current;
       }
       readPosition();
+      pendingReveal?.onApplied();
+      pendingReveal = undefined;
     };
 
     measure();
@@ -72,7 +83,7 @@ export function useDirectoryViewport({ contentsKey, anchorIndex, total, active, 
       resize.disconnect();
       pane.removeEventListener("scroll", readPosition);
     };
-  }, [active, contentsKey, anchorIndex, scrollPane, scrollPositions, total]);
+  }, [active, contentsKey, anchorIndex, reveal, scrollPane, scrollPositions, total]);
 
   const position = scrollPositions.get(contentsKey) ?? anchorIndex;
   const savedRow = position === "end" ? Math.max(0, total - geometry.capacity) : Math.floor(position);

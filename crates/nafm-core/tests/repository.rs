@@ -9,7 +9,7 @@ use nafm_core::{
   AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, DirectorySortField,
   FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent,
   SiteFolderKind, SiteHashStatus, SortDirection, StageHistoryDirection, StageHistoryRequest, StageVerificationBlocker,
-  StageWarningReason, StorageDirectoryFilter, StorageNodeKind,
+  StageWarningReason, StorageDirectoryAnchor, StorageDirectoryFilter, StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -2638,6 +2638,84 @@ async fn storage_view_snapshot_matches_deep_views_and_clamps_the_page_inside_the
   assert_eq!(minimum.page.limit, 1);
   assert_eq!(minimum.page.offset, 3);
   assert_eq!(minimum.page.children.len(), 1);
+}
+
+#[tokio::test]
+async fn storage_view_snapshot_anchors_a_child_in_sorted_and_filtered_pages() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("anchor-media");
+  let folder = media.join("zeta-shot");
+  fs::create_dir(&folder).unwrap();
+  fs::write(folder.join("nested-shot.bin"), b"nested").unwrap();
+  for name in [
+    "alpha.bin",
+    "beta-shot.bin",
+    "camera-shot.bin",
+    "delta-shot.bin",
+    "epsilon.bin",
+    "zz.bin",
+  ] {
+    fs::write(media.join(name), b"content").unwrap();
+  }
+  fixture.create_site("anchor-source").await;
+  fixture
+    .add_site_folder("anchor-source", &media, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_site("anchor-source").await.unwrap();
+
+  let tree = fixture.repo.storage_tree("anchor-source", 4, 20).await.unwrap();
+  let parent = &tree.root.children[0];
+  let child = child_named(parent, "zeta-shot");
+  let nested = child_named(child, "nested-shot.bin");
+  let sort = DirectorySort {
+    field: DirectorySortField::Name,
+    direction: SortDirection::Asc,
+  };
+  let mut anchor = StorageDirectoryAnchor {
+    child_id: child.id.clone(),
+    query: Some("  ShOt  ".into()),
+  };
+  let snapshot = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("anchor-source", None, &parent.id, 0, 1, 2, 2, sort, Some(&anchor))
+    .await
+    .unwrap();
+
+  assert_eq!(snapshot.location.root.id, parent.id);
+  assert_eq!(
+    (snapshot.page.offset, snapshot.page.limit, snapshot.page.total_children),
+    (4, 2, 7)
+  );
+  assert_eq!(snapshot.page.children[0].name, "epsilon.bin");
+  assert_eq!(snapshot.page.children[1].id, child.id);
+  let filtered = snapshot.filtered_page.unwrap();
+  assert_eq!(filtered.parent.id, parent.id);
+  assert_eq!((filtered.offset, filtered.limit, filtered.total_children), (2, 2, 4));
+  assert_eq!(filtered.children[0].name, "delta-shot.bin");
+  assert_eq!(filtered.children[1].id, child.id);
+
+  anchor.query = Some("beta".into());
+  let no_match = fixture
+    .repo
+    .storage_view_snapshot_with_anchor("anchor-source", None, &parent.id, 0, 1, 2, 2, sort, Some(&anchor))
+    .await
+    .unwrap();
+  assert_eq!(no_match.page.offset, 4);
+  assert_eq!(no_match.page.children[1].id, child.id);
+  assert!(no_match.filtered_page.is_none());
+
+  anchor.query = Some("shot".into());
+  for child_id in [nested.id.as_str(), "missing-child"] {
+    anchor.child_id = child_id.into();
+    let fallback = fixture
+      .repo
+      .storage_view_snapshot_with_anchor("anchor-source", None, &parent.id, 1, 1, 2, 2, sort, Some(&anchor))
+      .await
+      .unwrap();
+    assert_eq!(fallback.page.offset, 1);
+    assert_eq!(fallback.page.children[0].name, "beta-shot.bin");
+    assert!(fallback.filtered_page.is_none());
+  }
 }
 
 #[tokio::test]

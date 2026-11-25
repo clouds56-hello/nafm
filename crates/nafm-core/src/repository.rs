@@ -21,8 +21,8 @@ use crate::model::{
   SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun,
   StageHistoryDirection, StageHistoryReport, StageHistoryRequest, StageHistoryState, StageRemoveReport,
   StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
-  StorageViewSnapshot,
+  StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
+  StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -1057,10 +1057,39 @@ impl Repository {
     page_limit: u64,
     sort: DirectorySort,
   ) -> Result<StorageViewSnapshot> {
+    self
+      .storage_view_snapshot_with_anchor(
+        site_selector,
+        target_site_selector,
+        node_id,
+        offset,
+        max_depth,
+        max_children,
+        page_limit,
+        sort,
+        None,
+      )
+      .await
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_view_snapshot_with_anchor(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    offset: u64,
+    max_depth: u32,
+    max_children: u32,
+    page_limit: u64,
+    sort: DirectorySort,
+    anchor: Option<&StorageDirectoryAnchor>,
+  ) -> Result<StorageViewSnapshot> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
+    let anchor = anchor.cloned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
@@ -1081,6 +1110,7 @@ impl Repository {
             page_limit,
             sort,
           },
+          anchor.as_ref(),
         )
       })
     })
@@ -4566,6 +4596,7 @@ fn storage_view_snapshot(
   coverage_target: Option<Site>,
   node_id: &str,
   parameters: StorageViewParameters,
+  anchor: Option<&StorageDirectoryAnchor>,
 ) -> Result<StorageViewSnapshot> {
   let StorageViewParameters {
     offset,
@@ -4592,22 +4623,27 @@ fn storage_view_snapshot(
     .collect();
   let location_root = finish_storage_node((*selected).clone(), 0, max_depth, max_children);
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
-  let child_builders = ordered_directory_entries(selected, sort, None);
-  let total_children = child_builders.len() as u64;
-  let page_offset = if total_children == 0 {
-    0
-  } else if offset >= total_children {
-    (total_children - 1) / page_limit * page_limit
-  } else {
-    offset
+  let entries = ordered_directory_entries(selected, sort, None);
+  let total_children = entries.len() as u64;
+  let anchor_index = anchor.and_then(|anchor| directory_entry_index(&entries, &anchor.child_id));
+  let page_offset = match anchor_index {
+    Some(index) => directory_page_start(index as u64, page_limit),
+    None if total_children == 0 => 0,
+    None if offset >= total_children => directory_page_start(total_children - 1, page_limit),
+    None => offset,
   };
-  let page_children = child_builders
-    .into_iter()
-    .skip(usize::try_from(page_offset).unwrap_or(usize::MAX))
-    .take(page_limit as usize)
-    .map(storage_node_without_children)
-    .collect();
-  let page_parent = storage_node_without_children(selected);
+  let page = directory_page(
+    site.clone(),
+    coverage_target.clone(),
+    storage_node_without_children(selected),
+    &entries,
+    page_offset,
+    page_limit,
+  );
+  let filtered_page = anchor
+    .and_then(|anchor| anchor.query.as_deref())
+    .zip(anchor_index)
+    .and_then(|(query, index)| anchored_filtered_directory_page(&page, &entries, index, query));
 
   Ok(StorageViewSnapshot {
     tree: StorageTree {
@@ -4618,22 +4654,15 @@ fn storage_view_snapshot(
       root: finish_storage_node(root, 0, max_depth, max_children),
     },
     location: StorageLocation {
-      site: site.clone(),
-      coverage_target: coverage_target.clone(),
+      site,
+      coverage_target,
       max_depth,
       max_children,
       breadcrumbs,
       root: location_root,
     },
-    page: StorageChildrenPage {
-      site,
-      coverage_target,
-      parent: page_parent,
-      children: page_children,
-      total_children,
-      offset: page_offset,
-      limit: page_limit,
-    },
+    page,
+    filtered_page,
   })
 }
 
@@ -4663,39 +4692,19 @@ fn storage_node_reveal(
     .expect("a selected storage file should have a parent");
 
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
-  let page_for = |entries: &[&StorageNodeBuilder]| {
-    let index = entries.iter().position(|child| child.id == selected.id)?;
-    let offset = index as u64 / page_limit * page_limit;
-    Some(StorageChildrenPage {
-      site: site.clone(),
-      coverage_target: coverage_target.clone(),
-      parent: storage_node_without_children(parent),
-      children: entries
-        .iter()
-        .copied()
-        .skip(offset as usize)
-        .take(page_limit as usize)
-        .map(storage_node_without_children)
-        .collect(),
-      total_children: entries.len() as u64,
-      offset,
-      limit: page_limit,
-    })
-  };
-  let child_builders = ordered_directory_entries(parent, sort, None);
-  let page = page_for(&child_builders).ok_or_else(missing)?;
-  // Filter a subsequence of the existing order so both pages use the same tie breakers.
+  let entries = ordered_directory_entries(parent, sort, None);
+  let entry_index = directory_entry_index(&entries, &selected.id).ok_or_else(missing)?;
+  let page = directory_page(
+    site.clone(),
+    coverage_target.clone(),
+    storage_node_without_children(parent),
+    &entries,
+    directory_page_start(entry_index as u64, page_limit),
+    page_limit,
+  );
   let filtered_page = filter
     .filter(|filter| filter.folder_id == parent.id)
-    .and_then(|filter| normalize_directory_query(&filter.query))
-    .filter(|query| directory_entry_matches(selected, query))
-    .and_then(|query| {
-      let matched = child_builders
-        .into_iter()
-        .filter(|node| directory_entry_matches(node, &query))
-        .collect::<Vec<_>>();
-      page_for(&matched)
-    });
+    .and_then(|filter| anchored_filtered_directory_page(&page, &entries, entry_index, &filter.query));
 
   Ok(StorageFileReveal {
     tree: StorageTree {
@@ -4834,24 +4843,79 @@ fn storage_children_page(
 
   let parent_builder =
     find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
-  let child_builders = ordered_directory_entries(parent_builder, sort, query);
-  let total_children = child_builders.len() as u64;
-  let children = child_builders
-    .into_iter()
+  let entries = ordered_directory_entries(parent_builder, sort, query);
+  Ok(directory_page(
+    site,
+    coverage_target,
+    storage_node_without_children(parent_builder),
+    &entries,
+    offset,
+    limit,
+  ))
+}
+
+fn directory_page(
+  site: Site,
+  coverage_target: Option<Site>,
+  parent: StorageNode,
+  entries: &[&StorageNodeBuilder],
+  offset: u64,
+  limit: u64,
+) -> StorageChildrenPage {
+  let children = entries
+    .iter()
+    .copied()
     .skip(usize::try_from(offset).unwrap_or(usize::MAX))
     .take(limit as usize)
     .map(storage_node_without_children)
     .collect();
 
-  Ok(StorageChildrenPage {
+  StorageChildrenPage {
     site,
     coverage_target,
-    parent: storage_node_without_children(parent_builder),
+    parent,
     children,
-    total_children,
+    total_children: entries.len() as u64,
     offset,
     limit,
-  })
+  }
+}
+
+fn directory_entry_index(entries: &[&StorageNodeBuilder], id: &str) -> Option<usize> {
+  entries.iter().position(|entry| entry.id == id)
+}
+
+fn directory_page_start(rank: u64, limit: u64) -> u64 {
+  rank / limit * limit
+}
+
+fn anchored_filtered_directory_page(
+  page: &StorageChildrenPage,
+  entries: &[&StorageNodeBuilder],
+  anchor_index: usize,
+  query: &str,
+) -> Option<StorageChildrenPage> {
+  let query = normalize_directory_query(query)?;
+  let anchor = entries[anchor_index];
+  if !directory_entry_matches(anchor, &query) {
+    return None;
+  }
+
+  // Filtering the existing order preserves its tie breakers.
+  let matched = entries
+    .iter()
+    .copied()
+    .filter(|node| directory_entry_matches(node, &query))
+    .collect::<Vec<_>>();
+  let index = directory_entry_index(&matched, &anchor.id)?;
+  Some(directory_page(
+    page.site.clone(),
+    page.coverage_target.clone(),
+    page.parent.clone(),
+    &matched,
+    directory_page_start(index as u64, page.limit),
+    page.limit,
+  ))
 }
 
 fn parse_smaller_items_node_id(node_id: &str) -> Option<(usize, &str)> {

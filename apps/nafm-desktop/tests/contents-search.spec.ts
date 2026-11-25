@@ -21,15 +21,24 @@ function searchInput(contents: Locator) {
     .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
 }
 
-async function openPhotoLibrary(page: Page) {
-  await page.goto("/mock/");
+async function openPhotoLibrary(page: Page, scenario: "populated" | "large" = "populated") {
+  await page.goto(scenario === "large" ? "/mock/?scenario=large" : "/mock/");
   await page.getByRole("region", { name: "Circular storage map" })
     .getByRole("button", { name: /^Photo Library,/ }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Photo Library");
   await page.getByRole("button", { name: "Contents & details" }).click();
   const contents = page.getByRole("tabpanel", { name: "Contents" });
-  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", "100");
+  await expect(contents.getByRole("grid")).toHaveAttribute("aria-rowcount", scenario === "large" ? "4096" : "100");
   return contents;
+}
+
+async function sortByName(page: Page, contents: Locator, direction: "Ascending" | "Descending") {
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  await sort.click();
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: direction, exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(sort).toHaveAttribute("title", `Name, ${direction.toLowerCase()}`);
 }
 
 async function showFoundProofInContents(page: Page) {
@@ -247,6 +256,66 @@ test("Contents restores each folder's search and the selected row across history
   await expect(currentFolder(page)).toHaveText("Photo Library");
   await expect(search).toBeHidden();
   await expect(grid).toHaveAttribute("aria-rowcount", "100");
+});
+
+test("Alt+Up returns to the departed folder in a large parent after changing sort", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("region", { name: "Circular storage map" })
+    .getByRole("button", { name: /^Reference images,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Reference images");
+  await page.getByRole("button", { name: "Contents & details" }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents" });
+  await sortByName(page, contents, "Ascending");
+  const childFile = firstEntry(contents);
+  await expect(childFile).toHaveAccessibleName(/^Brand guidelines\.pdf/);
+
+  await childFile.press("Alt+ArrowUp");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  const departed = entry(contents, /^Reference images/);
+  await expect(departed).toBeFocused();
+  await expect(departed).toBeInViewport({ ratio: 0.99 });
+  await expect(grid.locator('[aria-rowindex="2763"]')).toContainText("Reference images");
+});
+
+test("Contents Up preserves the parent's search and seeks the folder in the new sort order", async ({ page }) => {
+  const contents = await openPhotoLibrary(page, "large");
+  const grid = contents.getByRole("grid");
+  const search = searchInput(contents);
+  const departed = entry(contents, /^Reference images/);
+  const query = "  R  ";
+  await sortByName(page, contents, "Ascending");
+  await searchButton(contents).press("Enter");
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "2097");
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Editorial/);
+
+  const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (1430 - 4) * height);
+  await expect(departed).toBeInViewport({ ratio: 0.99 });
+  const parentScroll = await contents.evaluate((pane) => pane.scrollTop);
+  await departed.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Reference images");
+  await expect(search).toBeHidden();
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Brand guidelines\.pdf/);
+  await firstEntry(contents).press("ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(departed).toBeFocused();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(parentScroll, 0);
+
+  await departed.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Reference images");
+  await sortByName(page, contents, "Descending");
+  await expect(firstEntry(contents)).toHaveAccessibleName(/^Surfaces\.tif/);
+  await firstEntry(contents).press("ArrowLeft");
+
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toHaveValue(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "2097");
+  await expect(departed).toBeFocused();
+  await expect(departed).toBeInViewport({ ratio: 0.99 });
+  await expect(grid.locator('[aria-rowindex="668"]')).toContainText("Reference images");
 });
 
 test("a late folder search cannot replace the results of a newer query", async ({ page }) => {

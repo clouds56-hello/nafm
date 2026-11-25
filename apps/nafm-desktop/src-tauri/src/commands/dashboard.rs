@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use nafm_core::{
   DirectorySort, FileContentMatchesPage, IndexedFileSearchPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus,
-  StageCommitDryRun, StorageChildrenPage, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode,
-  StorageTree, StorageViewSnapshot,
+  StageCommitDryRun, StorageChildrenPage, StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal,
+  StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 };
 use serde::Serialize;
 use tauri::State;
@@ -196,15 +196,23 @@ pub struct StorageViewSnapshotResponse {
   tree: StorageTreeResponse,
   location: StorageLocationResponse,
   page: StorageChildrenPage,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  filtered_page: Option<StorageChildrenPage>,
 }
 
 impl From<StorageViewSnapshot> for StorageViewSnapshotResponse {
   fn from(snapshot: StorageViewSnapshot) -> Self {
-    let StorageViewSnapshot { tree, location, page } = snapshot;
+    let StorageViewSnapshot {
+      tree,
+      location,
+      page,
+      filtered_page,
+    } = snapshot;
     Self {
       tree: StorageTreeResponse::from(tree),
       location: StorageLocationResponse::from(location),
       page,
+      filtered_page,
     }
   }
 }
@@ -339,11 +347,12 @@ pub async fn get_storage_view_snapshot(
   max_children: u32,
   limit: u64,
   sort: Option<DirectorySort>,
+  anchor: Option<StorageDirectoryAnchor>,
 ) -> Result<StorageViewSnapshotResponse, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .storage_view_snapshot_sorted(
+    .storage_view_snapshot_with_anchor(
       &site_id,
       target_site_id.as_deref(),
       &node_id,
@@ -352,6 +361,7 @@ pub async fn get_storage_view_snapshot(
       max_children,
       limit,
       sort.unwrap_or_default(),
+      anchor.as_ref(),
     )
     .await
     .map(StorageViewSnapshotResponse::from)
@@ -660,6 +670,7 @@ mod tests {
       tree: reveal.tree.clone(),
       location: reveal.location.clone(),
       page: reveal.page.clone(),
+      filtered_page: None,
     }))
     .unwrap();
     assert_eq!(snapshot_json["tree"]["site_id"], "source-site");
@@ -668,6 +679,19 @@ mod tests {
     assert!(snapshot_json["location"].get("max_depth").is_none());
     assert_eq!(snapshot_json["page"]["children"][0]["id"], "selected-file");
     assert_eq!(snapshot_json["page"]["children"][0]["modified_unix_millis"], 1000);
+    assert!(snapshot_json.get("filtered_page").is_none());
+
+    let filtered_snapshot_json = serde_json::to_value(StorageViewSnapshotResponse::from(StorageViewSnapshot {
+      tree: reveal.tree.clone(),
+      location: reveal.location.clone(),
+      page: reveal.page.clone(),
+      filtered_page: Some(reveal.page.clone()),
+    }))
+    .unwrap();
+    assert_eq!(
+      filtered_snapshot_json["filtered_page"]["children"][0]["id"],
+      "selected-file"
+    );
 
     let mut filtered_reveal = reveal.clone();
     filtered_reveal.filtered_page = Some(reveal.page.clone());

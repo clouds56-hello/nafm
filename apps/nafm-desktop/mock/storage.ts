@@ -1,7 +1,7 @@
 import type {
   CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
-  SiteKind, SiteOverview, StageAddReport, StageHistoryState, StageRemoveReport, StageWarning, StorageChildrenPage, StorageDirectoryFilter,
-  StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
+  SiteKind, SiteOverview, StageAddReport, StageHistoryState, StageRemoveReport, StageWarning, StorageChildrenPage,
+  StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
 import { DEFAULT_DIRECTORY_SORT } from "../src/lib/types";
 import { buildFolder, INVENTORY_DATE } from "./fixtures";
@@ -81,8 +81,12 @@ function directorySort(value: unknown): DirectorySort {
   return { field, direction };
 }
 
+function matchesDirectoryQuery(node: StorageNode, query: string) {
+  return node.name.toLowerCase().includes(query);
+}
+
 function orderedChildren(node: StorageNode, sort = DEFAULT_DIRECTORY_SORT, query = "") {
-  const entries = query ? node.children.filter((child) => child.name.toLowerCase().includes(query)) : [...node.children];
+  const entries = query ? node.children.filter((child) => matchesDirectoryQuery(child, query)) : [...node.children];
   return entries.sort((a, b) => {
     let order: number;
     if (sort.field === "date") {
@@ -238,8 +242,29 @@ function projectChildrenPage(
   };
 }
 
-function makeSnapshot(model: ReturnType<typeof projectSite>, args: CommandArgs): StorageViewSnapshot {
-  return { tree: makeTree(model, args), location: makeLocation(model, args), page: makeChildren(model, args) };
+function makeSnapshot(
+  model: ReturnType<typeof projectSite>,
+  args: CommandArgs,
+  anchor?: StorageDirectoryAnchor,
+): StorageViewSnapshot {
+  const { node } = nodePath(model.root, args);
+  const { offset, limit } = paging(args);
+  const children = orderedChildren(node, directorySort(args.sort));
+  const childIndex = anchor ? children.findIndex((child) => child.id === anchor.child_id) : -1;
+  const start = childIndex >= 0 ? Math.floor(childIndex / limit) * limit : pageOffset(children.length, offset, limit);
+  const snapshot = {
+    tree: makeTree(model, args), location: makeLocation(model, args),
+    page: projectChildrenPage(model, node, children, start, limit),
+  };
+
+  const query = anchor?.query?.trim().toLowerCase();
+  if (!query || childIndex < 0 || !matchesDirectoryQuery(children[childIndex], query)) return snapshot;
+  const matches = children.filter((child) => matchesDirectoryQuery(child, query));
+  const filteredIndex = matches.indexOf(children[childIndex]);
+  return {
+    ...snapshot,
+    filtered_page: projectChildrenPage(model, node, matches, Math.floor(filteredIndex / limit) * limit, limit),
+  };
 }
 
 function makeReveal(
@@ -252,21 +277,10 @@ function makeReveal(
   const parent = path?.at(-2);
   const node = path?.at(-1);
   if (!parent || node?.kind !== "file") throw new Error("The file is no longer available at this source.");
-  const { limit } = paging({ ...args, offset: 0 });
-  const sort = directorySort(args.sort);
-  const index = orderedChildren(parent, sort).findIndex((child) => child.id === id);
-  const reveal = {
-    ...makeSnapshot(model, { ...args, nodeId: parent.id, offset: Math.floor(index / limit) * limit }),
-    selected_file: model.project(node, []),
-  };
-  const query = filter?.query.trim().toLowerCase();
-  if (!query || filter?.folder_id !== parent.id) return reveal;
-  const matches = orderedChildren(parent, sort, query);
-  const filteredIndex = matches.findIndex((child) => child.id === id);
-  if (filteredIndex < 0) return reveal;
+  const query = filter?.folder_id === parent.id ? filter.query : null;
   return {
-    ...reveal,
-    filtered_page: projectChildrenPage(model, parent, matches, Math.floor(filteredIndex / limit) * limit, limit),
+    ...makeSnapshot(model, { ...args, nodeId: parent.id, offset: 0 }, { child_id: id, query }),
+    selected_file: model.project(node, []),
   };
 }
 
@@ -305,7 +319,12 @@ export function createStorageApi(current: () => PreviewWorkspace) {
 
   function snapshot(args: CommandArgs) {
     checkWorkspace(current(), args.expectedWorkspace);
-    return makeSnapshot(model(args), args);
+    if (args.anchor == null) return makeSnapshot(model(args), args);
+    const { child_id, query } = record(args.anchor);
+    if (typeof child_id !== "string" || (query != null && typeof query !== "string")) {
+      throw new Error("Invalid directory anchor.");
+    }
+    return makeSnapshot(model(args), args, { child_id, query: query ?? null });
   }
 
   function children(args: CommandArgs) {

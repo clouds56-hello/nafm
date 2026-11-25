@@ -24,6 +24,7 @@ interface DirectoryContentsProps {
   scrollPositions: Map<string, number | "end">;
   contentsKey: string;
   anchorIndex: number;
+  reveal?: { index: number; onApplied: () => void };
   returnFileId: string | null;
   historyFocusOrigin: HTMLElement | null;
   onHistoryFocusHandled: () => void;
@@ -41,7 +42,7 @@ interface DirectoryContentsProps {
 
 export function DirectoryContents({
   location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, returnFileId, historyFocusOrigin, onHistoryFocusHandled,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, returnFileId, historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -53,13 +54,13 @@ export function DirectoryContents({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [cursors, setCursors] = useState(() => new Map<string, string>());
   const cursor = cursors.get(contentsKey);
-  const keyboardFolder = useRef<{ folder: string; row?: string } | null>(null);
+  const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
   const keyboardRow = useRef<{ key: string; index: number } | null>(null);
   const returningFile = useRef<string | null>(null);
   const directoryId = location?.root.id;
   const total = page?.total_children ?? 0;
   const offset = page?.offset ?? 0;
-  const viewport = useDirectoryViewport({ contentsKey, anchorIndex, total, active, scrollPane, scrollPositions });
+  const viewport = useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, active, scrollPane, scrollPositions });
   const { listRef, first, start, end, ready } = viewport;
   const rowPreview = useDirectoryPreview({
     root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
@@ -113,6 +114,11 @@ export function DirectoryContents({
       keyboardFolder.current = null;
       return;
     }
+    if (destination && document.activeElement !== document.body && document.activeElement !== destination.origin
+      && document.activeElement !== listRef.current) {
+      keyboardFolder.current = null;
+      return;
+    }
     if (pending && (pending.key !== contentsKey || error || (total > 0 && document.activeElement !== listRef.current))) {
       keyboardRow.current = null;
       return;
@@ -159,7 +165,8 @@ export function DirectoryContents({
     ?? visible.find((row) => row.index >= first && row.node)?.node?.id ?? loaded[0]?.id;
 
   function activate(node: StorageNode, keyboard: boolean) {
-    keyboardFolder.current = keyboard && node.kind !== "file" && node.kind !== "smaller_items" ? { folder: node.id } : null;
+    keyboardFolder.current = keyboard && node.kind !== "file" && node.kind !== "smaller_items"
+      ? { folder: node.id, origin: document.activeElement } : null;
     onSelect(node);
   }
 
@@ -170,7 +177,7 @@ export function DirectoryContents({
 
   function goUp(keyboard: boolean) {
     if (!parent || loading) return;
-    keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId } : null;
+    keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId, origin: document.activeElement } : null;
     onGoUp();
   }
 
@@ -216,6 +223,12 @@ export function DirectoryContents({
 
   return (
     <section className="atlas-directory" aria-labelledby={labelId} onKeyDown={(event) => {
+      if (!event.defaultPrevented && parent && event.key === "ArrowUp" && (event.altKey || event.metaKey)
+        && event.target instanceof Element && !event.target.closest("input, textarea, select, dialog, [contenteditable]")) {
+        event.preventDefault();
+        goUp(true);
+        return;
+      }
       if (!searchOpen || event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();

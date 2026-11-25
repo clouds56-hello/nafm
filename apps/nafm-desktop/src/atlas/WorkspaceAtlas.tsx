@@ -118,6 +118,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
   const [folderSearches, setFolderSearches] = useState(() => new Map<string, string>());
   const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(null);
+  const [parentAnchor, setParentAnchor] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
@@ -354,6 +355,29 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   );
 
   const { goUp, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
+  function goUpInContents() {
+    const parent = location?.breadcrumbs.at(-2);
+    if (!location || !parent) return;
+    const child = location.root.id;
+    const scope = directoryScope(dashboard?.workspace_name, location.site_id, parent.id);
+    const query = folderSearches.get(scope)?.trim() || null;
+    goUp({
+      request: { child_id: child, query },
+      onArrival: (destination, page, filteredPage) => {
+        // A parent search that excludes this folder remains active at its saved position.
+        const visiblePage = query ? filteredPage : page;
+        const index = visiblePage?.children.findIndex((entry) => entry.id === child) ?? -1;
+        if (!visiblePage || index < 0) return;
+        const targetId = destination.coverage_target?.id;
+        if (query) search.prime({ scope, targetId, query, sort: page.sort }, visiblePage);
+        const key = directoryKey(
+          dashboard?.workspace_name, destination.site_id, targetId, destination.root.id,
+          page.sort, query ? 0 : page.anchor_offset, query ?? undefined,
+        );
+        setParentAnchor({ key, index: visiblePage.offset + index, onApplied: () => setParentAnchor(null) });
+      },
+    });
+  }
   const fileOpen = currentVisit?.view === "details";
   const canGoBack = fileOpen || state.canGoBack;
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
@@ -689,7 +713,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                 contents={(
                   <>
                     <DirectoryContents
-                      onGoUp={goUp}
+                      onGoUp={goUpInContents}
                       onOpenFolder={state.openFolderExternally}
                       location={location}
                       page={directoryPage}
@@ -706,6 +730,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       scrollPositions={contentsScroll.current}
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
+                      reveal={parentAnchor?.key === contentsKey ? parentAnchor : undefined}
                       returnFileId={currentVisit?.fileId ?? (revealedRow?.key === contentsKey ? revealedRow.id : null)}
                       historyFocusOrigin={historyFocusOrigin}
                       onHistoryFocusHandled={finishHistoryFocus}

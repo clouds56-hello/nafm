@@ -31,6 +31,7 @@ import type {
   StageHistoryRequest,
   StageRemoveReport,
   StorageChildrenPage,
+  StorageDirectoryAnchor,
   StorageDirectoryFilter,
   StorageFileReveal,
   StorageLocation,
@@ -255,6 +256,7 @@ export function getStorageViewSnapshot(
   maxChildren = 12,
   limit = 6,
   sort?: DirectorySort,
+  anchor?: StorageDirectoryAnchor,
 ): Promise<StorageViewSnapshot> {
   return invoke<StorageViewSnapshot>("get_storage_view_snapshot", {
     expectedWorkspace,
@@ -266,6 +268,7 @@ export function getStorageViewSnapshot(
     maxChildren,
     limit,
     sort,
+    anchor,
   });
 }
 

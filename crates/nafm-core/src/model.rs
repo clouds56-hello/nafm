@@ -217,6 +217,14 @@ pub struct StorageViewSnapshot {
   pub tree: StorageTree,
   pub location: StorageLocation,
   pub page: StorageChildrenPage,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub filtered_page: Option<StorageChildrenPage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StorageDirectoryAnchor {
+  pub child_id: String,
+  pub query: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
