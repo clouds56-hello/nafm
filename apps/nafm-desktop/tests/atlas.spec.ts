@@ -838,6 +838,9 @@ test("source history restores the scrolled directory after switching sites", asy
   await page.getByRole("button", { name: "Close sites" }).click();
   await page.getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Projects");
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
+  // WebKit can scroll the outer page while the driver clicks the sticky toolbar on compact layouts.
+  await contents.scrollIntoViewIfNeeded();
   await expect(contents.getByRole("button", { name: /^2024 January/ })).toBeInViewport();
   await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
 });

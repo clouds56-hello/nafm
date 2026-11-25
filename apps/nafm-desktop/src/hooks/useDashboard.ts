@@ -128,6 +128,7 @@ interface LocationAction {
   title: string;
   progress: string;
   sourceSwitch?: boolean;
+  contentsUpOrigin?: HTMLElement;
   retry?: () => Promise<boolean>;
 }
 
@@ -141,6 +142,7 @@ interface LocationFailure {
   title: string;
   message: string;
   sourceSwitch?: boolean;
+  contentsUpOrigin?: HTMLElement;
   retry: (() => Promise<boolean>) | null;
 }
 
@@ -594,6 +596,7 @@ export function useDashboard(
             workspace,
             title: action.title,
             sourceSwitch: action.sourceSwitch,
+            contentsUpOrigin: action.contentsUpOrigin,
             message: unavailable ? "This location is no longer available in the index." : message,
             retry: unavailable ? null : action.retry ?? (async () =>
               (await loadFolderLocation(entry, historyAction, { action, retrying: true, anchor })) === "loaded"),
@@ -1396,7 +1399,7 @@ export function useDashboard(
 
   const goForward = useCallback(() => navigateHistory("forward"), [navigateHistory]);
 
-  const navigateBreadcrumb = useCallback((node: StorageNode, anchor?: DirectoryAnchorLoad) => {
+  const navigateBreadcrumb = useCallback((node: StorageNode, anchor?: DirectoryAnchorLoad, contentsUpOrigin?: HTMLElement) => {
     const siteId = selectedSiteRef.current;
     if (!siteId || node.id === locationRef.current?.root.id) return;
     const targetSiteId = targetSiteRef.current;
@@ -1416,7 +1419,7 @@ export function useDashboard(
         sort,
       },
       "push",
-      { action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…` }, anchor },
+      { action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…`, contentsUpOrigin }, anchor },
     );
   }, [loadFolderLocation]);
 

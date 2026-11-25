@@ -201,8 +201,8 @@
   color: var(--atlas-ink);
 }
 
-.atlas-directory-up:disabled { opacity: .4; }
-.atlas-directory-up:hover:enabled { background: #23263a; color: var(--atlas-accent); }
+.atlas-directory-up[aria-disabled="true"] { opacity: .4; }
+.atlas-directory-up:hover:not([aria-disabled="true"]) { background: #23263a; color: var(--atlas-accent); }
 
 .atlas-directory-chevron {
   width: 6px;

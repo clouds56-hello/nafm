@@ -179,6 +179,59 @@ test.describe("compact Atlas panels", () => {
 test.describe("desktop Atlas panels", () => {
   test.use({ viewport: { width: 1080, height: 700 } });
 
+  test("shrinking a docked Contents panel keeps the focused file in the visible rows", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 960 });
+    await page.goto("/mock/?scenario=large");
+    await atlas(page).getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).click();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+    const pane = inspector(page).getByRole("tabpanel", { name: "Contents" });
+    const grid = pane.getByRole("grid", { name: "Photo Library entries" });
+    await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+    await pane.evaluate((el) => { el.scrollTop = 836; });
+    const row = grid.locator('[aria-rowindex="40"] [data-entry-id]');
+    await row.focus();
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await page.setViewportSize({ width: 1080, height: 700 });
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await expect(row).toBeFocused();
+    await row.press("ArrowDown");
+    await expect(grid.locator('[aria-rowindex="41"] [data-entry-id]')).toBeFocused();
+  });
+
+  test("focused panel controls stay visible when the panels move below the map", async ({ page }) => {
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await atlas(page).getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).click();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const pane = inspector(page).getByRole("tabpanel", { name: "Contents" });
+    const lastFile = pane.getByRole("button", { name: /^Proof 096\.jpg/ });
+    await page.keyboard.press("End");
+    await expect(lastFile).toBeFocused();
+    await pane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await page.setViewportSize({ width: 820, height: 650 });
+    await expect(lastFile).toBeInViewport({ ratio: 0.99 });
+    await expect(lastFile).toBeFocused();
+    await expect.poll(() => pane.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+
+    const site = sites(page).getByRole("button", { name: "Open Field drive in Atlas" });
+    await page.setViewportSize({ width: 1080, height: 700 });
+    await site.focus();
+    await page.setViewportSize({ width: 390, height: 650 });
+    await expect(site).toBeInViewport({ ratio: 0.99 });
+    await expect(site).toBeFocused();
+
+    await page.setViewportSize({ width: 1080, height: 700 });
+    const actions = page.getByRole("button", { name: "Workspace actions" });
+    await actions.focus();
+    await page.setViewportSize({ width: 820, height: 650 });
+    await expect(actions).toBeFocused();
+    await expect(chart(page)).toBeInViewport({ ratio: 0.99 });
+  });
+
   test("a quick workspace switch restores focus to the new Workspace picker", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");

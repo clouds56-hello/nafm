@@ -30,10 +30,12 @@ export function useDirectoryViewport({
     let rowHeight = 0;
     let capacity = 0;
     let physicalRange = 0;
+    let measuredHeight = 0;
     let pendingReveal = reveal;
 
     const readPosition = () => {
-      if (!rowHeight || !pane.clientHeight) return;
+      // A resize can dispatch scroll before ResizeObserver updates the range and row capacity.
+      if (!rowHeight || !measuredHeight || pane.clientHeight !== measuredHeight) return;
       const top = Math.max(0, pane.scrollTop);
       const logicalTop = top * scale.current;
       const first = Math.min(total - 1, Math.floor(logicalTop / rowHeight));
@@ -59,6 +61,8 @@ export function useDirectoryViewport({
       // Wait for the new track before consuming a reveal that may be clamped by the previous list's height.
       if (pendingReveal && Math.abs(list.offsetHeight - Math.min(MAX_TRACK_HEIGHT, total * rowHeight)) > 1) return;
       const visibleRows = (pane.clientHeight - (header?.offsetHeight ?? 0)) / rowHeight;
+      const resized = measuredHeight > 0 && (measuredHeight !== pane.clientHeight || oldHeight !== rowHeight);
+      measuredHeight = pane.clientHeight;
       capacity = Math.max(1, Math.ceil(visibleRows));
       const oldRange = physicalRange;
       physicalRange = Math.max(0, pane.scrollHeight - pane.clientHeight);
@@ -73,6 +77,18 @@ export function useDirectoryViewport({
       }
       if (pendingReveal || oldHeight !== rowHeight || oldScale !== scale.current || (position === "end" && physicalRange !== oldRange)) {
         pane.scrollTop = position === "end" ? physicalRange : position * rowHeight / scale.current;
+      }
+      if (resized && !pendingReveal) {
+        const focusedRow = document.activeElement?.closest<HTMLElement>("[data-virtual-row]");
+        if (focusedRow && list.contains(focusedRow)) {
+          const index = Number(focusedRow.dataset.virtualRow);
+          const rowTop = list.getBoundingClientRect().top + index * rowHeight - pane.scrollTop * (scale.current - 1);
+          const paneTop = pane.getBoundingClientRect().top + pane.clientTop;
+          const top = paneTop + (header && pane.contains(header) ? header.offsetHeight : 0);
+          const bottom = paneTop + pane.clientHeight;
+          if (rowTop < top) pane.scrollTop += (rowTop - top) / scale.current;
+          else if (rowTop + rowHeight > bottom) pane.scrollTop += (rowTop + rowHeight - bottom) / scale.current;
+        }
       }
       readPosition();
       pendingReveal?.onApplied();

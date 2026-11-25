@@ -43,7 +43,7 @@ interface DirectoryContentsProps {
   error: string | null;
   onSelect: (node: StorageNode) => void;
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
-  onGoUp: () => void;
+  onGoUp: (origin?: HTMLElement) => void;
   onLoadRange: (start: number, end: number, preferredIndex?: number) => void;
   onRetry: () => void;
 }
@@ -314,8 +314,10 @@ export function DirectoryContents({
 
   function goUp(keyboard: boolean) {
     if (!parent || loading) return;
-    keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId, origin: document.activeElement } : null;
-    onGoUp();
+    const origin = document.activeElement;
+    keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId, origin } : null;
+    const keyboardOrigin = keyboard && origin instanceof HTMLElement && scrollPane.current?.contains(origin) ? origin : undefined;
+    onGoUp(keyboardOrigin);
   }
 
   function retryDirectory() {
@@ -397,7 +399,7 @@ export function DirectoryContents({
       <header className="atlas-directory-header">
         {parent && (
           <button
-            className="atlas-directory-up" type="button" disabled={loading}
+            className="atlas-directory-up" type="button" aria-disabled={loading || undefined}
             aria-label={`Up to ${parent.name}`} title={`Up to ${parent.name}`}
             onClick={(event) => goUp(event.detail === 0)}
           >

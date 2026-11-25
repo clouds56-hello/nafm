@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import { scanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
 import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
@@ -46,12 +46,19 @@ export function SourceLibrary({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const addedButton = useAddedSiteRow(addedSite);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    const opener = document.activeElement;
     dialog.showModal();
     headingRef.current?.focus();
-    return () => dialog.close();
+    return () => {
+      const active = document.activeElement;
+      dialog.close();
+      if ((active === document.body || dialog.contains(active)) && opener instanceof HTMLElement && opener.isConnected) {
+        opener.focus({ preventScroll: true });
+      }
+    };
   }, []);
 
   return (

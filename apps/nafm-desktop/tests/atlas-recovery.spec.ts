@@ -42,7 +42,8 @@ test("retry opens the failed folder without adding a failed visit to Atlas histo
 });
 
 test("retrying a failed source switch opens the intended site and closes Sources", async ({ page }) => {
-  await page.getByRole("button", { name: "Workspace actions" }).click();
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  await actions.click();
   await page.getByRole("button", { name: /^Sources\b/ }).click();
   const sources = page.getByRole("dialog", { name: "Sources", exact: true });
   const team = sources.getByRole("button", { name: "Open Team share in Atlas", exact: true });
@@ -58,9 +59,50 @@ test("retrying a failed source switch opens the intended site and closes Sources
   await sources.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(sources).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Team share");
+  await expect(actions).toBeFocused();
   await back(page).click();
   await expect(currentFolder(page)).toHaveText("Studio archive");
   await expect(back(page)).toBeDisabled();
+});
+
+test("compact Sources returns focus to Workspace actions and preserves the Contents viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/");
+  await atlas(page).getByRole("button", { name: /^Projects,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const january = contents.getByRole("button", { name: /^2024 January/ });
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(january).toBeInViewport();
+  const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  const sources = page.getByRole("dialog", { name: "Sources", exact: true });
+
+  await actions.press("Enter");
+  await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+  await expect(sources.getByRole("heading", { name: "Sources", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(sources).toBeHidden();
+  await expect(actions).toBeFocused();
+  await expect(actions).toBeInViewport({ ratio: 0.99 });
+  await expect(sites).toBeVisible();
+  await expect(january).toBeInViewport();
+  expect(await contents.evaluate((pane) => pane.scrollTop)).toBe(scrollTop);
+
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+  await sources.getByRole("button", { name: "Open Field drive in Atlas", exact: true }).press("Enter");
+  await expect(sources).toBeHidden();
+  await expect(actions).toBeFocused();
+  await expect(currentFolder(page)).toHaveText("Field drive");
+  await expect(sites).toBeVisible();
+  await expect(contents).toBeVisible();
 });
 
 for (const surface of ["Sites", "Sources"] as const) {

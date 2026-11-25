@@ -1,7 +1,43 @@
 const compactAtlas = "(width < 880px)";
 
+export function isCompactAtlas() {
+  return window.matchMedia(compactAtlas).matches;
+}
+
+export function watchAtlasPanelReflow(atlas: HTMLElement | null) {
+  let frame = 0;
+  function revealFocusedPanel() {
+    const active = document.activeElement;
+    if (!active || active.closest("dialog")) return;
+    const panel = active.closest("[data-atlas-panel]");
+    if (!panel || !atlas?.contains(panel)) return;
+    const pane = active.closest(".atlas-site-rail-list, .atlas-inspector-pane");
+    if (pane && !active.closest("[data-virtual-row]")) {
+      const bounds = pane.getBoundingClientRect();
+      const control = active.getBoundingClientRect();
+      if (control.top < bounds.top || control.bottom > bounds.bottom) {
+        active.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    }
+    if (isCompactAtlas()) {
+      const top = atlas.closest(".atlas-shell")?.querySelector(".atlas-toolbar")?.getBoundingClientRect().bottom ?? 0;
+      const control = active.getBoundingClientRect();
+      if (control.top < top || control.bottom > window.innerHeight) revealInCompactAtlas(panel);
+    }
+  }
+  function afterReflow() {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(revealFocusedPanel);
+  }
+  window.addEventListener("resize", afterReflow);
+  return () => {
+    window.removeEventListener("resize", afterReflow);
+    cancelAnimationFrame(frame);
+  };
+}
+
 export function revealInCompactAtlas(element: Element | null) {
-  if (element && window.matchMedia(compactAtlas).matches) {
+  if (element && isCompactAtlas()) {
     element.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 }
@@ -13,7 +49,7 @@ export function restoreAtlasPanelFocus(launcher: HTMLButtonElement | null, origi
     return;
   }
 
-  const otherPanel = window.matchMedia(compactAtlas).matches
+  const otherPanel = isCompactAtlas()
     ? launcher?.closest(".atlas-panels")?.querySelector<HTMLElement>("[data-atlas-panel]")
     : null;
   const otherControl = otherPanel?.querySelector<HTMLElement>(

@@ -74,6 +74,76 @@ test("the toolbar reveals intermediate folders and a jump preserves Back history
   await expect(hierarchy).toBeHidden();
 });
 
+for (const moveFocus of [false, true]) {
+  test(`compact Contents Up keeps keyboard focus when its read fails${moveFocus ? " after focus moves" : ""}`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 500 });
+    await page.goto("/mock/?scenario=recovery");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    await map.getByRole("button", { name: /^Brand campaign,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const up = contents.getByRole("button", { name: "Up to Projects", exact: true });
+    const laterFile = contents.getByRole("button", { name: /^Campaign assembly\.mov/ });
+
+    const read = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { requests: 0, release };
+      bridge.invoke = async (command, args) => {
+        if (command !== "get_storage_view_snapshot" || args.nodeId !== "site_folder:studio-archive:0") return invoke(command, args);
+        state.requests += 1;
+        try {
+          return await invoke(command, args);
+        } catch (error) {
+          await gate;
+          throw error;
+        }
+      };
+      return state;
+    });
+
+    try {
+      await up.press("Enter");
+      await expect(up).toHaveAttribute("aria-disabled", "true");
+      await expect(up).toBeFocused();
+      await page.keyboard.press("Enter");
+      expect(await read.evaluate((state) => state.requests)).toBe(1);
+      if (moveFocus) {
+        await laterFile.focus();
+        await expect(laterFile).toBeInViewport({ ratio: 0.99 });
+      }
+    } finally {
+      await read.evaluate((state) => state.release());
+    }
+
+    const retry = map.getByRole("button", { name: "Retry", exact: true });
+    await expect(map.getByRole("alert")).toContainText("Couldn’t open Projects");
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(rail).toBeVisible();
+    await expect(contents).toBeVisible();
+    if (moveFocus) {
+      await expect(laterFile).toBeFocused();
+      await expect(laterFile).toBeInViewport({ ratio: 0.99 });
+    } else {
+      await expect(retry).toBeFocused();
+      await expect(retry).toBeInViewport({ ratio: 0.99 });
+      await page.keyboard.press("Enter");
+      await expect(currentFolder(page)).toHaveText("Projects");
+      await expect(retry).toBeHidden();
+      await expect(rail).toBeVisible();
+      await expect(contents.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    }
+  });
+}
+
 for (const origin of ["toolbar Up", "Atlas center Up", "folder hierarchy"] as const) {
   test(`${origin} keeps the departed folder visible in Contents after changing sort`, async ({ page }) => {
     await page.goto("/mock/?scenario=large");

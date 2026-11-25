@@ -16,7 +16,7 @@ import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
 import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
-import { revealInCompactAtlas } from "./compactAtlasScroll";
+import { isCompactAtlas, revealInCompactAtlas, watchAtlasPanelReflow } from "./compactAtlasScroll";
 import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
@@ -154,6 +154,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [inspectorBySite, setInspectorBySite] = useState(() => saved?.inspectorBySite ?? new Map<string, InspectorView>());
   const lastOpened = useRef<"sites" | "inspector">(saved?.lastOpened ?? "inspector");
   const mapRegion = useRef<HTMLElement>(null);
+  useEffect(() => watchAtlasPanelReflow(mapRegion.current), []);
   const contentsPane = useRef<HTMLDivElement>(null);
   const directoryRefresh = useRef<DirectoryRefreshTarget | null>(null);
   const onSearchRefresh = useCallback((update: DirectoryRefresh) => directoryRefresh.current?.receive(update), []);
@@ -464,9 +465,23 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
   const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
 
+  const contentsUpOrigin = state.locationFailure?.contentsUpOrigin;
   useLayoutEffect(() => {
-    if (recoveryOnMap) revealInCompactAtlas(mapRegion.current?.querySelector(".atlas-location-recovery") ?? null);
-  }, [recoveryOnMap]);
+    if (!recoveryOnMap || !isCompactAtlas()) return;
+    const active = document.activeElement;
+    if (contentsUpOrigin && active !== contentsUpOrigin) {
+      // The newly inserted alert can push the user's focused control out of the viewport.
+      revealInCompactAtlas(active?.closest("[data-atlas-panel]") ?? null);
+      return;
+    }
+    const recovery = mapRegion.current?.querySelector(".atlas-location-recovery");
+    revealInCompactAtlas(recovery ?? null);
+    if (contentsUpOrigin) {
+      const control = recovery?.querySelector<HTMLButtonElement>(".atlas-location-retry")
+        ?? recovery?.querySelector<HTMLButtonElement>(".atlas-location-dismiss");
+      control?.focus({ preventScroll: true });
+    }
+  }, [contentsUpOrigin, recoveryOnMap]);
 
   function focusAfterRecovery(button: HTMLButtonElement) {
     if (document.activeElement !== button && document.activeElement !== document.body) return;
@@ -494,11 +509,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   );
 
   const { navigateBreadcrumb, canGoUp, goBack: backLocation, goForward: forwardLocation } = state;
-  const navigateAncestor = useCallback((ancestor: StorageNode) => {
+  const navigateAncestor = useCallback((ancestor: StorageNode, contentsUpOrigin?: HTMLElement) => {
     const index = location?.breadcrumbs.findIndex((node) => node.id === ancestor.id) ?? -1;
     const child = index < 0 ? undefined : location?.breadcrumbs[index + 1];
     if (inspectorView !== "contents" || !location || !child) {
-      navigateBreadcrumb(ancestor);
+      navigateBreadcrumb(ancestor, undefined, contentsUpOrigin);
       return;
     }
     const scope = directoryScope(dashboard?.workspace_name, location.site_id, ancestor.id);
@@ -518,12 +533,13 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
         );
         setContentsReveal({ key, index: visiblePage.offset + childIndex, onApplied: () => setContentsReveal(null) });
       },
-    });
+    }, contentsUpOrigin);
   }, [dashboard?.workspace_name, folderSearches, inspectorView, location, navigateBreadcrumb, search.prime]);
-  const goUp = useCallback(() => {
+  const goUpFromContents = useCallback((origin?: HTMLElement) => {
     const parent = location?.breadcrumbs.at(-2);
-    if (canGoUp && parent) navigateAncestor(parent);
+    if (canGoUp && parent) navigateAncestor(parent, origin);
   }, [canGoUp, location, navigateAncestor]);
+  const goUp = useCallback(() => goUpFromContents(), [goUpFromContents]);
   const fileOpen = currentVisit?.view === "details";
   const canGoBack = fileOpen || state.canGoBack;
   const canGoForward = currentVisit?.view === "contents" || state.canGoForward;
@@ -953,7 +969,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 contents={(
                   <>
                     <DirectoryContents
-                      onGoUp={goUp}
+                      onGoUp={goUpFromContents}
                       onOpenFolder={state.openFolderExternally}
                       location={location}
                       page={directoryPage}
