@@ -11,6 +11,7 @@ interface StorageDetailsProps {
   entries: readonly StorageNode[];
   selected: StorageNode | null;
   fileUnavailable: boolean;
+  announceFileChange?: boolean;
   focusRequested: boolean;
   onFocusHandled: () => void;
   metric: HealthMetric | null;
@@ -50,7 +51,7 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  location, entries, selected, fileUnavailable, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
+  location, entries, selected, fileUnavailable, announceFileChange, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
   returnAction, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
@@ -93,7 +94,7 @@ export function StorageDetails({
       <header className="atlas-readout-heading">
         <p className="atlas-kicker">{heading}</p>
         <div className="atlas-readout-title">
-          <h2>{node.name}</h2>
+          <h2 aria-live={announceFileChange ? "polite" : undefined}>{node.name}</h2>
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
         </div>
       </header>

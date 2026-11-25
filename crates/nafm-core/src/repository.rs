@@ -15,14 +15,14 @@ use crate::credentials::{CredentialStore, SmbLocation};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
-  AddSiteFolderRequest, DirectorySort, DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch,
-  FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, IndexedFileSearchPage, MissingContentGroup,
-  RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder,
-  SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun,
-  StageHistoryDirection, StageHistoryReport, StageHistoryRequest, StageHistoryState, StageRemoveReport,
-  StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
-  StorageTree, StorageViewSnapshot,
+  AddSiteFolderRequest, AdjacentFileDirection, AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort,
+  DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus, FileContentMatchesPage,
+  HiddenPolicy, IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
+  ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,
+  SortDirection, StageAddReport, StageCommitDryRun, StageHistoryDirection, StageHistoryReport, StageHistoryRequest,
+  StageHistoryState, StageRemoveReport, StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning,
+  StageWarningReason, StorageChildrenPage, StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal,
+  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -1030,6 +1030,59 @@ impl Repository {
           query.as_deref(),
           anchor.as_deref(),
         )
+      })
+    })
+    .await?
+  }
+
+  pub async fn adjacent_storage_file(
+    &self,
+    request: AdjacentStorageFileRequest,
+    limit: u64,
+  ) -> Result<Option<AdjacentStorageFile>> {
+    let db_path = self.db_path.clone();
+    task::spawn_blocking(move || {
+      let conn = open_connection(db_path)?;
+      with_deferred_transaction(&conn, || {
+        let site = require_site(&conn, &request.site_id)?;
+        let target = request
+          .target_site_id
+          .as_deref()
+          .map(|id| require_site(&conn, id))
+          .transpose()?;
+        let root = build_storage_tree_root(&conn, &site, target.as_ref())?;
+        let folder = find_storage_node_builder(&root, &request.folder_id)
+          .ok_or_else(|| NafmError::StorageNodeNotFound(request.folder_id.clone()))?;
+        if folder.kind == StorageNodeKind::File {
+          return Err(NafmError::StorageNodeNotNavigable(request.folder_id));
+        }
+
+        let query = request.query.as_deref().and_then(normalize_directory_query);
+        let entries = ordered_directory_entries(folder, request.sort, query.as_deref());
+        let is_file = |entry: &&StorageNodeBuilder| entry.kind == StorageNodeKind::File;
+        let current = directory_entry_index(&entries, &request.child_id)
+          .filter(|&index| is_file(&entries[index]))
+          .ok_or(NafmError::DirectoryFileUnavailable)?;
+        let adjacent = match request.direction {
+          AdjacentFileDirection::Previous => entries[..current].iter().rposition(is_file),
+          AdjacentFileDirection::Next => entries[current + 1..]
+            .iter()
+            .position(is_file)
+            .map(|offset| current + 1 + offset),
+        };
+        Ok(adjacent.map(|index| {
+          let index = index as u64;
+          let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
+          let page = directory_page(
+            site,
+            target,
+            storage_node_without_children(folder),
+            &entries,
+            directory_page_start(index, limit),
+            limit,
+          );
+          AdjacentStorageFile { index, page }
+        }))
       })
     })
     .await?

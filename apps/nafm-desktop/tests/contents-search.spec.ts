@@ -115,6 +115,140 @@ test("Contents finds distant entries and returns from Details to the same filter
   await expect(first).toHaveAccessibleName(/^Studio portraits/);
 });
 
+for (const leaveEarly of [false, true]) {
+  test(`file review ${leaveEarly ? "keeps Back in control of a pending step" : "continues across a filtered Contents page"}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 640 });
+    const contents = await openPhotoLibrary(page, "large");
+    await sortByName(page, contents, "Ascending");
+    await searchButton(contents).press("Enter");
+    const query = "  pRoOf  ";
+    const search = searchInput(contents);
+    await search.fill(query);
+    const grid = contents.getByRole("grid");
+    await expect(grid).toHaveAttribute("aria-rowcount", "96");
+    await expect(firstEntry(contents)).toHaveAccessibleName(/^Proof 001\.jpg/);
+
+    const reads = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { query?: string; request?: unknown }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let releaseWindows!: () => void;
+      let releaseStep!: () => void;
+      const windows = new Promise<void>((resolve) => { releaseWindows = resolve; });
+      const step = new Promise<void>((resolve) => { releaseStep = resolve; });
+      const state = { requests: [] as unknown[], replied: false, releaseWindows, releaseStep };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_children" && args.query === "pRoOf") await windows;
+        if (command === "get_adjacent_storage_file") {
+          state.requests.push(args.request);
+          await step;
+          state.replied = true;
+        }
+        return response;
+      };
+      return state;
+    });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    const startingFile = entry(contents, /^Proof 064\.jpg/);
+    const detailsName = (name: string) => inspector.getByRole("heading", { name, exact: true });
+    const previous = inspector.getByRole("button", { name: "Previous file", exact: true });
+    const next = inspector.getByRole("button", { name: "Next file", exact: true });
+
+    try {
+      await contents.evaluate((pane) => {
+        const grid = pane.querySelector('[role="grid"]')!;
+        const rowHeight = Number.parseFloat(getComputedStyle(grid).getPropertyValue("--directory-row-height"));
+        pane.scrollTop = 59 * rowHeight;
+      });
+      await expect(startingFile).toBeInViewport();
+      await startingFile.press("Enter");
+      await expect(detailsName("Proof 064.jpg")).toBeVisible();
+      await next.press("Enter");
+      await expect(inspector.getByText("Finding the next file…", { exact: true })).toBeVisible();
+      await expect(next).toBeFocused();
+      await expect(next).toBeDisabled();
+      await page.keyboard.press("Enter");
+
+      if (leaveEarly) {
+        await page.keyboard.press("ArrowLeft");
+        await expect(startingFile).toBeFocused();
+      }
+      await reads.evaluate(({ releaseStep }) => releaseStep());
+      await expect.poll(() => reads.evaluate(({ replied }) => replied)).toBe(true);
+      expect(await reads.evaluate(({ requests }) => requests)).toEqual([expect.objectContaining({
+        query: "pRoOf", sort: { field: "name", direction: "asc" }, direction: "next",
+      })]);
+
+      if (leaveEarly) {
+        await expect(contents).toBeVisible();
+        await expect(startingFile).toBeFocused();
+        await expect(detailsName("Proof 065.jpg")).toBeHidden();
+        await expect(search).toHaveValue(query);
+        return;
+      }
+
+      await expect(detailsName("Proof 065.jpg")).toBeVisible();
+      await expect(next).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(detailsName("Proof 066.jpg")).toBeVisible();
+      await previous.press("Enter");
+      await expect(detailsName("Proof 065.jpg")).toBeVisible();
+      await expect(previous).toBeFocused();
+      await page.keyboard.press("ArrowLeft");
+      const returned = entry(contents, /^Proof 065\.jpg/);
+      await expect(returned).toBeFocused();
+      await expect(returned).toBeInViewport({ ratio: 0.98 });
+      await expect(search).toHaveValue(query);
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(contents.getByRole("button", { name: "Sort contents", exact: true })).toHaveAttribute("title", "Name, ascending");
+    } finally {
+      await reads.evaluate(({ releaseWindows, releaseStep }) => { releaseWindows(); releaseStep(); });
+    }
+  });
+}
+
+test("unfiltered file review uses the next window without adding a folder visit", async ({ page }) => {
+  await page.goto("/mock/");
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const state = { steps: 0, release };
+    bridge.invoke = async (command, args) => {
+      if (command === "get_storage_children" && args.nodeId?.endsWith(":1")) await gate;
+      if (command === "get_adjacent_storage_file") state.steps += 1;
+      return invoke(command, args);
+    };
+    return state;
+  });
+
+  try {
+    await page.getByRole("figure").getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Contents & details" }).click();
+    const contents = page.getByRole("tabpanel", { name: "Contents" });
+    const inspector = page.getByRole("complementary", { name: "Inspector" });
+    await entry(contents, /^Proof 002\.jpg/).press("Enter");
+    await inspector.getByRole("button", { name: "Next file", exact: true }).press("Enter");
+    await expect(inspector.getByRole("heading", { name: "Proof 003.jpg", exact: true })).toBeVisible();
+    expect(await reads.evaluate(({ steps }) => steps)).toBe(1);
+
+    await page.keyboard.press("ArrowLeft");
+    const returned = entry(contents, /^Proof 003\.jpg/);
+    await expect(returned).toBeFocused();
+    await expect(returned).toBeInViewport({ ratio: 0.98 });
+    await page.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+  } finally {
+    await reads.evaluate(({ release }) => release());
+  }
+});
+
 for (const route of ["Sites", "Atlas history"] as const) {
   test(`returning through ${route} restores distant filtered file Details and Contents`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 820 });

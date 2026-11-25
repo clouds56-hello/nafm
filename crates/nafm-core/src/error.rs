@@ -26,6 +26,8 @@ pub enum NafmError {
   StorageNodeNotFound(String),
   #[error("storage node is not navigable: {0}")]
   StorageNodeNotNavigable(String),
+  #[error("The selected file is no longer in these Contents results.")]
+  DirectoryFileUnavailable,
   #[error("no tracked file or folder found at path: {0}")]
   TrackedPathNotFound(PathBuf),
   #[error("tracked file not found: {0}")]

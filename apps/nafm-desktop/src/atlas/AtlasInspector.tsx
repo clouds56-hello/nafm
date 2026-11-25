@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { AtlasInspection } from "../hooks/useDashboard";
+import type { DirectoryFileDirection } from "../lib/types";
 import { CloseIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import "./inspector.css";
@@ -15,6 +16,13 @@ interface AtlasInspectorProps {
   openedFile: RefObject<AtlasInspection | null>;
   contentsPane: RefObject<HTMLDivElement | null>;
   fileOpen: boolean;
+  fileStep?: {
+    previous: boolean;
+    next: boolean;
+    pending: DirectoryFileDirection | null;
+    status: string;
+    onStep: (direction: DirectoryFileDirection) => void;
+  };
   folderName?: string;
   detailsKey: string | null;
   origin: RefObject<SVGGElement | null>;
@@ -48,7 +56,7 @@ function focusContentsRow(pane: HTMLDivElement) {
 }
 
 export function AtlasInspector({
-  view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, folderName, detailsKey, origin,
+  view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, folderName, detailsKey, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -58,6 +66,8 @@ export function AtlasInspector({
   const detailsTab = useRef<HTMLButtonElement>(null);
   const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const backButton = useRef<HTMLButtonElement>(null);
+  const stepFromFile = useRef<string | null>(null);
+  const canStepFiles = Boolean(fileStep);
   const screen = fileOpen ? "file" : view;
   const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null; inspection: AtlasInspection | null }>({
     screen, siteId, file: screen === "file" ? detailsKey : null, inspection,
@@ -80,6 +90,10 @@ export function AtlasInspector({
     const openedHere = inspection !== null && openedFile.current === inspection;
     if (openedHere) openedFile.current = null;
     const active = document.activeElement;
+    const steppedFile = canStepFiles && openedHere && changedFile && previous.screen === "file"
+      && stepFromFile.current === previous.file;
+    if (changedFile || screen !== "file" || !canStepFiles) stepFromFile.current = null;
+    if (steppedFile && active && active !== document.body) return;
     const focusedOutside = active && active !== document.body && !drawer.current?.contains(active);
     const inspectingFile = screen === "file" || previous.screen === "file";
     // Atlas history owns focus when entering or leaving a result inspected in the map.
@@ -105,7 +119,7 @@ export function AtlasInspector({
       origin.current = null;
     }
     enterList.current = false;
-  }, [screen, siteId, inspection, openedFile, detailsKey, contentsPane, origin]);
+  }, [screen, siteId, inspection, openedFile, detailsKey, contentsPane, origin, canStepFiles]);
 
   if (!view) {
     return (
@@ -164,17 +178,49 @@ export function AtlasInspector({
         onBackToContents();
       }}
     >
-      <header className="atlas-inspector-bar">
+      <header className="atlas-inspector-bar" data-file-step={screen === "file" && canStepFiles || undefined}>
         {screen === "file" ? (
-          <div className="atlas-inspector-file-nav">
-            <button type="button" ref={backButton} aria-label="Back to Contents" onClick={onBackToContents}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M13 8H3m5-5L3 8l5 5" />
-              </svg>
-              Contents
-            </button>
-            <span title={folderName}>{folderName}</span>
-          </div>
+          <>
+            <div className="atlas-inspector-file-nav">
+              <button type="button" ref={backButton} aria-label="Back to Contents" onClick={onBackToContents}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M13 8H3m5-5L3 8l5 5" />
+                </svg>
+                {fileStep ? (
+                  <span className="atlas-inspector-file-context">
+                    Contents
+                    <small title={folderName}>{folderName}</small>
+                  </span>
+                ) : "Contents"}
+              </button>
+              {!fileStep && <span title={folderName}>{folderName}</span>}
+            </div>
+            {fileStep && (
+              <div className="atlas-inspector-file-steps" role="group" aria-label="Browse files">
+                {(["previous", "next"] as const).map((direction) => {
+                  const label = direction === "previous" ? "Previous file" : "Next file";
+                  const unavailable = !fileStep[direction] || Boolean(fileStep.pending);
+                  return (
+                    <button
+                      key={direction} type="button" className="atlas-inspector-file-step" title={label} aria-label={label}
+                      aria-disabled={unavailable || undefined} aria-busy={fileStep.pending === direction || undefined}
+                      onClick={(event) => {
+                        if (unavailable) return;
+                        event.currentTarget.focus({ preventScroll: true });
+                        stepFromFile.current = detailsKey;
+                        fileStep.onStep(direction);
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
+                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d={direction === "previous" ? "m10 4-4 4 4 4" : "m6 4 4 4-4 4"} />
+                      </svg>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
         ) : (
           <div className="atlas-inspector-tabs" role="tablist" aria-label="Inspector view" onKeyDown={handleTabKeys}>
             {tabs.map((tab) => (
@@ -200,6 +246,7 @@ export function AtlasInspector({
         }}>
           <CloseIcon />
         </button>
+        {screen === "file" && fileStep && <p className="atlas-inspector-file-step-status" role="status">{fileStep.status}</p>}
       </header>
       {tabs.map((tab) => (
         <div

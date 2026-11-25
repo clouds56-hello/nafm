@@ -270,6 +270,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     get_storage_tree: storage.tree,
     get_storage_location: storage.location,
     get_storage_children: storage.children,
+    get_adjacent_storage_file: storage.adjacentFile,
     async get_storage_view_snapshot(args) {
       const snapshot = storage.snapshot(args);
       if (snapshot.location.site_id === slowInventorySite && snapshot.tree.root.file_count > 0) {

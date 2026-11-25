@@ -343,6 +343,33 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return makeChildren(model(args), args, query?.trim().toLowerCase());
   }
 
+  function adjacentFile(args: CommandArgs) {
+    const request = record(args.request);
+    const workspace = current();
+    checkWorkspace(workspace, request.workspace_name);
+    const siteId = stringArg(request.site_id, "source ID");
+    const targetId = request.target_site_id == null ? null : stringArg(request.target_site_id, "target ID");
+    const childId = request.child_id;
+    if (typeof childId !== "string" || !childId) throw new Error("Missing file ID.");
+    if (request.query != null && typeof request.query !== "string") throw new Error("Invalid directory search.");
+    const { direction } = request;
+    if (direction !== "previous" && direction !== "next") throw new Error("Invalid file direction.");
+    const { limit } = paging({ offset: 0, limit: args.limit });
+    const site = projectSite(workspace, siteId, targetId);
+    const { node } = nodePath(site.root, { nodeId: request.folder_id });
+    const entries = orderedChildren(node, directorySort(request.sort), request.query?.trim().toLowerCase());
+    const currentIndex = entries.findIndex((entry) => entry.id === childId && entry.kind === "file");
+    if (currentIndex < 0) throw new Error("The selected file is no longer in these Contents results.");
+
+    const step = direction === "previous" ? -1 : 1;
+    for (let index = currentIndex + step; index >= 0 && index < entries.length; index += step) {
+      if (entries[index].kind !== "file") continue;
+      const offset = Math.floor(index / limit) * limit;
+      return { index, page: projectChildrenPage(site, node, entries, offset, limit) };
+    }
+    return null;
+  }
+
   function searchIndexedFiles(args: CommandArgs) {
     const workspace = current();
     checkWorkspace(workspace, args.expected_workspace);
@@ -632,6 +659,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   return {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
-    children, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, moveStageHistory, cleanup, siteInventory,
+    children, adjacentFile, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, moveStageHistory, cleanup, siteInventory,
   };
 }

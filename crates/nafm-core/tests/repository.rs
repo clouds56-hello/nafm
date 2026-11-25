@@ -2467,6 +2467,103 @@ async fn storage_children_pages_direct_items_independently_of_map_bounds() {
 }
 
 #[tokio::test]
+async fn adjacent_storage_file_keeps_directory_order_and_filter_across_pages() {
+  use nafm_core::{
+    AdjacentFileDirection, AdjacentStorageFileRequest, DirectorySort, DirectorySortField, SortDirection,
+  };
+
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("media");
+  fs::create_dir(media.join("B report")).unwrap();
+  for name in [
+    "A report.txt",
+    "B report/Nested report.txt",
+    "C notes.txt",
+    "D report.txt",
+    "Z report.txt",
+  ] {
+    fs::write(media.join(name), b"example").unwrap();
+  }
+  let site = fixture.repo.create_site("source").await.unwrap();
+  fixture.add_site_folder(&site.id, &media, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  let tree = fixture.repo.storage_tree(&site.id, 4, 12).await.unwrap();
+  let folder = child_named(&tree.root, "media");
+  let request = |child_id: &str, direction| AdjacentStorageFileRequest {
+    site_id: site.id.clone(),
+    target_site_id: None,
+    folder_id: folder.id.clone(),
+    child_id: child_id.to_owned(),
+    sort: DirectorySort {
+      field: DirectorySortField::Name,
+      direction: SortDirection::Asc,
+    },
+    query: Some("  RePoRt  ".to_owned()),
+    direction,
+  };
+  let first = child_named(folder, "A report.txt");
+  let middle = child_named(folder, "D report.txt");
+  let last = child_named(folder, "Z report.txt");
+  let next = fixture
+    .repo
+    .adjacent_storage_file(request(&first.id, AdjacentFileDirection::Next), 2)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!((next.index, next.page.offset, next.page.total_children), (2, 2, 4));
+  assert_eq!(next.page.children[0].id, middle.id);
+  assert_eq!(next.page.children[1].id, last.id);
+
+  let previous = fixture
+    .repo
+    .adjacent_storage_file(request(&middle.id, AdjacentFileDirection::Previous), 2)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!((previous.index, previous.page.offset), (0, 0));
+  assert_eq!(previous.page.children[0].id, first.id);
+  assert_eq!(previous.page.children[1].kind, StorageNodeKind::Directory);
+
+  for (file, direction) in [
+    (first, AdjacentFileDirection::Previous),
+    (last, AdjacentFileDirection::Next),
+  ] {
+    assert!(
+      fixture
+        .repo
+        .adjacent_storage_file(request(&file.id, direction), 2)
+        .await
+        .unwrap()
+        .is_none()
+    );
+  }
+
+  let mut descending = request(&middle.id, AdjacentFileDirection::Next);
+  descending.sort.direction = SortDirection::Desc;
+  let next = fixture
+    .repo
+    .adjacent_storage_file(descending, 0)
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!((next.index, next.page.offset, next.page.limit), (3, 3, 1));
+  assert_eq!(next.page.children[0].id, first.id);
+
+  for child_id in [
+    &child_named(folder, "B report").id,
+    &child_named(folder, "C notes.txt").id,
+    "missing",
+  ] {
+    let error = fixture
+      .repo
+      .adjacent_storage_file(request(child_id, AdjacentFileDirection::Next), 2)
+      .await
+      .unwrap_err();
+    assert!(matches!(error, NafmError::DirectoryFileUnavailable));
+  }
+}
+
+#[tokio::test]
 async fn directory_sort_orders_the_whole_folder_before_slicing_and_revealing() {
   use nafm_core::{
     DirectorySort,

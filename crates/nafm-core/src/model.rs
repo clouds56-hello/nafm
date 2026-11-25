@@ -212,6 +212,31 @@ pub struct StorageChildrenPage {
   pub limit: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdjacentFileDirection {
+  Previous,
+  Next,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AdjacentStorageFileRequest {
+  pub site_id: String,
+  pub target_site_id: Option<String>,
+  pub folder_id: String,
+  pub child_id: String,
+  pub sort: DirectorySort,
+  pub query: Option<String>,
+  pub direction: AdjacentFileDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AdjacentStorageFile {
+  /// Zero-based row in the sorted, filtered directory, including non-file entries.
+  pub index: u64,
+  pub page: StorageChildrenPage,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageViewSnapshot {
   pub tree: StorageTree,

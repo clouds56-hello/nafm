@@ -137,7 +137,7 @@ export function DirectoryContents({
         const paneBounds = pane.getBoundingClientRect();
         const headerBottom = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? paneBounds.top;
         const rect = row.getBoundingClientRect();
-        if (rect.bottom <= headerBottom || rect.top >= paneBounds.bottom) row.scrollIntoView({ block: "nearest" });
+        if (rect.top < headerBottom - 1 || rect.bottom > paneBounds.bottom + 1) row.scrollIntoView({ block: "nearest" });
       }
     }
     returningEntry.current = null;

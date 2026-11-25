@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use nafm_core::{
-  DirectorySort, FileContentMatchesPage, IndexedFileSearchPage, ScanPhase, Site, SiteFolderKind, SiteHashStatus,
-  StageCommitDryRun, StorageChildrenPage, StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal,
-  StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
+  AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort, FileContentMatchesPage, IndexedFileSearchPage,
+  ScanPhase, Site, SiteFolderKind, SiteHashStatus, StageCommitDryRun, StorageChildrenPage, StorageDirectoryAnchor,
+  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::state::{AppState, ScanTask, ScanTaskSiteStatus, ScanTaskStatus};
@@ -336,6 +336,27 @@ pub async fn get_storage_children(
       query.as_deref(),
       anchor.as_deref(),
     )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct WorkspaceAdjacentFileRequest {
+  workspace_name: String,
+  #[serde(flatten)]
+  file: AdjacentStorageFileRequest,
+}
+
+#[tauri::command]
+pub async fn get_adjacent_storage_file(
+  state: State<'_, AppState>,
+  request: WorkspaceAdjacentFileRequest,
+  limit: u64,
+) -> Result<Option<AdjacentStorageFile>, String> {
+  state
+    .repository_for(&request.workspace_name)
+    .await?
+    .adjacent_storage_file(request.file, limit)
     .await
     .map_err(|error| error.to_string())
 }

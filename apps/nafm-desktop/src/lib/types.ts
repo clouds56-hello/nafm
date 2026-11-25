@@ -264,6 +264,24 @@ export interface StorageChildrenPage {
   limit: number;
 }
 
+export type DirectoryFileDirection = "previous" | "next";
+
+export interface DirectoryAdjacentFileRequest {
+  workspace_name: string;
+  site_id: string;
+  target_site_id: string | null;
+  folder_id: string;
+  child_id: string;
+  sort: DirectorySort;
+  query?: string;
+  direction: DirectoryFileDirection;
+}
+
+export interface DirectoryAdjacentFile {
+  index: number;
+  page: StorageChildrenPage;
+}
+
 export interface StorageViewSnapshot {
   tree: StorageTree;
   location: StorageLocation;

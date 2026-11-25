@@ -1313,8 +1313,12 @@ export function useDashboard(
   }, []);
 
   const selectNode = useCallback((node: StorageNode, {
-    inspection, onGroupArrival,
-  }: { inspection?: AtlasInspection; onGroupArrival?: DirectoryAnchorLoad["onArrival"] } = {}) => {
+    inspection, onGroupArrival, directoryPage,
+  }: {
+    inspection?: AtlasInspection;
+    onGroupArrival?: DirectoryAnchorLoad["onArrival"];
+    directoryPage?: StorageChildrenPage;
+  } = {}) => {
     const siteId = selectedSiteRef.current;
     if (!siteId) return;
     if (node.kind === "file") {
@@ -1333,6 +1337,16 @@ export function useDashboard(
         navigationInProgressRef.current = false;
         childrenLoadingRef.current = false;
         setLocationProgress(null);
+      }
+      const current = childrenPageRef.current;
+      if (directoryPage && current && directoryPage !== current) {
+        const window = {
+          ...directoryPage, sort: current.sort, anchor_offset: current.anchor_offset, atlas_group: current.atlas_group,
+        };
+        childrenPageRef.current = window;
+        childrenRetryRef.current = null;
+        setChildrenError(null);
+        setChildrenPage(window);
       }
       selectLocationNode(node, inspection);
       return;

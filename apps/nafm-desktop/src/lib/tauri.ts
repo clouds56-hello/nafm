@@ -17,6 +17,8 @@ import type {
   CancelScanMode,
   CleanupPreview,
   Dashboard,
+  DirectoryAdjacentFile,
+  DirectoryAdjacentFileRequest,
   DirectorySort,
   FileContentMatchesPage,
   HiddenPolicy,
@@ -248,6 +250,10 @@ export function getStorageChildren(
     query,
     anchor,
   });
+}
+
+export function getAdjacentStorageFile(request: DirectoryAdjacentFileRequest, limit: number) {
+  return invoke<DirectoryAdjacentFile | null>("get_adjacent_storage_file", { request, limit });
 }
 
 export function getStorageViewSnapshot(

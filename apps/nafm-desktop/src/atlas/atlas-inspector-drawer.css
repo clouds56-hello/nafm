@@ -43,6 +43,12 @@
   border-bottom: 1px solid var(--atlas-border);
 }
 
+.atlas-inspector-bar[data-file-step] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0 6px;
+}
+
 .atlas-inspector-tabs {
   display: flex;
   min-width: 0;
@@ -79,6 +85,65 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.atlas-inspector-bar[data-file-step] .atlas-inspector-file-nav button {
+  width: 100%;
+  min-width: 0;
+}
+
+.atlas-inspector-file-context {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  text-align: start;
+}
+
+.atlas-inspector-file-context small {
+  overflow: hidden;
+  color: var(--atlas-muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atlas-inspector-file-steps {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.atlas-inspector-file-step {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--atlas-accent);
+}
+
+.atlas-inspector-file-step:hover:not([aria-disabled="true"]) {
+  border-color: var(--atlas-border);
+  background: #23263a;
+  color: var(--atlas-ink);
+}
+
+.atlas-inspector-file-step[aria-disabled="true"] { color: var(--atlas-muted); }
+.atlas-inspector-file-step[aria-busy="true"] { cursor: progress; }
+.atlas-inspector-file-step:focus-visible { outline-offset: -2px; }
+
+.atlas-inspector-file-step-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--atlas-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.atlas-inspector-file-step-status:not(:empty) { padding-block: 2px 7px; }
 
 .atlas-inspector-tabs button {
   min-height: 42px;
@@ -148,6 +213,6 @@
 @media (max-width: 760px), (pointer: coarse) {
   .atlas-inspector-trigger, .atlas-inspector-tabs button { min-height: 44px; }
   .atlas-inspector-tabs button { padding-inline: 8px; }
-  .atlas-inspector-close { width: 44px; height: 44px; }
+  .atlas-inspector-close, .atlas-inspector-file-step { width: 44px; height: 44px; }
   .atlas-inspector-pane:has(> .atlas-directory) { scroll-padding-block-start: 52px; }
 }

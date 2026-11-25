@@ -19,13 +19,14 @@ import { StorageDetails } from "./StorageDetails";
 import { isCompactAtlas, revealInCompactAtlas, watchAtlasPanelReflow } from "./compactAtlasScroll";
 import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
+import { useContentsFileStep } from "./useContentsFileStep";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import { siteHasInventory } from "../lib/scanView";
 import type {
-  DirectoryRefresh, DirectoryRefreshTarget, DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage,
+  DirectoryAdjacentFile, DirectoryRefresh, DirectoryRefreshTarget, DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage,
   HealthMetric, StorageNode,
 } from "../lib/types";
 import { PlusIcon } from "../management/Icons";
@@ -372,6 +373,28 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
   const currentVisit = visit?.fileId === selected?.id && (visit?.view === "details" || visit?.contentsKey === contentsKey)
     ? visit : null;
+  const fileStep = useContentsFileStep(
+    currentVisit?.source === "contents" && currentVisit.view === "details" && findWorkspace && siteId && folder && inspection
+      ? {
+        owner: inspection,
+        revision: state.contentRevision,
+        request: {
+          workspace_name: findWorkspace, site_id: siteId, target_site_id: target?.id ?? null,
+          folder_id: folder.id, child_id: currentVisit.fileId, sort: state.directorySort,
+          query: search.enabled ? searchQuery : undefined,
+        },
+      } : null,
+    search.loading || search.loadingMore ? null : directoryPage,
+    state.childrenLoading || state.selectedFileUnavailable,
+    (result) => {
+      const node = result.page.children[result.index - result.page.offset];
+      if (node?.kind !== "file") throw new Error("The adjacent file is missing from its Contents window.");
+      if (search.enabled && result.page !== directoryPage) {
+        search.prime({ scope: searchScope, targetId: target?.id, query: searchQuery, sort: state.directorySort }, result.page);
+      }
+      activateNode(node, undefined, result);
+    },
+  );
   useLayoutEffect(() => {
     if (!workspaceName || dashboard?.workspace_name !== workspaceName || (!location && dashboard.sites.length)) return;
     const canResumeFile = selected?.kind === "file" && !state.selectedFileUnavailable;
@@ -686,7 +709,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     setMapMode(mode);
   }
 
-  function activateNode(node: StorageNode, origin?: SVGGElement) {
+  function activateNode(node: StorageNode, origin?: SVGGElement, step?: DirectoryAdjacentFile) {
     if (node.kind === "smaller_items") {
       const focusOrigin = document.activeElement;
       state.selectNode(node, {
@@ -721,7 +744,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       setRevealedContentsVisits((saved) => new Map(saved).set(nextInspection, revealedContentsVisit));
     }
     openedFile.current = nextInspection;
-    state.selectNode(node, { inspection: nextInspection });
+    state.selectNode(node, { inspection: nextInspection, directoryPage: search.enabled ? undefined : step?.page });
     const view = "details";
     if (origin) {
       inspectorOrigin.current = origin;
@@ -735,7 +758,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       openInspector({
         view: "details", fileId: node.id, contentsKey,
         source: origin ? "atlas" : "contents",
-        rowIndex: directoryPage && row >= 0 ? directoryPage.offset + row : undefined,
+        rowIndex: step?.index ?? (directoryPage && row >= 0 ? directoryPage.offset + row : undefined),
       }, nextInspection);
     } else {
       openInspector(view);
@@ -908,6 +931,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 inspection={inspection}
                 openedFile={openedFile}
                 fileOpen={fileOpen}
+                fileStep={fileStep}
                 folderName={folder?.name}
                 view={inspectorView}
                 initialView={selected?.kind === "file" ? "details" : "contents"}
@@ -922,6 +946,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     entries={directoryPage?.children ?? []}
                     selected={selected}
                     fileUnavailable={state.selectedFileUnavailable}
+                    announceFileChange={Boolean(fileStep)}
                     focusRequested={analysisFocusRequested && inspectorView === "details"}
                     onFocusHandled={finishAnalysisFocus}
                     metric={metric}
