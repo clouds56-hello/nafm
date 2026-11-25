@@ -19,9 +19,9 @@ use crate::model::{
   FileContentMatchStatus, FileContentMatchesPage, HiddenPolicy, IndexedFileSearchPage, MissingContentGroup,
   RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder,
   SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection, StageAddReport, StageCommitDryRun, StageHistoryReport,
-  StageRemoveReport, StageResetReport, StageReviewGroup, StageWarning, StageWarningReason, StorageChildrenPage,
-  StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind, StorageTree,
-  StorageViewSnapshot,
+  StageRemoveReport, StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason,
+  StorageChildrenPage, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageNodeKind,
+  StorageTree, StorageViewSnapshot,
 };
 use crate::remote::{
   REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata, execute_remote_agent,
@@ -3772,37 +3772,94 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     .into_iter()
     .map(|record| record.file)
     .collect::<Vec<_>>();
-  let duplicate_group_by_file_id = duplicate_groups_before
+  let all_staged_ids = staged_files
     .iter()
-    .flat_map(|group| group.files.iter().map(move |file| (file.file_id.as_str(), group)))
-    .collect::<BTreeMap<_, _>>();
+    .map(|file| file.file_id.as_str())
+    .collect::<std::collections::HashSet<_>>();
+  let verified_duplicate_ids = duplicate_groups_before
+    .iter()
+    .flat_map(|group| group.files.iter().map(|file| file.file_id.as_str()))
+    .collect::<std::collections::HashSet<_>>();
+  let fully_staged_groups = duplicate_groups_before
+    .iter()
+    .filter(|group| {
+      group
+        .files
+        .iter()
+        .all(|file| all_staged_ids.contains(file.file_id.as_str()))
+    })
+    .collect::<Vec<_>>();
   let mut warnings = Vec::new();
-  let hashes_pending = staged_files.iter().try_fold(0_u64, |count, file| {
-    let pending = conn.query_row(
-      "select content_hash is null or hash_revision is null or hash_revision <> inventory_revision
-       from file_records where id = ?1",
-      params![file.file_id],
-      |row| row.get::<_, bool>(0),
-    )?;
-    if pending || !duplicate_group_by_file_id.contains_key(file.file_id.as_str()) {
+  let mut hashes_pending = 0;
+  let mut verification_blockers = BTreeMap::<String, Vec<String>>::new();
+  let mut verified_singletons = Vec::new();
+  let mut staged_verification = conn.prepare(
+    "select file.content_hash is null or file.hash_revision is null or file.hash_revision <> file.inventory_revision,
+       coalesce(state.inventory_completed_at is not null and state.hash_completed_at is not null
+         and state.inventory_revision = file.inventory_revision, false)
+     from file_records file
+     left join site_scan_state state on state.site_id = file.site_id
+     where file.id = ?1",
+  )?;
+  for file in &staged_files {
+    let (pending, finalized) = staged_verification.query_row(params![file.file_id], |row| {
+      Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?))
+    })?;
+    hashes_pending += u64::from(pending);
+    let has_verified_duplicate = verified_duplicate_ids.contains(file.file_id.as_str());
+    if pending || !has_verified_duplicate {
       warnings.push(StageWarning {
         path: file.path.clone(),
         reason: StageWarningReason::NotDuplicate,
       });
     }
-    Ok::<_, NafmError>(count + u64::from(pending))
-  })?;
-  let all_staged_ids = staged_files
-    .iter()
-    .map(|file| file.file_id.as_str())
-    .collect::<std::collections::HashSet<_>>();
-  for group in &duplicate_groups_before {
-    if group
-      .files
-      .iter()
-      .all(|file| all_staged_ids.contains(file.file_id.as_str()))
-      && let Some(file) = group.files.last()
-    {
+
+    if pending || !finalized {
+      verification_blockers
+        .entry(file.site_id.clone())
+        .or_default()
+        .push(file.file_id.clone());
+    } else if !has_verified_duplicate {
+      verified_singletons.push(file);
+    }
+  }
+
+  // A last-known matching digest identifies a site to check, but only find_duplicates determines eligibility.
+  // All files in a verified group share the same content key, so one lookup covers the entire group.
+  let mut potential_retained_sites = conn.prepare(
+    "select distinct peer.site_id
+     from file_records staged
+     join file_records peer on peer.hash_algorithm = staged.hash_algorithm
+       and peer.content_hash = staged.content_hash and peer.size_bytes = staged.size_bytes
+     left join stage_entries peer_stage on peer_stage.file_id = peer.id
+     left join site_scan_state state on state.site_id = peer.site_id
+     where staged.id = ?1 and peer_stage.file_id is null
+       and not coalesce(peer.hash_revision = peer.inventory_revision
+         and state.inventory_completed_at is not null and state.hash_completed_at is not null
+         and state.inventory_revision = peer.inventory_revision, false)",
+  )?;
+  let lacking_retained_copy = verified_singletons
+    .into_iter()
+    .map(std::slice::from_ref)
+    .chain(fully_staged_groups.iter().map(|group| group.files.as_slice()));
+  for files in lacking_retained_copy {
+    let Some(file) = files.first() else { continue };
+    for site_id in potential_retained_sites.query_map(params![file.file_id], |row| row.get::<_, String>(0))? {
+      verification_blockers
+        .entry(site_id?)
+        .or_default()
+        .extend(files.iter().map(|file| file.file_id.clone()));
+    }
+  }
+  let verification_blockers = verification_blockers
+    .into_iter()
+    .map(|(site_id, staged_file_ids)| StageVerificationBlocker {
+      site_id,
+      staged_file_ids,
+    })
+    .collect();
+  for group in fully_staged_groups {
+    if let Some(file) = group.files.last() {
       warnings.push(StageWarning {
         path: file.path.clone(),
         reason: StageWarningReason::WouldRemoveLastCopy,
@@ -3852,6 +3909,7 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     hashes_pending,
     cleanup_ready,
     warnings,
+    verification_blockers,
     tracked_file_count_before,
     tracked_file_count_after,
     duplicate_group_count_before,

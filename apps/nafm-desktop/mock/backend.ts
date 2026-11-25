@@ -227,6 +227,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
       }),
       active_tasks: active.map((task) => ({ ...task })), staged: cleanup.staged_files,
       staged_hashes_pending: cleanup.hashes_pending, staged_cleanup_ready: cleanup.cleanup_ready,
+      staged_verification_blockers: cleanup.verification_blockers,
       staged_warnings: cleanup.warnings, last_updated_at: new Date().toISOString(),
     };
   }

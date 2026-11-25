@@ -21,6 +21,7 @@ pub struct Dashboard {
   staged_hashes_pending: u64,
   staged_cleanup_ready: bool,
   staged_warnings: Vec<nafm_core::StageWarning>,
+  staged_verification_blockers: Vec<nafm_core::StageVerificationBlocker>,
   last_updated_at: DateTime<Utc>,
 }
 
@@ -220,6 +221,7 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     hashes_pending: staged_hashes_pending,
     cleanup_ready: staged_cleanup_ready,
     warnings: staged_warnings,
+    verification_blockers: staged_verification_blockers,
     ..
   } = workspace
     .repository
@@ -241,6 +243,7 @@ pub async fn load_dashboard(state: State<'_, AppState>) -> Result<Dashboard, Str
     staged_hashes_pending,
     staged_cleanup_ready,
     staged_warnings,
+    staged_verification_blockers,
     last_updated_at: Utc::now(),
   })
 }

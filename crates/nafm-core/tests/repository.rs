@@ -8,7 +8,8 @@ use std::time::Duration;
 use nafm_core::{
   AddSiteFolderRequest, Blake3HashAlgorithm, ContentHasher, CredentialStore, DirectorySort, DirectorySortField,
   FileContentMatchStatus, HashAlgorithm, HiddenPolicy, NafmError, Repository, RepositoryOptions, ScanEvent,
-  SiteFolderKind, SiteHashStatus, SortDirection, StageWarningReason, StorageDirectoryFilter, StorageNodeKind,
+  SiteFolderKind, SiteHashStatus, SortDirection, StageVerificationBlocker, StageWarningReason, StorageDirectoryFilter,
+  StorageNodeKind,
 };
 use tempfile::TempDir;
 
@@ -1081,6 +1082,14 @@ async fn site_folder_changes_advance_generation_and_suspend_analysis_until_resca
   let cleanup = fixture.repo.stage_commit_dry_run().await.unwrap();
   assert!(!cleanup.cleanup_ready);
   assert_eq!(cleanup.staged_files.len(), 1);
+  assert_eq!(cleanup.hashes_pending, 0);
+  assert_eq!(
+    cleanup.verification_blockers,
+    vec![StageVerificationBlocker {
+      site_id: site.id.clone(),
+      staged_file_ids: vec![cleanup.staged_files[0].file_id.clone()],
+    }]
+  );
 
   let summary = fixture.repo.scan_site(&site.id).await.unwrap();
   assert_eq!(summary.files_reused, 2);
@@ -3076,6 +3085,13 @@ async fn timestamp_only_change_retains_stale_digest_until_resume_verifies_it() {
   assert_eq!(suspended_cleanup.hashes_pending, 1);
   assert!(!suspended_cleanup.cleanup_ready);
   assert!(suspended_cleanup.review_groups.is_empty());
+  assert_eq!(
+    suspended_cleanup.verification_blockers,
+    vec![StageVerificationBlocker {
+      site_id: site.id.clone(),
+      staged_file_ids: vec![suspended_cleanup.staged_files[0].file_id.clone()],
+    }]
+  );
   assert!(
     suspended_cleanup
       .warnings
@@ -3104,6 +3120,7 @@ async fn timestamp_only_change_retains_stale_digest_until_resume_verifies_it() {
   assert_eq!(resumed_cleanup.hashes_pending, 0);
   assert!(resumed_cleanup.cleanup_ready);
   assert!(resumed_cleanup.warnings.is_empty());
+  assert!(resumed_cleanup.verification_blockers.is_empty());
 }
 
 #[tokio::test]
@@ -4106,6 +4123,82 @@ async fn stage_commit_dry_run_reports_remaining_duplicates_and_retained_copies()
   assert!(singleton.retained_files[0].path.ends_with("c.txt"));
   assert_ne!(report.duplicate_groups_after[0].group_id, singleton.group_id);
   assert!(first.join("a.txt").is_file() && second.join("b.txt").is_file());
+}
+
+#[tokio::test]
+async fn stage_commit_dry_run_targets_unfinished_sites_with_potential_retained_copies() {
+  let fixture = Fixture::new().await;
+  let source = fixture.mkdir("source");
+  let backup = fixture.mkdir("backup");
+  let unrelated = fixture.mkdir("unrelated");
+  fs::write(source.join("staged-a.bin"), b"same").unwrap();
+  fs::write(source.join("staged-b.bin"), b"same").unwrap();
+  fs::write(source.join("staged-c.bin"), b"other").unwrap();
+  fs::write(backup.join("remaining-a.bin"), b"same").unwrap();
+  fs::write(backup.join("remaining-c.bin"), b"other").unwrap();
+  fs::write(unrelated.join("unrelated.bin"), b"fade").unwrap();
+
+  for (name, root) in [("source", &source), ("backup", &backup), ("unrelated", &unrelated)] {
+    fixture.create_site(name).await;
+    fixture.add_site_folder(name, root, HiddenPolicy::Include).await;
+    fixture.repo.scan_site(name).await.unwrap();
+  }
+  let staged = fixture.repo.stage_add_path(&source).await.unwrap();
+  assert_eq!(staged.staged_files.len(), 3);
+  assert!(fixture.repo.stage_commit_dry_run().await.unwrap().cleanup_ready);
+
+  for name in ["backup", "unrelated"] {
+    let extra_root = fixture.mkdir(&format!("extra-{name}"));
+    fixture.add_site_folder(name, &extra_root, HiddenPolicy::Include).await;
+  }
+  let backup_id = fixture.repo.site_overview("backup").await.unwrap().site.id;
+  let blocked = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert_eq!(blocked.hashes_pending, 0);
+  assert!(!blocked.cleanup_ready);
+  assert!(blocked.review_groups.is_empty());
+  assert_eq!(blocked.tracked_file_count_before, blocked.tracked_file_count_after);
+  assert_eq!(
+    blocked.duplicate_group_count_before,
+    blocked.duplicate_group_count_after
+  );
+  assert!(
+    blocked
+      .warnings
+      .iter()
+      .any(|warning| warning.reason == StageWarningReason::WouldRemoveLastCopy)
+  );
+  assert!(
+    blocked
+      .warnings
+      .iter()
+      .any(|warning| warning.reason == StageWarningReason::NotDuplicate)
+  );
+  assert_eq!(blocked.verification_blockers.len(), 1);
+  let blocker = &blocked.verification_blockers[0];
+  assert_eq!(blocker.site_id, backup_id);
+  assert_eq!(
+    blocker.staged_file_ids.iter().collect::<BTreeSet<_>>(),
+    staged.staged_files.iter().map(|file| &file.file_id).collect(),
+  );
+
+  fixture.repo.scan_site("backup").await.unwrap();
+  let ready = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert!(ready.cleanup_ready);
+  assert!(ready.verification_blockers.is_empty());
+  assert_eq!(ready.review_groups.len(), 2);
+
+  fs::remove_file(backup.join("remaining-a.bin")).unwrap();
+  fs::remove_file(backup.join("remaining-c.bin")).unwrap();
+  fixture.repo.scan_site("backup").await.unwrap();
+  let no_retained_copy = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert!(!no_retained_copy.cleanup_ready);
+  assert!(no_retained_copy.verification_blockers.is_empty());
+  assert!(
+    no_retained_copy
+      .warnings
+      .iter()
+      .any(|warning| warning.reason == StageWarningReason::WouldRemoveLastCopy)
+  );
 }
 
 #[tokio::test]

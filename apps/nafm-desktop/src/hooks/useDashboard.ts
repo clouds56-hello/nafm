@@ -1560,6 +1560,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
           staged_hashes_pending: report.hashes_pending,
           staged_cleanup_ready: report.cleanup_ready,
           staged_warnings: report.warnings,
+          staged_verification_blockers: report.verification_blockers,
         };
         dashboardRef.current = next;
         setDashboard(next);

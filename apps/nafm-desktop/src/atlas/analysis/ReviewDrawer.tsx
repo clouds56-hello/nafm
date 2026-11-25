@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
-import type { CleanupPreview, DuplicateFile, SiteOverview, StageWarning, StageWarningReason } from "../../lib/types";
+import type { CleanupPreview, DuplicateFile, SiteOverview, StageVerificationBlocker, StageWarning, StageWarningReason } from "../../lib/types";
+import type { ScanSite, SiteVerification } from "../siteVerification";
+import { VerificationScanButton } from "../VerificationScanButton";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
 import "./cleanup-review.css";
@@ -17,6 +19,8 @@ interface ReviewDrawerProps {
   hashesPending: number;
   cleanupReady: boolean;
   warnings: StageWarning[];
+  verificationBlockers: readonly StageVerificationBlocker[];
+  verificationForSite: (id: string) => SiteVerification | undefined;
   preview: CleanupPreview | null;
   loadingPreview: boolean;
   stagingBusy?: boolean;
@@ -24,6 +28,7 @@ interface ReviewDrawerProps {
   position: ReviewPosition | null;
   onClose: () => void;
   onPreview: () => void;
+  onScanSite: ScanSite;
   onRemove: (path: string) => void;
   onInspect: (file: DuplicateFile, signal: AbortSignal) => Promise<string | null>;
   onInspected: (file: DuplicateFile, position: ReviewPosition) => void;
@@ -89,6 +94,42 @@ function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: Revi
   );
 }
 
+function ReviewVerificationSite({ name, verification, files, siteId, busy, onScanSite, focusTarget }: {
+  name: string;
+  verification: SiteVerification;
+  files: readonly DuplicateFile[];
+  siteId: string;
+  busy: boolean;
+  onScanSite: ScanSite;
+  focusTarget: RefObject<HTMLButtonElement | null>;
+}) {
+  const noteId = useId();
+  const [startError, setStartError] = useState<string | null>(null);
+  const ownCopies = files.filter((file) => file.site_id === siteId).length;
+  const note = ownCopies === files.length ? "Staged copies need verification."
+    : ownCopies === 0 ? "Potential retained copies need verification."
+    : "Staged and potential retained copies need verification.";
+  const scanError = verification.tone === "active" ? null : startError ?? verification.failure;
+
+  return (
+    <li className="atlas-review-verification-site">
+      <div>
+        <strong>{name}</strong>
+        <span className="atlas-review-verification-status" role="status" data-tone={verification.tone}>{verification.status}</span>
+        <span id={noteId}>{note}</span>
+      </div>
+      {verification.action && (
+        <VerificationScanButton
+          action={{ ...verification.action, disabled: verification.action.disabled || busy }}
+          onScanSite={onScanSite} onScanError={setStartError} focusTarget={focusTarget}
+          className="atlas-review-verify" describedBy={noteId} siteName={name}
+        />
+      )}
+      {scanError && <p className="atlas-review-inspect-error" role="alert">{scanError}</p>}
+    </li>
+  );
+}
+
 export function ReviewDrawer({ open, ...props }: ReviewDrawerProps) {
   return open ? <OpenReviewDrawer {...props} /> : null;
 }
@@ -99,6 +140,8 @@ function OpenReviewDrawer({
   hashesPending,
   cleanupReady,
   warnings,
+  verificationBlockers,
+  verificationForSite,
   preview,
   loadingPreview,
   stagingBusy,
@@ -106,6 +149,7 @@ function OpenReviewDrawer({
   position,
   onClose,
   onPreview,
+  onScanSite,
   onRemove,
   onInspect,
   onInspected,
@@ -113,6 +157,8 @@ function OpenReviewDrawer({
   const results = useRef<HTMLDivElement>(null);
   const previewButton = useRef<HTMLButtonElement>(null);
   const previewSummary = useRef<HTMLElement>(null);
+  const blockedMessageId = useId();
+  const verificationHeadingId = useId();
   const initialPosition = useRef(position);
   const previousPreview = useRef(preview);
   const navigation = useAnalysisNavigation(
@@ -129,8 +175,7 @@ function OpenReviewDrawer({
     );
     const body = results.current?.closest(".atlas-analysis-body");
     if (!button || !body) {
-      const previewAction = previewButton.current;
-      (previewSummary.current ?? (previewAction?.disabled ? null : previewAction))?.focus();
+      (previewSummary.current ?? previewButton.current)?.focus();
       return;
     }
 
@@ -149,12 +194,22 @@ function OpenReviewDrawer({
   const totalBytes = staged.reduce((sum, file) => sum + file.size_bytes, 0);
   const pending = Math.max(hashesPending, preview?.hashes_pending ?? 0);
   const blockedWarnings = preview && !preview.cleanup_ready ? preview.warnings : warnings;
-  const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0;
+  const stagedById = new Map(staged.map((file) => [file.file_id, file]));
+  const activeBlockers = (verificationBlockers ?? []).flatMap((blocker) => {
+    const files = blocker.staged_file_ids.flatMap((id) => stagedById.get(id) ?? []);
+    return files.length ? [{ siteId: blocker.site_id, files }] : [];
+  });
+  const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0 && activeBlockers.length === 0;
   const busy = Boolean(loadingPreview || stagingBusy || navigation.opening);
   const canPreview = staged.length > 0 && effectiveReady && !busy;
   const blockedPaths = new Map(blockedWarnings.map(({ path, reason }) => [path, reason]));
   const siteNames = new Map(sites.map((site) => [site.id, site.name]));
-  const stagedById = new Map(staged.map((file) => [file.file_id, file]));
+  const verificationSites = activeBlockers.flatMap(({ siteId, files }) => {
+    const verification = verificationForSite(siteId);
+    const name = siteNames.get(siteId);
+    return verification && name ? [{ siteId, name, verification, files }] : [];
+  });
+  const awaitingVerification = new Set(activeBlockers.flatMap(({ files }) => files.map((file) => file.file_id)));
   const readyPreview = effectiveReady && preview?.db_entry_count_stable ? preview : null;
   const groups = readyPreview?.review_groups ?? [];
   const groupedIds = new Set(groups.flatMap((group) => group.staged_file_ids));
@@ -175,7 +230,11 @@ function OpenReviewDrawer({
         <>
           {navigation.error && <p className="atlas-review-inspect-error" role="alert">{navigation.error}</p>}
           <span role={navigation.opening ? "status" : undefined}>{navigation.opening ? "Opening file…" : "Preview only"}</span>
-          <button type="button" className="atlas-analysis-primary" ref={previewButton} onClick={onPreview} disabled={!canPreview}>
+          <button
+            type="button" className="atlas-analysis-primary" ref={previewButton}
+            onClick={canPreview ? onPreview : undefined} aria-disabled={!canPreview || undefined}
+            aria-describedby={!effectiveReady || staged.length === 0 ? blockedMessageId : undefined}
+          >
             {loadingPreview ? "Checking…" : "Preview cleanup"}
           </button>
         </>
@@ -187,21 +246,32 @@ function OpenReviewDrawer({
           <div><dt>Staged file size</dt><dd>{formatBytes(totalBytes)}</dd></div>
         </dl>
         {staged.length === 0 && (
-          <p role="status">No copies staged. Select a folder or file with verified duplicates to start a review.</p>
+          <p id={blockedMessageId} role="status">No copies staged. Select a folder or file with verified duplicates to start a review.</p>
         )}
         {staged.length > 0 && effectiveReady && !preview && !loadingPreview && !error && (
           <p role="status">Preview cleanup to see which copies would remain.</p>
         )}
-        {pending > 0 && (
-          <p className="atlas-analysis-warning" role="status">
-            {formatCount(pending)} staged {pending === 1 ? "hash is" : "hashes are"} pending. Finish hashing or remove the affected copies.
+        {staged.length > 0 && pending > 0 && (
+          <p id={blockedMessageId} className="atlas-analysis-warning" role="status">
+            {formatCount(pending)} staged {pending === 1 ? "hash is" : "hashes are"} pending.
+            {!verificationSites.length && " Finish hashing or remove the affected copies."}
           </p>
         )}
         {staged.length > 0 && pending === 0 && !effectiveReady && (
-          <div className="atlas-analysis-warning" role="status">
+          <div id={blockedMessageId} className="atlas-analysis-warning" role="status">
             <strong>Cleanup suspended</strong>
-            <p>Remove the affected copies or rescan before previewing cleanup.</p>
+            {!verificationSites.length && <p>Review the marked copies or remove them from this cleanup.</p>}
           </div>
+        )}
+        {verificationSites.length > 0 && (
+          <section className="atlas-review-verification" aria-labelledby={verificationHeadingId}>
+            <h3 id={verificationHeadingId}>Verification needed</h3>
+            <ul className="atlas-review-verification-list">
+              {verificationSites.map((site) => (
+                <ReviewVerificationSite key={site.siteId} {...site} busy={busy} onScanSite={onScanSite} focusTarget={previewButton} />
+              ))}
+            </ul>
+          </section>
         )}
         {error && <p className="atlas-analysis-error" role="alert">{error}</p>}
         {preview && (
@@ -253,9 +323,12 @@ function OpenReviewDrawer({
           <ul className="atlas-review-files" aria-label="Staged copies">
             {ungrouped.map((file) => {
               const warning = blockedPaths.get(file.path);
+              const waiting = awaitingVerification.has(file.file_id);
+              const warningLabel = waiting && (!warning || warning === "not_duplicate")
+                ? "Verification pending" : warning ? warningLabels[warning] : undefined;
               return (
                 <ReviewFile
-                  key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warning ? warningLabels[warning] : undefined}
+                  key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warningLabel}
                   disabled={busy} onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={onRemove}
                 />
               );

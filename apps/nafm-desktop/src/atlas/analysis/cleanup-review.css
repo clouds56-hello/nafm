@@ -9,6 +9,42 @@
 
 .atlas-review-result:focus-visible { outline-offset: -2px; }
 
+.atlas-review-verification {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--atlas-border);
+  border-radius: 6px;
+  background: #181a29;
+}
+
+.atlas-review-verification h3 {
+  margin: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--atlas-border);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.atlas-review-verification-list { margin: 0; padding: 0; list-style: none; }
+
+.atlas-review-verification-site {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 10px;
+  padding: 9px 12px;
+}
+
+.atlas-review-verification-site + .atlas-review-verification-site { border-top: 1px solid var(--atlas-border); }
+.atlas-review-verification-site > div { display: grid; min-width: 0; flex: 1 0 112px; gap: 2px; }
+.atlas-review-verification-site strong { font-size: 12px; overflow-wrap: anywhere; }
+.atlas-review-verification-site span { color: var(--atlas-muted); font-size: 11px; line-height: 1.35; }
+.atlas-review-verification-status[data-tone="pending"] { color: #e7ba94; }
+.atlas-review-verification-status[data-tone="active"] { color: var(--atlas-accent); }
+.atlas-review-verify { display: inline-flex; align-items: center; gap: 6px; }
+.atlas-review-verify svg { width: 14px; height: 14px; flex: none; }
+
 .atlas-review-group {
   display: grid;
   min-width: 0;
@@ -112,5 +148,6 @@
 
 @media (pointer: coarse) {
   .atlas-analysis-dialog.is-drawer .atlas-review-file button,
+  .atlas-analysis-dialog.is-drawer .atlas-review-verify,
   .atlas-analysis-dialog.is-drawer .atlas-analysis-footer button { min-height: 44px; }
 }

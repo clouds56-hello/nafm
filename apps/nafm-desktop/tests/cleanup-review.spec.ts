@@ -105,11 +105,14 @@ test("pending hashes block a previously eligible cleanup preview", async ({ page
       const result = await invoke(command, args);
       if (command !== "preview_cleanup") return result;
       const report = result as CleanupPreview;
+      const staged = report.staged_files.find((file) => file.path === path);
+      if (!staged) throw new Error("The selected file is missing from the mock preview.");
       return {
         ...report,
         cleanup_ready: false,
         hashes_pending: 1,
         warnings: [{ path, reason: "not_duplicate" }],
+        verification_blockers: [{ site_id: staged.site_id, staged_file_ids: [staged.file_id] }],
         tracked_file_count_after: report.tracked_file_count_before,
         duplicate_group_count_after: report.duplicate_group_count_before,
         duplicate_file_count_after: report.duplicate_file_count_before,
@@ -122,10 +125,103 @@ test("pending hashes block a previously eligible cleanup preview", async ({ page
   const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
   await expect(preview.getByRole("heading", { name: "Preview blocked", exact: true })).toBeVisible();
   await expect(dialog).toContainText("1 staged hash is pending");
+  const recovery = dialog.getByRole("region", { name: "Verification needed", exact: true });
+  await expect(recovery.getByText("Studio archive", { exact: true })).toBeVisible();
+  await expect(recovery.getByRole("button", { name: /Studio archive/ })).toBeEnabled();
   await expect(dialog).toContainText(sourcePath);
   await expect(dialog.getByText("Estimated space reclaimed", { exact: true })).toHaveCount(0);
   await expect(dialog.getByRole("list", { name: "Would remain", exact: true })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Preview cleanup", exact: true })).toBeDisabled();
+});
+
+test("cleanup review verifies the potential retained copy in place before a fresh dry run", async ({ page }) => {
+  await stageCopy(page, "Backup campaign");
+  await folderPath(page).getByRole("button", { name: "Projects", exact: true }).click();
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await stageCopy(page, "Brand campaign");
+
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const scanTeam = sites.getByRole("button", { name: "Scan Team share", exact: true });
+  const stopTeam = sites.getByRole("button", { name: "Stop scan of Team share", exact: true });
+  await scanTeam.press("Enter");
+  await expect(stopTeam).toBeEnabled();
+  await page.clock.runFor(2_800);
+  await expect(sites.getByText("Verifying files", { exact: true })).toBeVisible();
+  await stopTeam.press("Enter");
+  await page.clock.runFor(550);
+  await expect(scanTeam).toBeEnabled();
+  await sites.getByRole("button", { name: "Close sites", exact: true }).click();
+
+  const openReview = inspector(page).getByRole("button", { name: "Open review", exact: true });
+  await openReview.press("Enter");
+  const dialog = review(page);
+  const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+  await expect(previewButton).toBeDisabled();
+  await expect(dialog.getByText("Would remove the last copy", { exact: true })).toBeVisible();
+  const recovery = dialog.getByRole("region", { name: "Verification needed", exact: true });
+  await expect(recovery.getByText("Team share", { exact: true })).toBeVisible();
+  await expect(recovery.getByRole("button")).toHaveCount(1);
+  const resume = recovery.getByRole("button", { name: "Resume verification for Team share", exact: true });
+  await expect(resume).toBeEnabled();
+  const originalDialog = await dialog.elementHandle();
+
+  const failure = "Team share is temporarily unavailable.";
+  const calls = await page.evaluateHandle((message) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { selector?: { site_id?: string } }) => Promise<unknown> };
+    };
+    const requests: string[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    let failFirstStart = true;
+    bridge.invoke = async (command, args) => {
+      if (command === "start_scan") {
+        requests.push(`${command} ${args.selector?.site_id}`);
+        if (failFirstStart) {
+          failFirstStart = false;
+          throw new Error(message);
+        }
+      } else if (["preview_cleanup", "stage_path", "unstage_path"].includes(command)) {
+        requests.push(command);
+      }
+      return invoke(command, args);
+    };
+    return requests;
+  }, failure);
+
+  await resume.press("Enter");
+  await expect(dialog.getByRole("alert")).toHaveText(failure);
+  await expect(resume).toBeFocused();
+  await expect(resume).toBeEnabled();
+  await resume.press("Enter");
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(recovery.getByRole("button")).toBeDisabled();
+  await expect(recovery.getByRole("button")).toBeFocused();
+  await page.clock.runFor(2_800);
+  await expect(recovery.getByText(/Verifying files/)).toBeVisible();
+  await expect(previewButton).toBeDisabled();
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+
+  await page.clock.runFor(3_000);
+  await expect(previewButton).toBeEnabled();
+  await expect(previewButton).toBeFocused();
+  await expect(recovery).toHaveCount(0);
+  expect(await dialog.evaluate((element, original) => element === original, originalDialog)).toBe(true);
+  expect(await calls.jsonValue()).toEqual(["start_scan team-share", "start_scan team-share"]);
+  await expect(dialog.getByRole("region", { name: "Cleanup preview", exact: true })).toHaveCount(0);
+
+  await previewButton.press("Enter");
+  await expect(dialog.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
+  const staged = dialog.getByRole("list", { name: "Staged for cleanup", exact: true });
+  await expect(staged).toContainText(sourcePath);
+  await expect(staged).toContainText(backupPath);
+  const retained = dialog.getByRole("list", { name: "Would remain", exact: true });
+  await expect(retained.getByRole("listitem")).toHaveCount(1);
+  await expect(retained).toContainText(sharedPath);
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  expect(await calls.jsonValue()).toEqual(["start_scan team-share", "start_scan team-share", "preview_cleanup"]);
 });
 
 test.describe("compact cleanup review inspection", () => {

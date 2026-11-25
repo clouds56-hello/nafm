@@ -465,11 +465,35 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     const before = duplicateGroups(files);
     const duplicateIds = new Set(before.flat().map((file) => file.file_id));
     const fileById = new Map(files.map((file) => [file.file_id, file]));
+    const knownCopies = byContent(files);
+    const verificationBySite = new Map<string, Set<string>>();
     const warnings: StageWarning[] = [];
     let pending = 0;
+
+    function needsVerification(file: IndexedFile) {
+      return !file.verified || workspace.sites.get(file.site_id)?.hash_status !== "ready";
+    }
+
+    function recordBlocker(siteId: string, fileId: string) {
+      const fileIds = verificationBySite.get(siteId) ?? new Set<string>();
+      fileIds.add(fileId);
+      verificationBySite.set(siteId, fileIds);
+    }
+
     for (const file of staged) {
-      if (fileById.get(file.file_id)?.verified === false) pending++;
+      const indexed = fileById.get(file.file_id);
+      if (indexed?.verified === false) pending++;
       if (!duplicateIds.has(file.file_id)) warnings.push({ path: file.path, reason: "not_duplicate" });
+      if (!indexed) continue;
+      if (needsVerification(indexed)) {
+        recordBlocker(indexed.site_id, indexed.file_id);
+        continue;
+      }
+      // Check only known retained copies, including when every eligible copy is already staged.
+      const retained = (knownCopies.get(indexed.content) ?? [])
+        .filter((peer) => peer.verified && !workspace.staged.has(peer.file_id));
+      if (retained.some((peer) => !needsVerification(peer))) continue;
+      retained.forEach((peer) => recordBlocker(peer.site_id, indexed.file_id));
     }
     for (const group of before) {
       if (group.every((file) => workspace.staged.has(file.file_id))) {
@@ -491,6 +515,8 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     return {
       staged_files: staged, hashes_pending: pending,
       cleanup_ready: ready, warnings,
+      verification_blockers: [...verificationBySite].sort(([left], [right]) => compareText(left, right))
+        .map(([site_id, fileIds]) => ({ site_id, staged_file_ids: [...fileIds].sort(compareText) })),
       tracked_file_count_before: files.length, tracked_file_count_after: remaining.length,
       duplicate_group_count_before: before.length, duplicate_group_count_after: after.length,
       duplicate_file_count_before: before.reduce((total, group) => total + group.length, 0),

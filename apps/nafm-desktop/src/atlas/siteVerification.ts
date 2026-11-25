@@ -31,6 +31,7 @@ interface SiteScanState {
   progress?: ScanProgressView;
   interruption?: FirstScanInterruption;
   failure?: string;
+  verificationRequired?: boolean;
 }
 
 function activeStatus(site: SiteOverview, scan: SiteScanState) {
@@ -70,7 +71,7 @@ function describeScanAction(
 
 export function siteVerification(site: SiteOverview, scan: SiteScanState, role?: CoverageRole): SiteVerification {
   const active = activeStatus(site, scan);
-  const needsVerification = !siteAnalysisReady(site);
+  const needsVerification = Boolean(scan.verificationRequired) || !siteAnalysisReady(site);
   const failure = needsVerification ? scan.failure : undefined;
   const interruption = firstScanRecovery(scan.interruption?.kind ?? (failure || site.scan_state === "failed" ? "failed" : undefined));
   const action = needsVerification || interruption ? describeScanAction(site, scan, Boolean(active), interruption, role) : undefined;

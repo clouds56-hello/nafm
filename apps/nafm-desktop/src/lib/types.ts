@@ -180,6 +180,7 @@ export interface Dashboard {
   staged_hashes_pending: number;
   staged_cleanup_ready: boolean;
   staged_warnings: StageWarning[];
+  staged_verification_blockers: StageVerificationBlocker[];
   last_updated_at: string;
 }
 
@@ -424,6 +425,11 @@ export interface StageWarning {
   reason: StageWarningReason;
 }
 
+export interface StageVerificationBlocker {
+  site_id: string;
+  staged_file_ids: string[];
+}
+
 export interface StageAddReport {
   staged_files: DuplicateFile[];
   warnings: StageWarning[];
@@ -439,6 +445,7 @@ export interface CleanupPreview {
   hashes_pending: number;
   cleanup_ready: boolean;
   warnings: StageWarning[];
+  verification_blockers: StageVerificationBlocker[];
   tracked_file_count_before: number;
   tracked_file_count_after: number;
   duplicate_group_count_before: number;

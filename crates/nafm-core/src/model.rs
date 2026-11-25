@@ -418,12 +418,21 @@ pub struct StageReviewGroup {
   pub retained_files: Vec<DuplicateFile>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StageVerificationBlocker {
+  pub site_id: String,
+  pub staged_file_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StageCommitDryRun {
   pub staged_files: Vec<DuplicateFile>,
   pub hashes_pending: u64,
   pub cleanup_ready: bool,
   pub warnings: Vec<StageWarning>,
+  /// Sites to verify before checking the affected staged files again.
+  #[serde(default)]
+  pub verification_blockers: Vec<StageVerificationBlocker>,
   pub tracked_file_count_before: u64,
   pub tracked_file_count_after: u64,
   pub duplicate_group_count_before: u64,

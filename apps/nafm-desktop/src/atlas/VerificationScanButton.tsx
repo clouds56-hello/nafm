@@ -10,9 +10,12 @@ interface VerificationScanButtonProps {
   className: string;
   compact?: boolean;
   describedBy?: string;
+  siteName?: string;
 }
 
-export function VerificationScanButton({ action, onScanSite, onScanError, focusTarget, className, compact, describedBy }: VerificationScanButtonProps) {
+export function VerificationScanButton({
+  action, onScanSite, onScanError, focusTarget, className, compact, describedBy, siteName,
+}: VerificationScanButtonProps) {
   const [starting, setStarting] = useState(false);
   const trackFocus = useCallback((button: HTMLButtonElement | null) => {
     if (!button || !focusTarget) return;
@@ -29,11 +32,13 @@ export function VerificationScanButton({ action, onScanSite, onScanError, focusT
   const showStarting = starting && !action.disabled;
   const label = showStarting ? action.startingLabel : action.label;
   const shortLabel = showStarting ? action.startingShortLabel : action.shortLabel;
+  const accessibleLabel = !siteName ? label : label === "Scan this site"
+    ? `Scan ${siteName}` : `${label.replace(/…$/, "")} for ${siteName}`;
 
   return (
     <button
       ref={trackFocus} className={className} type="button"
-      aria-label={label} aria-disabled={disabled || undefined} aria-describedby={describedBy}
+      aria-label={accessibleLabel} aria-disabled={disabled || undefined} aria-describedby={describedBy}
       onClick={async (event) => {
         if (disabled) return;
         event.currentTarget.focus({ preventScroll: true });

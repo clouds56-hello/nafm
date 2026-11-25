@@ -814,6 +814,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           hashesPending={dashboard.staged_hashes_pending}
           cleanupReady={dashboard.staged_cleanup_ready}
           warnings={dashboard.staged_warnings}
+          verificationBlockers={dashboard.staged_verification_blockers}
+          verificationForSite={(id) => {
+            const blockedSite = dashboard.sites.find((item) => item.id === id);
+            return blockedSite ? siteVerification(blockedSite, { ...verificationScanState(id), verificationRequired: true }) : undefined;
+          }}
+          onScanSite={state.scan}
           preview={state.preview}
           position={reviewed?.returning ? reviewed.position : null}
           loadingPreview={state.previewLoading}
