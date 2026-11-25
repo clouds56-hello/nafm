@@ -5,7 +5,7 @@ import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
 import { DirectoryContents } from "./DirectoryContents";
-import { FileFinderDialog } from "./FileFinderDialog";
+import { FileFinder } from "./FileFinderDialog";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
@@ -16,7 +16,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
-import type { DirectorySort, FileContentMatch, FolderSimilarityMatch, HealthMetric, StorageNode } from "../lib/types";
+import type { DirectorySort, FileContentMatch, FolderSimilarityMatch, HealthMetric, IndexedFileSearchResult, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -26,6 +26,12 @@ interface ContentsVisit {
 }
 
 type InspectorPane = InspectorView | ContentsVisit;
+
+interface FinderSession {
+  workspace: string;
+  openedFrom: "atlas" | "details" | null;
+  result: Pick<IndexedFileSearchResult, "site_id" | "path"> | null;
+}
 
 function directoryKey(
   workspace: string | undefined, site: string | undefined, target: string | null | undefined, folder: string | undefined,
@@ -73,12 +79,20 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
   const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
-  const [finderWorkspace, setFinderWorkspace] = useState<string | null>(null);
+  const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
-  const openFileFinder = useCallback(() => setFinderWorkspace(findWorkspace), [findWorkspace]);
+  const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
+  const openFileFinder = useCallback(() => {
+    if (!findWorkspace) return;
+    setFinderSession((session) => ({
+      workspace: findWorkspace,
+      openedFrom: "atlas",
+      result: session?.workspace === findWorkspace ? session.result : null,
+    }));
+  }, [findWorkspace]);
   const siteId = site?.id;
   const pane = inspectorOpen && siteId ? inspectorBySite.get(siteId) ?? "contents" : null;
   const visit = typeof pane === "object" ? pane : null;
@@ -139,6 +153,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
+  const canReturnToFinder = Boolean(findWorkspace && finder?.result && selected?.kind === "file"
+    && finder.result.site_id === siteId && finder.result.path === selected.path);
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
@@ -289,10 +305,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
 
   async function showIndexedFileInAtlas(match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal) {
     const error = await state.jumpToContentMatch(match, signal);
-    if (error === null) {
-      setFinderWorkspace(null);
-      showAnalysisDetails(match.site_id);
-    }
+    if (error === null) showAnalysisDetails(match.site_id);
     return error;
   }
 
@@ -469,6 +482,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
+                    onBackToResults={canReturnToFinder ? () => {
+                      setFinderSession((session) => session && { ...session, openedFrom: "details" });
+                    } : undefined}
                     onShowInContents={selected?.kind === "file" && !fileOpen
                       ? () => void showFileInContents(selected) : undefined}
                     revealing={revealingFileId === selected?.id}
@@ -538,10 +554,20 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           </div>
         </section>
       </main>
-      {finderWorkspace && finderWorkspace === findWorkspace && (
-        <FileFinderDialog
-          workspace={finderWorkspace} contentRevision={state.contentRevision}
-          onOpen={showIndexedFileInAtlas} onClose={() => setFinderWorkspace(null)}
+      {finder && (
+        <FileFinder
+          key={finder.workspace}
+          workspace={finder.workspace} contentRevision={state.contentRevision}
+          open={finder.openedFrom !== null && finder.workspace === findWorkspace}
+          onOpen={state.jumpToContentMatch}
+          onOpened={(file) => {
+            setFinderSession({ workspace: finder.workspace, openedFrom: null, result: file });
+            showAnalysisDetails(file.site_id);
+          }}
+          onClose={() => {
+            setFinderSession(null);
+            if (finder.openedFrom === "details") setAnalysisFocusRequested(true);
+          }}
         />
       )}
 

@@ -20,6 +20,15 @@ function query(dialog: Locator) {
   return dialog.getByRole("searchbox", { name: "File name", exact: true });
 }
 
+function details(page: Page) {
+  return page.getByRole("complementary", { name: "Inspector" })
+    .getByRole("region", { name: "Storage details" });
+}
+
+function backToResults(page: Page) {
+  return details(page).getByRole("button", { name: "Back to results", exact: true });
+}
+
 function result(dialog: Locator, fileName: RegExp) {
   return dialog.getByRole("list", { name: "Matching files", exact: true }).getByRole("button", { name: fileName });
 }
@@ -54,16 +63,14 @@ test("Find files distinguishes same names across sites and Back restores the sta
 
   await expect(dialog).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Campaign mirror");
-  const details = page.getByRole("complementary", { name: "Inspector" })
-    .getByRole("region", { name: "Storage details" });
-  await expect(details).toContainText(mirroredTrailer);
-  await expect(details).toBeFocused();
+  await expect(details(page)).toContainText(mirroredTrailer);
+  await expect(details(page)).toBeFocused();
 
   await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
-test("Find files reads more matches when scrolled and includes the distant file", async ({ page }) => {
+test("Find files restores a late result and its scroll position while Atlas Back follows inspected files", async ({ page }) => {
   await page.goto("/mock/");
   const opener = page.getByRole("button", { name: "Find files", exact: true });
   await expect(opener).toBeEnabled();
@@ -82,26 +89,51 @@ test("Find files reads more matches when scrolled and includes the distant file"
 
   await opener.click();
   const dialog = finder(page);
-  await query(dialog).fill("proof");
+  const input = query(dialog);
+  const searchText = "  PrOoF  ";
+  await input.fill(searchText);
   await expect(result(dialog, /Proof 001\.jpg/i)).toBeVisible();
   const last = result(dialog, /Proof 096\.jpg/i);
   await expect(last).toHaveCount(0);
 
+  const scroller = dialog.locator(".atlas-analysis-body");
   await expect(async () => {
-    await dialog.getByRole("list", { name: "Matching files", exact: true }).evaluate((list) => {
-      let pane = list as HTMLElement | null;
-      while (pane && pane.tagName !== "DIALOG") {
-        const { overflowY } = getComputedStyle(pane);
-        if ((overflowY === "auto" || overflowY === "scroll") && pane.scrollHeight > pane.clientHeight) {
-          pane.scrollTop = pane.scrollHeight;
-          return;
-        }
-        pane = pane.parentElement;
-      }
-    });
-    await expect(last).toBeInViewport({ timeout: 1_000 });
+    await scroller.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    await expect(last).toBeInViewport({ ratio: 1, timeout: 1_000 });
   }).toPass({ timeout: 12_000 });
-  expect(await offsets.evaluate((reads) => reads.some((offset) => offset > 0))).toBe(true);
+  const loadedOffsets = await offsets.evaluate((reads) => [...reads]);
+  expect(loadedOffsets.some((offset) => offset > 0)).toBe(true);
+  const scrollPosition = await scroller.evaluate((pane) => pane.scrollTop);
+
+  await last.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(details(page).getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+  await backToResults(page).click();
+  await expect(input).toHaveValue(searchText);
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  expect(await scroller.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollPosition, 0);
+
+  const previous = result(dialog, /Proof 095\.jpg/i);
+  await page.keyboard.press("ArrowUp");
+  await expect(previous).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page).getByRole("heading", { name: "Proof 095.jpg", exact: true })).toBeVisible();
+  await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
+  await expect(details(page).getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+
+  await page.keyboard.press("ControlOrMeta+f");
+  await expect(input).toHaveValue(searchText);
+  await expect(previous).toBeFocused();
+  expect(await offsets.evaluate((reads) => [...reads])).toEqual(loadedOffsets);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await opener.click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("");
+  await expect(result(dialog, /Proof 095\.jpg/i)).toHaveCount(0);
 });
 
 test("an older finder result cannot replace a newer query and a failed search can be retried", async ({ page }) => {
@@ -179,5 +211,31 @@ test.describe("compact workspace finder", () => {
     await expect(dialog).toBeHidden();
     await expect(actions).toBeFocused();
     await expect(currentFolder(page)).toHaveText("Studio archive");
+  });
+
+  test("touch inspection can return to the chosen result and close the search", async ({ page }) => {
+    await page.goto("/mock/");
+    const actions = page.getByRole("button", { name: "Workspace actions" });
+    await actions.tap();
+    await page.getByRole("group", { name: "Workspace actions", exact: true })
+      .getByRole("button", { name: "Find files", exact: true }).tap();
+
+    const dialog = finder(page);
+    await query(dialog).fill("proof 001");
+    const proof = result(dialog, /Proof 001\.jpg/i);
+    await proof.tap();
+    await expect(dialog).toBeHidden();
+    await expect(details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true })).toBeVisible();
+    await expect(backToResults(page)).toBeInViewport();
+
+    await backToResults(page).tap();
+    await expect(query(dialog)).toHaveValue("proof 001");
+    await expect(proof).toBeFocused();
+    await expect(proof).toBeInViewport();
+    await dialog.getByRole("button", { name: "Close find files", exact: true }).tap();
+    await expect(dialog).toBeHidden();
+    await expect(backToResults(page)).toBeHidden();
+    await expect(details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true })).toBeVisible();
+    await expect(details(page)).toBeFocused();
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import type { IndexedFileSearchResult } from "../lib/types";
 import { OpenInIcon, SearchIcon } from "../management/Icons";
@@ -8,26 +8,75 @@ import { useAnalysisNavigation } from "./analysis/useAnalysisNavigation";
 import { useIndexedFileSearch } from "./useIndexedFileSearch";
 import "./file-finder.css";
 
-interface FileFinderDialogProps {
+interface FileFinderProps {
   workspace: string;
   contentRevision: number;
+  open: boolean;
   onOpen: (file: IndexedFileSearchResult, signal: AbortSignal) => Promise<string | null>;
+  onOpened: (file: IndexedFileSearchResult) => void;
   onClose: () => void;
 }
 
-export function FileFinderDialog({ workspace, contentRevision, onOpen, onClose }: FileFinderDialogProps) {
+interface FinderPosition {
+  fileId: string;
+  query: string;
+  revision: number;
+  scrollTop: number;
+}
+
+export function FileFinder({ workspace, contentRevision, open, onOpen, onOpened, onClose }: FileFinderProps) {
+  const search = useIndexedFileSearch(workspace, contentRevision, open);
+  const [position, setPosition] = useState<FinderPosition | null>(null);
+  if (!open) return null;
+
+  return (
+    <FileFinderDialog
+      workspace={workspace} search={search} contentRevision={contentRevision}
+      position={position?.query === search.name && position.revision === contentRevision ? position : null}
+      onOpen={onOpen} onClose={onClose}
+      onOpened={(file, scrollTop) => {
+        setPosition({ fileId: file.file_id, query: search.name, revision: contentRevision, scrollTop });
+        onOpened(file);
+      }}
+    />
+  );
+}
+
+interface FileFinderDialogProps {
+  workspace: string;
+  contentRevision: number;
+  search: ReturnType<typeof useIndexedFileSearch>;
+  position: FinderPosition | null;
+  onOpen: FileFinderProps["onOpen"];
+  onOpened: (file: IndexedFileSearchResult, scrollTop: number) => void;
+  onClose: () => void;
+}
+
+function FileFinderDialog({ workspace, contentRevision, search, position, onOpen, onOpened, onClose }: FileFinderDialogProps) {
   const input = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLElement>(null);
   const list = useRef<HTMLUListElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const pendingFocus = useRef<number | null>(null);
-  const search = useIndexedFileSearch(workspace, contentRevision);
-  const navigation = useAnalysisNavigation(onOpen, onClose);
+  const navigation = useAnalysisNavigation(onOpen, onClose, (file) => {
+    onOpened(file, results.current?.closest(".atlas-analysis-body")?.scrollTop ?? 0);
+  });
 
   useLayoutEffect(() => {
     pendingFocus.current = null;
-    results.current?.closest(".atlas-analysis-body")?.scrollTo(0, 0);
-  }, [search.name, workspace, contentRevision]);
+    const pane = results.current?.closest(".atlas-analysis-body");
+    if (!pane) return;
+    pane.scrollTop = position?.scrollTop ?? 0;
+    const row = list.current?.querySelector<HTMLButtonElement>('button[aria-current="true"]');
+    if (!row) return;
+
+    row.focus({ preventScroll: true });
+    const bounds = pane.getBoundingClientRect();
+    const rowBounds = row.getBoundingClientRect();
+    if (rowBounds.bottom <= bounds.top || rowBounds.top >= bounds.bottom) {
+      row.scrollIntoView({ block: "nearest" });
+    }
+  }, [contentRevision, search.name, position]);
 
   useEffect(() => {
     const marker = sentinel.current;
@@ -121,6 +170,7 @@ export function FileFinderDialog({ workspace, contentRevision, onOpen, onClose }
               <li key={file.file_id}>
                 <button
                   className="atlas-analysis-row atlas-finder-result" type="button"
+                  aria-current={file.file_id === position?.fileId || undefined}
                   aria-disabled={navigation.opening || undefined}
                   onClick={navigation.opening ? undefined : () => void navigation.show(file)}
                   onKeyDown={(event) => moveResult(event, index)}

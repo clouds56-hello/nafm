@@ -14,7 +14,7 @@ interface SearchResult {
   error: string | null;
 }
 
-export function useIndexedFileSearch(workspace: string, revision: number) {
+export function useIndexedFileSearch(workspace: string, revision: number, open: boolean) {
   const [query, setQuery] = useState("");
   const name = query.trim();
   const key = JSON.stringify([workspace, revision, name]);
@@ -22,11 +22,12 @@ export function useIndexedFileSearch(workspace: string, revision: number) {
   const [result, setResult] = useState<SearchResult | null>(null);
   const request = requested?.key === key ? requested.request : firstPage;
   const current = result?.key === key ? result : null;
-  const loading = Boolean(name) && current?.request !== request;
-  const error = current?.request === request ? current.error : null;
+  const settled = current?.request === request;
+  const loading = Boolean(name) && !settled;
+  const error = settled ? current.error : null;
 
   useEffect(() => {
-    if (!name) return;
+    if (!open || !name || settled) return;
     let active = true;
     const timer = window.setTimeout(async () => {
       try {
@@ -58,7 +59,7 @@ export function useIndexedFileSearch(workspace: string, revision: number) {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [key, name, request, workspace]);
+  }, [key, name, open, request, settled, workspace]);
 
   const next = current?.next;
   const loadMore = useCallback(() => {

@@ -16,6 +16,7 @@ interface StorageDetailsProps {
   targetCompleteness: number;
   targetName: string | null;
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
+  onBackToResults?: () => void;
   onShowInContents?: () => void;
   revealing: boolean;
   children?: ReactNode;
@@ -49,7 +50,7 @@ function HealthDetail({
 
 export function StorageDetails({
   location, entries, selected, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
-  onShowInContents, revealing, children,
+  onBackToResults, onShowInContents, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -80,17 +81,29 @@ export function StorageDetails({
           <FolderOpenControl node={node} onOpen={onOpenFolder} />
         </div>
       </header>
-      {onShowInContents && (
-        <button
-          className="atlas-text-button atlas-detail-reveal" type="button"
-          aria-disabled={revealing || undefined} aria-busy={revealing || undefined}
-          onClick={onShowInContents}
-        >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M1.5 5.5v-2a1 1 0 0 1 1-1h3.7l1.7 2h5.6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM5 9h6m-2-2 2 2-2 2" />
-          </svg>
-          {revealing ? "Finding file…" : "Show in Contents"}
-        </button>
+      {(onBackToResults || onShowInContents) && (
+        <div className="atlas-detail-actions">
+          {onBackToResults && (
+            <button className="atlas-text-button atlas-detail-action" type="button" aria-haspopup="dialog" onClick={onBackToResults}>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M13 8H3m5-5L3 8l5 5" />
+              </svg>
+              Back to results
+            </button>
+          )}
+          {onShowInContents && (
+            <button
+              className="atlas-text-button atlas-detail-action" type="button"
+              aria-disabled={revealing || undefined} aria-busy={revealing || undefined}
+              onClick={onShowInContents}
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M1.5 5.5v-2a1 1 0 0 1 1-1h3.7l1.7 2h5.6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM5 9h6m-2-2 2 2-2 2" />
+              </svg>
+              {revealing ? "Finding file…" : "Show in Contents"}
+            </button>
+          )}
+        </div>
       )}
       <dl className="atlas-details">
         <div className="atlas-detail-path">

@@ -51,6 +51,10 @@
 }
 
 .atlas-finder-result:focus-visible { outline-offset: -2px; }
+.atlas-analysis-dialog button.atlas-finder-result[aria-current="true"] {
+  background: #23263d;
+  box-shadow: inset 2px 0 var(--atlas-accent);
+}
 .atlas-finder-result > svg { width: 15px; height: 15px; color: var(--atlas-accent); }
 .atlas-finder-result[aria-disabled="true"] { opacity: .65; }
 .atlas-finder-location, .atlas-finder-file-info { display: grid; min-width: 0; gap: 3px; }
@@ -70,6 +74,10 @@
 .atlas-finder-file-info [data-verified] { color: #c6d99b; }
 .atlas-finder-error { margin: 0; color: #f3b2ba; overflow-wrap: anywhere; }
 .atlas-finder-sentinel { height: 1px; }
+
+@media (hover: none) {
+  .atlas-analysis-dialog button.atlas-finder-result:hover:not([aria-current="true"]) { background: transparent; }
+}
 
 @media (max-width: 540px) {
   .atlas-finder-toolbar { padding-inline: 12px; }

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 export function useAnalysisNavigation<Match>(
   onJump: (match: Match, signal: AbortSignal) => Promise<string | null>,
   onClose: () => void,
+  onOpened: (match: Match) => void = onClose,
 ) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +25,7 @@ export function useAnalysisNavigation<Match>(
     try {
       const failure = await onJump(match, request.signal);
       if (request.signal.aborted) return;
-      if (failure === null) onClose();
+      if (failure === null) onOpened(match);
       else setError(failure);
     } finally {
       attempt.current = null;
