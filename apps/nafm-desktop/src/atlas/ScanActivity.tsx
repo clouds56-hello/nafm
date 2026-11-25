@@ -1,8 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { formatCount } from "../lib/format";
-import { scanPhaseLabel } from "../lib/scanView";
+import { firstScanRecovery, scanPhaseLabel, scanSitePublishedInventory } from "../lib/scanView";
 import type {
-  ScanActivityResult, ScanCompletionView, ScanProgressView, ScanTask, ScanTaskSiteState, SiteOverview,
+  FirstScanInterruption, ScanActivityResult, ScanCompletionView, ScanProgressView, ScanTask, ScanTaskSiteState, SiteOverview,
 } from "../lib/types";
 import { CheckIcon, RefreshIcon, WarningIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
@@ -15,6 +15,7 @@ export interface ScanActivityProps {
   completionBySite: ReadonlyMap<string, ScanCompletionView>;
   cancellingRequestIds: ReadonlySet<number>;
   blockedSiteIds: ReadonlySet<string>;
+  firstScanInterruptions: ReadonlyMap<string, FirstScanInterruption>;
   lastResult: ScanActivityResult | null;
   onStop: (requestId: number) => void;
   onScan: (siteId: string) => Promise<void>;
@@ -42,23 +43,35 @@ function activityIsStopping(task: ScanTask, cancellingRequestIds: ReadonlySet<nu
 
 interface ScanRecovery {
   site: SiteOverview;
-  action: "Resume verification" | "Retry scan";
-  pending: number;
+  action: "Resume verification" | "Retry scan" | "Restart scan";
+  summary: string | null;
+  interruption?: FirstScanInterruption;
 }
 
-function scanRecoveries({ sites, blockedSiteIds, lastResult }: ScanActivityProps) {
+const unsavedInventory = "Inventory wasn’t saved";
+
+function scanRecoveries({ sites, blockedSiteIds, firstScanInterruptions, lastResult }: ScanActivityProps) {
   const latestStates = new Map(lastResult?.site_states.map((state) => [state.site_id, state]));
   const recoveries = new Map<string, ScanRecovery>();
   for (const site of sites) {
     if (blockedSiteIds.has(site.id)) continue;
+    const interruption = firstScanInterruptions.get(site.id);
+    const firstRecovery = firstScanRecovery(interruption?.kind);
+    if (firstRecovery) {
+      recoveries.set(site.id, {
+        site, action: firstRecovery.action, summary: unsavedInventory, interruption,
+      });
+      continue;
+    }
     const state = latestStates.get(site.id);
     if (state?.status === "completed" && state.hashes_pending === 0) continue;
-    const pending = site.latest_inventory_at ? site.pending_hash_count : 0;
+    const pending = site.latest_inventory_at ? site.pending_hash_count
+      : state && scanSitePublishedInventory(state) ? state.hashes_pending : 0;
     const singleFailure = lastResult?.kind === "failed" && latestStates.size === 1 && state?.status === "running";
-    if (singleFailure) {
-      recoveries.set(site.id, { site, action: "Retry scan", pending });
-    } else if (pending > 0) {
-      recoveries.set(site.id, { site, action: "Resume verification", pending });
+    if (singleFailure || pending > 0) {
+      recoveries.set(site.id, {
+        site, action: singleFailure ? "Retry scan" : "Resume verification", summary: verificationSummary(null, pending),
+      });
     }
   }
   return recoveries;
@@ -99,8 +112,9 @@ function SiteProgress({ name, showName, snapshot, progress, completion, stopping
   );
 }
 
-function ActivityPanel({ tasks, sites, progressBySite, completionBySite, cancellingRequestIds, lastResult, onStop, onScan, recoveries }:
-  ScanActivityProps & { recoveries: ReadonlyMap<string, ScanRecovery> }) {
+function ActivityPanel({
+  tasks, sites, progressBySite, completionBySite, cancellingRequestIds, firstScanInterruptions, lastResult, onStop, onScan, recoveries,
+}: ScanActivityProps & { recoveries: ReadonlyMap<string, ScanRecovery> }) {
   const panel = useRef<HTMLDivElement>(null);
   const result = useRef<HTMLElement>(null);
   const restoreFocus = useRef(false);
@@ -121,25 +135,31 @@ function ActivityPanel({ tasks, sites, progressBySite, completionBySite, cancell
         request?.focus({ preventScroll: true });
         request?.scrollIntoView({ block: "nearest" });
       }
+    } else if (start && !startingIds.has(start.siteId)) {
+      focusAfterStart.current = null;
     }
     if (!restoreFocus.current) return;
     restoreFocus.current = false;
     if (document.activeElement !== document.body) return;
     (result.current ?? panel.current)?.focus({ preventScroll: true });
-  }, [tasks, lastResult]);
+  }, [tasks, lastResult, startingIds]);
 
   const names = new Map(sites.map((site) => [site.id, site.name]));
   const siteName = (id: string | undefined) => (id && names.get(id)) || "Storage site";
   const reportedSiteIds = new Set(lastResult?.site_states.map((state) => state.site_id));
-  const unlisted = [...recoveries.values()].filter(({ site }) => !reportedSiteIds.has(site.id));
+  const belongsInLatestResult = ({ site, interruption }: ScanRecovery) => reportedSiteIds.has(site.id)
+    && (!interruption || interruption.request_id === lastResult?.request_id);
+  const unlisted = [...recoveries.values()].filter((recovery) => !belongsInLatestResult(recovery));
+  const interrupted = unlisted.filter((recovery) => recovery.interruption);
+  const verificationPending = unlisted.filter((recovery) => !recovery.interruption);
 
-  function recoveryRow({ site, action, pending }: ScanRecovery, summary = verificationSummary(null, pending)) {
+  function recoveryRow({ site, action, summary }: ScanRecovery, resultSummary = summary) {
     const starting = startingIds.has(site.id);
     return (
       <li key={site.id} className="atlas-scan-site atlas-scan-recovery-row">
         <div>
           <strong>{site.name}</strong>
-          {summary && <div className="atlas-scan-site-status">{summary}</div>}
+          {resultSummary && <div className="atlas-scan-site-status">{resultSummary}</div>}
         </div>
         <button className="atlas-scan-action atlas-scan-resume" type="button"
           aria-label={`${action} of ${site.name}`} aria-disabled={starting || undefined} onClick={async (event) => {
@@ -209,9 +229,10 @@ function ActivityPanel({ tasks, sites, progressBySite, completionBySite, cancell
           <ul className="atlas-scan-site-list" role="list">
             {lastResult.site_states.map((state) => {
               const recovery = recoveries.get(state.site_id);
-              const summary = state.status === "completed" || state.phase === "hashing" || state.phase === "finalizing"
-                ? verificationSummary(state.total_files, state.hashes_pending) : null;
-              if (recovery) return recoveryRow(recovery, summary ?? undefined);
+              const interruption = firstScanInterruptions.get(state.site_id);
+              const summary = interruption?.request_id === lastResult.request_id ? unsavedInventory
+                : scanSitePublishedInventory(state) ? verificationSummary(state.total_files, state.hashes_pending) : null;
+              if (recovery && belongsInLatestResult(recovery)) return recoveryRow(recovery, summary ?? undefined);
               return (
                 <li key={state.site_id} className="atlas-scan-site">
                   <strong>{siteName(state.site_id)}</strong>
@@ -222,10 +243,16 @@ function ActivityPanel({ tasks, sites, progressBySite, completionBySite, cancell
           </ul>
         </section>
       )}
-      {unlisted.length > 0 && (
+      {interrupted.length > 0 && (
+        <section className="atlas-scan-request" aria-label="Interrupted scans">
+          <strong>Interrupted scans</strong>
+          <ul className="atlas-scan-site-list" role="list">{interrupted.map((recovery) => recoveryRow(recovery))}</ul>
+        </section>
+      )}
+      {verificationPending.length > 0 && (
         <section className="atlas-scan-request" aria-label="Verification pending">
           <strong>Verification pending</strong>
-          <ul className="atlas-scan-site-list" role="list">{unlisted.map((recovery) => recoveryRow(recovery))}</ul>
+          <ul className="atlas-scan-site-list" role="list">{verificationPending.map((recovery) => recoveryRow(recovery))}</ul>
         </section>
       )}
     </div>
@@ -237,7 +264,8 @@ export function ScanActivity(props: ScanActivityProps) {
   const recoveries = scanRecoveries(props);
   const active = [...tasks.values()];
   const stopping = active.length > 0 && active.every((task) => activityIsStopping(task, cancellingRequestIds));
-  const idleSummary = recoveries.size ? "Verification pending" : null;
+  const idleSummary = [...recoveries.values()].some((recovery) => recovery.interruption) ? "Interrupted scans"
+    : recoveries.size ? "Verification pending" : null;
   const summary = active.length > 1 ? `${formatCount(active.length)} scans`
     : active.length === 1 ? (stopping ? "Stopping…" : "Scanning")
     : lastResult && lastResult.kind !== "completed" ? resultLabels[lastResult.kind]

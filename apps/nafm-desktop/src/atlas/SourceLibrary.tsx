@@ -1,7 +1,7 @@
 import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import { formatBytes, formatCount } from "../lib/format";
-import { scanPhaseLabel } from "../lib/scanView";
-import type { ScanProgressView, SiteOverview } from "../lib/types";
+import { firstScanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
+import type { FirstScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
 import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
 import "./sources.css";
 
@@ -19,6 +19,7 @@ interface SourceLibraryProps {
   scanAllRequests: ReadonlySet<number>;
   cancellingRequests: ReadonlySet<number>;
   progressBySite: ReadonlyMap<string, ScanProgressView>;
+  firstScanInterruptions: ReadonlyMap<string, FirstScanInterruption>;
   onCancelScan: (requestId: number) => void;
   onManage: (site_id: string) => void;
   error?: string | null;
@@ -38,7 +39,7 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 
 export function SourceLibrary({
   sites, workspaceName, activeId, addedSite, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
-  scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction, recovery,
+  scanAllRequests, cancellingRequests, progressBySite, firstScanInterruptions, onCancelScan, onManage, error, errorAction, recovery,
 }: SourceLibraryProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -97,8 +98,10 @@ export function SourceLibrary({
                 const stopping = scanning && cancellingRequests.has(requestId);
                 const scanAll = scanning && scanAllRequests.has(requestId);
                 const progress = scanning ? progressBySite.get(site.id) : undefined;
+                const firstScan = firstScanRecovery(firstScanInterruptions.get(site.id)?.kind);
+                const hasInventory = siteHasInventory(site);
                 const justAdded = addedSite?.id === site.id;
-                const showAdded = justAdded && !scanning && site.scan_state === "idle" && !site.latest_inventory_at;
+                const showAdded = justAdded && !scanning && !firstScan && site.scan_state === "idle" && !hasInventory;
                 return (
                   <li key={site.id} className="source-row" data-added={showAdded || undefined}>
                     <button
@@ -119,14 +122,15 @@ export function SourceLibrary({
                       </span>
                       <span id={`source-inventory-${site.id}`} className="source-inventory" data-scanning={scanning}>
                         {showAdded && <span className="source-added" role="status">Site added</span>}
-                        <span>{stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase) : inventoryLabel(site, scanning)}</span>
+                        <span>{stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase)
+                          : scanning ? inventoryLabel(site, true) : firstScan?.status ?? inventoryLabel(site, false)}</span>
                         {progress ? (
                           <small title={progress.current_path ?? undefined}>
                             {formatCount(progress.processed_files)}{progress.total_files === null ? "" : ` / ${formatCount(progress.total_files)}`} files
                           </small>
-                        ) : (site.latest_inventory_at || site.total_files > 0) && <small>{formatCount(site.total_files)} files</small>}
+                        ) : hasInventory && <small>{formatCount(site.total_files)} files</small>}
                       </span>
-                      <span className="source-size">{site.latest_inventory_at || site.total_files > 0 ? formatBytes(site.total_bytes) : "—"}</span>
+                      <span className="source-size">{hasInventory ? formatBytes(site.total_bytes) : "—"}</span>
                     </button>
                     <div className="source-row-actions">
                       {scanning ? (
@@ -134,8 +138,8 @@ export function SourceLibrary({
                           {stopping ? "Stopping…" : scanAll ? "Stop all" : "Stop scan"}
                         </button>
                       ) : (
-                        <button className="source-action" type="button" aria-label={`Scan ${site.name}`} disabled={blockedIds.has(site.id)} onClick={() => onScan(site.id)}>
-                          {site.latest_inventory_at ? "Rescan" : "Scan"}
+                        <button className="source-action" type="button" aria-label={firstScan ? `${firstScan.action} of ${site.name}` : `Scan ${site.name}`} disabled={blockedIds.has(site.id)} onClick={() => onScan(site.id)}>
+                          {firstScan?.shortAction ?? (site.latest_inventory_at ? "Rescan" : "Scan")}
                         </button>
                       )}
                       <button className="source-action" type="button" aria-label={`Manage ${site.name}`} onClick={() => onManage(site.id)}>Manage</button>

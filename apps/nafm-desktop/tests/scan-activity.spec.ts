@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 const studio = "Studio archive";
 const field = "Field drive";
+const survey = "Field survey";
 
 function activityTrigger(page: Page) {
   return page.getByRole("button", { name: "Scan activity", exact: true });
@@ -28,6 +29,127 @@ async function openMock(page: Page, scenario = "") {
   await page.goto(scenario ? `/mock/?scenario=${scenario}` : "/mock/");
   await expect(currentFolder(page)).toHaveText(studio);
 }
+
+async function addSurveySite(page: Page) {
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await sites.getByRole("button", { name: "Add site", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add site", exact: true });
+  await dialog.getByRole("textbox", { name: "Site name" }).fill(survey);
+  await dialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Survey");
+  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+  await sites.getByRole("button", { name: `Open ${survey} in Atlas`, exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText(survey);
+  return sites;
+}
+
+test("a first scan stopped before saving inventory can be restarted from another site", async ({ page }) => {
+  await openMock(page);
+  await openProjects(page);
+  const sites = await addSurveySite(page);
+  const figure = page.getByRole("figure");
+  await figure.getByRole("button", { name: "Scan this site", exact: true }).press("Enter");
+  await expect(figure.getByText("Finding files", { exact: true })).toBeVisible();
+  await sites.getByRole("button", { name: `Open ${studio} in Atlas`, exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+
+  const activity = activityPanel(page);
+  await activityTrigger(page).press("Enter");
+  await activity.getByRole("button", { name: `Stop scan of ${survey}`, exact: true }).press("Enter");
+  await page.clock.runFor(550);
+  const latest = activity.getByRole("region", { name: "Latest scan result" });
+  await expect(latest.getByText("Scan stopped", { exact: true })).toBeVisible();
+  await expect(latest.getByText("Inventory wasn’t saved", { exact: true })).toBeVisible();
+  await expect(latest.getByRole("button", { name: `Restart scan of ${survey}`, exact: true })).toBeVisible();
+  await expect(page.getByText("Scan stopped. Indexed files remain available.", { exact: true })).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await sites.getByRole("button", { name: `Open ${survey} in Atlas`, exact: true }).press("Enter");
+  await expect(figure.getByText("Scan stopped", { exact: true })).toBeVisible();
+  await expect(figure.getByRole("button", { name: /^Restart scan\b/ })).toBeEnabled();
+
+  await sites.getByRole("button", { name: `Open ${studio} in Atlas`, exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await sites.getByRole("button", { name: `Scan ${field}`, exact: true }).press("Enter");
+  await activityTrigger(page).press("Enter");
+  await expect(activity.getByRole("button", { name: `Stop scan of ${field}`, exact: true })).toBeEnabled();
+  await page.clock.runFor(5_700);
+  await expect(latest.getByText("Scan finished", { exact: true })).toBeVisible();
+  const interrupted = activity.getByRole("region", { name: "Interrupted scans" });
+  const restart = interrupted.getByRole("button", { name: `Restart scan of ${survey}`, exact: true });
+  await restart.press("Enter");
+  await expect(activity.getByRole("region", { name: survey, exact: true })).toBeFocused();
+  await expect(activity.getByRole("button", { name: `Stop scan of ${survey}`, exact: true })).toBeEnabled();
+  await expect(currentFolder(page)).toHaveText("Projects");
+});
+
+test("first-scan failure remains visible after the dashboard refresh and can be retried", async ({ page }) => {
+  await openMock(page);
+  await addSurveySite(page);
+  await page.evaluate(() => {
+    type PreviewCall = { event?: string; payload?: { request_id: number; kind: string; message: string | null } };
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args?: PreviewCall | { requestId: number }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let failedRequest: number | undefined;
+    bridge.invoke = async (command, args) => {
+      if (command === "plugin:event|emit" && args && "payload" in args && args.event === "task://scan/events"
+        && args.payload && args.payload.request_id === failedRequest && args.payload.kind === "cancelled") {
+        // Use the mock's normal terminal cleanup while substituting a discovery error.
+        return invoke(command, {
+          ...args, payload: { ...args.payload, kind: "failed", message: "Couldn’t read the survey folder." },
+        });
+      }
+      const response = await invoke(command, args);
+      if (command === "start_scan" && failedRequest === undefined) {
+        const { request_id } = response as { request_id: number };
+        failedRequest = request_id;
+        window.setTimeout(() => void invoke("cancel_scan", { requestId: request_id }), 60);
+      }
+      return response;
+    };
+  });
+
+  const figure = page.getByRole("figure");
+  await figure.getByRole("button", { name: "Scan this site", exact: true }).press("Enter");
+  await expect(figure.getByText("Finding files", { exact: true })).toBeVisible();
+  await page.clock.runFor(600);
+  await expect(figure.getByText("Scan failed", { exact: true })).toBeVisible();
+  await expect(figure.getByRole("button", { name: /^Retry scan\b/ })).toBeEnabled();
+  await activityTrigger(page).press("Enter");
+  const activity = activityPanel(page);
+  const latest = activity.getByRole("region", { name: "Latest scan result" });
+  await expect(latest.getByText("Couldn’t read the survey folder.", { exact: true })).toBeVisible();
+  await latest.getByRole("button", { name: `Retry scan of ${survey}`, exact: true }).press("Enter");
+  await expect(activity.getByRole("button", { name: `Stop scan of ${survey}`, exact: true })).toBeEnabled();
+  await expect(currentFolder(page)).toHaveText(survey);
+});
+
+test("stopping the first verification keeps its inventory browsable", async ({ page }) => {
+  await openMock(page);
+  await addSurveySite(page);
+  const figure = page.getByRole("figure");
+  await figure.getByRole("button", { name: "Scan this site", exact: true }).press("Enter");
+  await expect(figure.getByText("Finding files", { exact: true })).toBeVisible();
+  await page.clock.runFor(2_800);
+  await figure.getByRole("button", { name: /^Drone imagery,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
+
+  await activityTrigger(page).press("Enter");
+  const activity = activityPanel(page);
+  await activity.getByRole("button", { name: `Stop scan of ${survey}`, exact: true }).press("Enter");
+  await page.clock.runFor(550);
+  const latest = activity.getByRole("region", { name: "Latest scan result" });
+  await expect(latest.getByText("Scan stopped", { exact: true })).toBeVisible();
+  await expect(latest.getByText(/\d+ files awaiting verification/)).toBeVisible();
+  await expect(latest.getByRole("button", { name: `Restart scan of ${survey}`, exact: true })).toHaveCount(0);
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
+  await expect(figure.getByRole("button", { name: /^Headland survey\.dng,/ })).toBeVisible();
+  await latest.getByRole("button", { name: `Resume verification of ${survey}`, exact: true }).press("Enter");
+  await expect(activity.getByRole("button", { name: `Stop scan of ${survey}`, exact: true })).toBeEnabled();
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
+});
 
 test.describe("compact scan activity", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });

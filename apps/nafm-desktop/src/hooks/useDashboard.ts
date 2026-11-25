@@ -25,8 +25,10 @@ import {
   retainedScanCompletionFromSiteState,
   scanCompletionFromEvent,
   scanProgressFromEvent,
+  scanSitePublishedInventory,
   setCurrentScanProgress,
   silenceScanCompletions,
+  siteHasInventory,
 } from "../lib/scanView";
 import type {
   CleanupPreview,
@@ -36,6 +38,7 @@ import type {
   DuplicateFile,
   FileContentMatch,
   FinderPosition,
+  FirstScanInterruption,
   FolderOpenDestination,
   FolderSimilarityMatch,
   HealthMetric,
@@ -216,6 +219,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [activeScanTasks, setActiveScanTasks] = useState<Map<number, ScanTask>>(new Map());
   const [lastScanResult, setLastScanResult] = useState<ScanActivityResult | null>(null);
+  const [firstScanInterruptions, setFirstScanInterruptions] = useState<ReadonlyMap<string, FirstScanInterruption>>(new Map());
   const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -341,6 +345,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         setActiveRequestIds(new Set());
         setActiveScanTasks(new Map());
         setLastScanResult(null);
+        setFirstScanInterruptions(new Map());
         setCancellingRequestIds(new Set());
         currentSiteIdsRef.current = new Set();
         terminalRequestIdsRef.current.clear();
@@ -577,6 +582,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
     workspaceNameRef.current = next.workspace_name;
     setDashboard(next);
+    setFirstScanInterruptions((current) => {
+      if (current.size === 0) return current;
+      if (workspaceChanged) return new Map();
+      const retain = new Map<string, FirstScanInterruption>();
+      for (const site of next.sites) {
+        const interruption = current.get(site.id);
+        if (interruption && !siteHasInventory(site)) retain.set(site.id, interruption);
+      }
+      return retain.size === current.size ? current : retain;
+    });
     invalidateCleanupPreview();
     setActiveRequestIds(activeIds);
     setActiveScanTasks(new Map(activeTasks.map((task) => [task.request_id, task])));
@@ -827,13 +842,35 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       }
     }
     if (event.scope === "task" && (event.kind === "completed" || event.kind === "failed" || event.kind === "cancelled")) {
+      if (terminalRequestIdsRef.current.has(event.request_id)) return;
+      const kind = event.kind;
       const siteStates = event.site_states?.filter((site) => currentSiteIdsRef.current.has(site.site_id)) ?? [];
-      if (siteStates.length > 0 && !terminalRequestIdsRef.current.has(event.request_id)) {
+      const indexedSites = new Set(dashboardRef.current?.sites.filter(siteHasInventory).map((site) => site.id));
+      const hasInventory = (site: (typeof siteStates)[number]) => indexedSites.has(site.site_id) || scanSitePublishedInventory(site);
+      const stoppedBeforeStart = kind === "cancelled" && siteStates.length === 1;
+      const beforeInventory = siteStates.filter((site) => (
+        site.status === "running" || (stoppedBeforeStart && site.status === "queued")
+      ) && !hasInventory(site));
+      if (siteStates.length > 0) {
         setLastScanResult({
           request_id: event.request_id,
-          kind: event.kind,
+          kind,
           site_states: siteStates,
           message: event.message,
+        });
+        const interrupted = kind === "completed" ? new Set<string>() : new Set(beforeInventory.map((site) => site.site_id));
+        setFirstScanInterruptions((current) => {
+          const next = new Map(current);
+          for (const site of siteStates) {
+            if ((current.get(site.site_id)?.request_id ?? 0) > event.request_id) continue;
+            if (kind !== "completed" && interrupted.has(site.site_id)) {
+              next.set(site.site_id, { request_id: event.request_id, kind });
+            } else if (site.status !== "queued") {
+              next.delete(site.site_id);
+            }
+          }
+          if (next.size === 0 && current.size === 0) return current;
+          return next;
         });
       }
       clearAnalysisRefreshRequest(event.request_id);
@@ -878,7 +915,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       scheduleFinalAnalysisRefresh((event.site_states ?? []).map((state) => state.site_id));
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
       if (event.kind === "cancelled") {
-        setNotice("Scan stopped. Indexed files remain available.");
+        const message = siteStates.some(hasInventory) ? "Scan stopped. Indexed files remain available."
+          : beforeInventory.length > 0 ? "Scan stopped before inventory was saved." : "Scan stopped.";
+        setNotice(message);
       }
     }
   }, [
@@ -1622,6 +1661,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     retryTree,
     progressBySite,
     completionBySite,
+    firstScanInterruptions,
     activeScanTasks,
     lastScanResult,
     backendScanningSiteIds: backendScanState.scanning_site_ids,
@@ -1660,6 +1700,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     loadingMoreChildren,
     childrenPage,
     completionBySite,
+    firstScanInterruptions,
     cancellingRequestIds,
     cancellingTaskCount,
     coverageTargetSite,

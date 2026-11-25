@@ -398,6 +398,11 @@ export interface ScanActivityResult {
   message: string | null;
 }
 
+export interface FirstScanInterruption {
+  request_id: number;
+  kind: "cancelled" | "failed";
+}
+
 export interface DuplicateFile {
   file_id: string;
   site_id: string;

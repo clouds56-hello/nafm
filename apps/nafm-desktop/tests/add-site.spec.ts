@@ -236,7 +236,7 @@ test("an empty atlas opens Add site within a short viewport", async ({ page }) =
   await expect(selected).toHaveAttribute("aria-current", "true");
 });
 
-test("the first scan can be started, stopped and resumed from the atlas", async ({ page }) => {
+test("the first scan can be started, stopped and restarted from the atlas", async ({ page }) => {
   await page.goto("/mock/?scenario=empty");
   await page.getByRole("button", { name: "Add site", exact: true }).click();
   const dialog = addDialog(page);
@@ -250,9 +250,10 @@ test("the first scan can be started, stopped and resumed from the atlas", async 
   await scan.press("Enter");
   await expect(map.getByText("Finding files", { exact: true })).toBeVisible();
   await map.getByRole("button", { name: "Stop scan", exact: true }).click();
-  await expect(scan).toBeEnabled();
+  const restart = map.getByRole("button", { name: /^Restart scan\b/ });
+  await expect(restart).toBeEnabled();
 
-  await scan.press("Enter");
+  await restart.press("Enter");
   await expect(map.getByRole("button", { name: /^Sample Folder,/ })).toBeFocused({ timeout: 15_000 });
   const folder = map.getByRole("button", { name: /^Drone imagery,/ });
   await expect(folder).toBeVisible();

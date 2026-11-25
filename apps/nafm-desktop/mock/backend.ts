@@ -136,7 +136,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
         const pending = total - reused - hashed;
         if (known) {
           setTree(workspace, {
-            ...site, hash_status: pending > 0 ? "pending" : "ready",
+            ...site, hash_status: "pending",
             latest_inventory_at: new Date().toISOString(),
           }, verifiedInventory(tree, reused + hashed).children);
         }
@@ -195,15 +195,19 @@ export function installPreviewBackend(scenario: PreviewScenario) {
       return { request_id: id, outcome: "already_requested", status: "cancelling", effective_mode: "graceful" };
     }
     scan.task.status = "cancelling";
-    window.clearInterval(scan.timer);
     notify(scan.task, "cancelling");
+    const report: CancelScanReport = { request_id: id, outcome: "requested", status: "cancelling", effective_mode: "graceful" };
+    // The published hashes become ready when atomic finalization finishes, even after a stop request.
+    if (scan.task.site_states.every((state) => state.phase === "finalizing")) return report;
+
+    window.clearInterval(scan.timer);
     window.setTimeout(() => {
       scans.delete(id);
       scan.task.status = "cancelled";
       for (const state of scan.task.site_states) notify(scan.task, "cancelled", state);
       notify(scan.task, "cancelled");
     }, 350);
-    return { request_id: id, outcome: "requested", status: "cancelling", effective_mode: "graceful" };
+    return report;
   }
 
   function loadDashboard(): Dashboard {

@@ -21,6 +21,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
+import { siteHasInventory } from "../lib/scanView";
 import type { DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage, HealthMetric, StorageNode } from "../lib/types";
 import { resolveAddedSite, type AddSiteOrigin, type SiteAddition } from "../management/siteAddition";
 
@@ -190,10 +191,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   }
   const requestId = site ? state.scanRequestBySite.get(site.id) : undefined;
   const siteRoot = state.activeTree?.root;
-  const awaitingInventory = site && site.hash_status === "unscanned" && !site.latest_inventory_at
-    && !site.last_scanned_at && site.total_files === 0;
+  const awaitingInventory = site && !siteHasInventory(site);
   // The dashboard can publish counts before the first navigable tree reaches the view.
-  const awaitingTree = site && requestId !== undefined && site.total_files > 0 && siteRoot?.file_count === 0;
+  const awaitingTree = Boolean(site && site.total_files > 0 && siteRoot?.file_count === 0);
   const firstScan = site && siteRoot?.children.length && (awaitingInventory || awaitingTree)
     ? {
       requestId,
@@ -201,7 +201,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       scanAll: requestId !== undefined && state.scanAllRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(site.id),
-      failed: site.scan_state === "failed",
+      inventoryLoading: awaitingTree,
+      interruption: state.firstScanInterruptions.get(site.id)?.kind ?? (site.scan_state === "failed" ? "failed" as const : undefined),
       onScan: () => state.scan(site.id),
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
@@ -512,6 +513,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           tasks: state.activeScanTasks,
           progressBySite: state.progressBySite,
           completionBySite: state.completionBySite,
+          firstScanInterruptions: state.firstScanInterruptions,
           cancellingRequestIds: state.cancellingRequestIds,
           blockedSiteIds: state.scanBlockedSiteIds,
           lastResult: state.lastScanResult,
@@ -599,6 +601,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
               scanAllRequests={state.scanAllRequestIds}
               cancellingRequests={state.cancellingRequestIds}
               progressBySite={state.progressBySite}
+              firstScanInterruptions={state.firstScanInterruptions}
               open={sitesOpen}
               onOpen={() => { lastOpened.current = "sites"; setSitesOpen(true); }}
               onClose={() => setSitesOpen(false)}
@@ -775,6 +778,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           scanAllRequests={state.scanAllRequestIds}
           cancellingRequests={state.cancellingRequestIds}
           progressBySite={state.progressBySite}
+          firstScanInterruptions={state.firstScanInterruptions}
           onScan={(id) => void state.scan(id)}
           onCancelScan={(id) => void state.cancel(id)}
           onManage={(id) => { setSourcesOpen(false); workspace.openManagement("sites", id); }}

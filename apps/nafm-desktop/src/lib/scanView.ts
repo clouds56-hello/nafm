@@ -7,6 +7,7 @@ import type {
   ScanTaskEvent,
   ScanTaskSiteState,
   SiteOverview,
+  FirstScanInterruption,
 } from "./types";
 
 export function scanPhaseLabel(phase: ScanPhase): string {
@@ -20,6 +21,20 @@ export function scanPhaseLabel(phase: ScanPhase): string {
 
 export function isActiveScanState(scanState: ScanState): boolean {
   return ["queued", "discovering", "publishing_metadata", "hashing", "finalizing", "cancelling"].includes(scanState);
+}
+
+export function siteHasInventory(site: SiteOverview) {
+  return site.hash_status !== "unscanned" || Boolean(site.latest_inventory_at || site.last_scanned_at) || site.total_files > 0;
+}
+
+export function scanSitePublishedInventory(site: ScanTaskSiteState) {
+  return site.status === "completed" || site.phase === "hashing" || site.phase === "finalizing";
+}
+
+export function firstScanRecovery(kind: FirstScanInterruption["kind"] | undefined) {
+  if (kind === "failed") return { status: "Scan failed", action: "Retry scan", shortAction: "Retry" } as const;
+  if (kind === "cancelled") return { status: "Scan stopped", action: "Restart scan", shortAction: "Restart" } as const;
+  return null;
 }
 
 export function initialScanProgress(requestId: number, siteId: string): ScanProgressView {
@@ -72,8 +87,7 @@ export function retainedScanCompletionFromSiteState(
   requestId: number,
   state: ScanTaskSiteState,
 ): ScanCompletionView | null {
-  const published = state.phase === "hashing" || state.phase === "finalizing";
-  if (state.status !== "completed" && !published) return null;
+  if (!scanSitePublishedInventory(state)) return null;
   const status = state.status === "completed" && state.hashes_pending === 0
     ? "complete"
     : "indexed";

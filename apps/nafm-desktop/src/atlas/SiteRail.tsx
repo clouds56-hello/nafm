@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
-import { scanPhaseLabel } from "../lib/scanView";
-import type { ScanProgressView, SiteOverview } from "../lib/types";
+import { firstScanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
+import type { FirstScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
@@ -17,6 +17,7 @@ interface SiteRailProps {
   scanAllRequests: ReadonlySet<number>;
   cancellingRequests: ReadonlySet<number>;
   progressBySite: ReadonlyMap<string, ScanProgressView>;
+  firstScanInterruptions: ReadonlyMap<string, FirstScanInterruption>;
   onOpen: () => void;
   onClose: () => void;
   onSelect: (id: string) => void;
@@ -53,6 +54,7 @@ export function SiteRail({
   scanAllRequests,
   cancellingRequests,
   progressBySite,
+  firstScanInterruptions,
   onOpen,
   onClose,
   onSelect,
@@ -154,17 +156,18 @@ export function SiteRail({
             const previousProgress = progressBySite.get(site.id);
             const progress = scanning && previousProgress?.request_id === requestId ? previousProgress : undefined;
             const progressValue = scanProgressValue(progress);
+            const recovery = firstScanRecovery(firstScanInterruptions.get(site.id)?.kind);
             const status = stopping ? "Stopping…" : progress ? scanPhaseLabel(progress.phase)
-              : scanning ? "Starting scan…" : inventoryStatus(site);
+              : scanning ? "Starting scan…" : recovery?.status ?? inventoryStatus(site);
             const scanLabel = scanning
               ? scanAll ? "Stop all" : "Stop"
-              : site.latest_inventory_at ? "Rescan" : "Scan";
+              : recovery?.shortAction ?? (site.latest_inventory_at ? "Rescan" : "Scan");
             const scanActionLabel = stopping ? `Scan is stopping for ${site.name}`
               : scanning ? scanAll ? `Stop remaining scans from ${site.name}` : `Stop scan of ${site.name}`
-                : `Scan ${site.name}`;
-            const hasInventory = site.latest_inventory_at !== null || site.hash_status === "ready" || site.total_files > 0;
+                : recovery ? `${recovery.action} of ${site.name}` : `Scan ${site.name}`;
+            const hasInventory = siteHasInventory(site);
             const justAdded = addedSite?.id === site.id;
-            const showAdded = justAdded && !hasInventory && !scanning && site.scan_state === "idle";
+            const showAdded = justAdded && !hasInventory && !scanning && !recovery && site.scan_state === "idle";
             const selected = activeId === site.id;
             const DeviceIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
 
