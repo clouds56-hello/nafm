@@ -186,11 +186,10 @@ test("each site restores its own Contents order after switching and reopening", 
   const reopened = await context.newPage();
   await reopened.goto("/mock/");
   await reopened.getByRole("button", { name: "Contents & details" }).click();
-  await expectOrder(reopened, studioOrder, /^Deliverables/);
-  await reopened.getByRole("button", { name: "Sites", exact: true }).click();
-  await openSite(reopened, "Field drive");
-  await fieldFolder(reopened);
   await expectOrder(reopened, fieldOrder, /^Survey log\.pdf/);
+  await reopened.getByRole("button", { name: "Sites", exact: true }).click();
+  await openSite(reopened, "Studio archive");
+  await expectOrder(reopened, studioOrder, /^Deliverables/);
 });
 
 test("closing while Contents is still sorting saves the latest choice", async ({ page, context }) => {

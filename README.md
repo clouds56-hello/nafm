@@ -25,8 +25,10 @@ also contains **Scan all**, **Review**, and **Settings**.
 
 For a newly added site, choose **Scan this site** in the center of the atlas.
 The dial shows progress until the inventory is available, then the rings open
-for browsing while file verification continues. Switching sites remembers
-each site's folder, scroll position in Contents, and inspector view for the session.
+for browsing while file verification continues. The Atlas reopens at the last
+site and folder in each workspace. Switching sites returns to each site's last
+folder. During a session, Contents scroll position and inspector view are also
+remembered per site.
 
 ```sh
 cd apps/nafm-desktop
@@ -85,8 +87,9 @@ The mock runs the same React frontend as the desktop app with synthetic sources
 and file data. Open **Preview** in the toolbar to switch between indexed,
 partially verified, empty, and scanning workspaces. Choose **Slow folder reads**
 to try changing destinations while a folder is loading. **Reset** reloads the
-current scenario, and **App only** opens the app view. Reloading restores the
-sample data. The browser remembers each site's Contents sort order.
+current scenario from its starting location, and **App only** opens the app view.
+Reloading restores the sample data. The browser remembers each scenario's
+browsing location and each site's Contents sort order.
 Scans and SMB setup are simulated in the browser.
 Open **Photo Library** and its **Contents** to scroll through 96 photo proofs.
 

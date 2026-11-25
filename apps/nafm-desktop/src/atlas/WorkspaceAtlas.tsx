@@ -60,11 +60,12 @@ function HealthScale() {
 interface WorkspaceAtlasProps {
   workspace: ReturnType<typeof useWorkspace>;
   siteListRevision: number;
+  browsingScope: string;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string) => void;
   toolbarExtension?: ReactNode;
 }
 
-export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
+export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sitesOpen, setSitesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -83,7 +84,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const [folderSearch, setFolderSearch] = useState<{ scope: string; text: string } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
-  const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision);
+  const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;

@@ -13,6 +13,12 @@ export function PreviewControls({ url, scenario }: { url: URL; scenario: Preview
     window.location.assign(next.href);
   }
 
+  function resetScenario() {
+    const next = new URL(url);
+    next.searchParams.set("reset", "1");
+    window.location.replace(next.href);
+  }
+
   return (
     <ToolbarDisclosure
       label="Preview"
@@ -36,7 +42,7 @@ export function PreviewControls({ url, scenario }: { url: URL; scenario: Preview
             </select>
           </label>
           <div className="atlas-preview-actions">
-            <button type="button" onClick={() => window.location.reload()}>Reset</button>
+            <button type="button" onClick={resetScenario}>Reset</button>
             <a href={appOnlyUrl.href} target="_blank" rel="noopener" onClick={close}>
               App only <span aria-hidden="true">↗</span>
             </a>

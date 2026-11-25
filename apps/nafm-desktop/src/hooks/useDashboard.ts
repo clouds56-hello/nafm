@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { siteAnalysisReady } from "../lib/analysis";
+import { readAtlasBrowsing, rememberAtlasFolder } from "../lib/atlasBrowsing";
 import { formatCount } from "../lib/format";
 import { readSiteDirectorySort, writeSiteDirectorySort } from "../lib/siteDirectorySort";
 import {
@@ -129,6 +130,14 @@ function siteRootEntry(siteId: string, targetSiteId: string | null, sort: Direct
   };
 }
 
+function rememberedSiteEntry(
+  scope: string, workspace: string | null, siteId: string, targetSiteId: string | null, sort: DirectorySort,
+): NavigationEntry {
+  const root = siteRootEntry(siteId, targetSiteId, sort);
+  const folder = workspace ? readAtlasBrowsing(scope, workspace).site_folders.find((saved) => saved.site_id === siteId) : null;
+  return folder ? { ...root, node_id: folder.node_id, selected_node_id: folder.node_id } : root;
+}
+
 function sameSort(left: DirectorySort, right: DirectorySort) {
   return left.field === right.field && left.direction === right.direction;
 }
@@ -168,7 +177,7 @@ function validTarget(
   return sites.find((site) => site.id !== sourceSiteId)?.id ?? null;
 }
 
-export function useDashboard(expectedWorkspace: string | null, siteListRevision: number) {
+export function useDashboard(expectedWorkspace: string | null, siteListRevision: number, browsingScope: string) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -320,6 +329,16 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     workspaceNameRef.current = expectedWorkspace;
   }, [clearAnalysisRefreshes, clearLocation, expectedWorkspace, updateCompletionBySite]);
 
+  const workspaceName = dashboard?.workspace_name;
+  const locationSite = location?.site_id;
+  const folderId = location?.root.id;
+  useLayoutEffect(() => {
+    if (!workspaceName || (expectedWorkspace && workspaceName !== expectedWorkspace)
+      || !locationSite || activeSiteId !== locationSite || !folderId || !currentSiteIdsRef.current.has(locationSite)) return;
+    // Persist the location that actually rendered, including jumps from file search and analysis.
+    rememberAtlasFolder(browsingScope, workspaceName, locationSite, folderId, currentSiteIdsRef.current);
+  }, [activeSiteId, browsingScope, expectedWorkspace, folderId, locationSite, workspaceName]);
+
   const currentNavigationEntry = useCallback((): NavigationEntry | null => {
     const siteId = selectedSiteRef.current;
     const currentLocation = locationRef.current;
@@ -388,7 +407,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       } catch (loadError) {
         if (!isCurrent()) return "superseded";
         const root = siteRootEntry(entry.site_id, entry.target_site_id, entry.sort);
-        const canReopenRoot = historyAction === "preserve" || historyAction === "switch";
+        const canReopenRoot = historyAction === "preserve" || historyAction === "switch" || historyAction === "reset";
         if (!canReopenRoot || root.node_id === entry.node_id
           || !isUnavailableLocationError(errorMessage(loadError))) throw loadError;
         // A rescan can remove the folder while this site is in the background.
@@ -504,12 +523,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     if (!foreground && (navigationInProgressRef.current || childrenLoadingRef.current || pendingRangeRef.current)) return false;
     const current = currentNavigationEntry();
     const preserve = current?.site_id === siteId;
+    const workspace = workspaceNameRef.current;
     const entry = preserve
       ? { ...current, target_site_id: targetSiteId }
-      : siteRootEntry(siteId, targetSiteId, readSiteDirectorySort(workspaceNameRef.current, siteId));
+      : rememberedSiteEntry(browsingScope, foreground ? workspace : null, siteId, targetSiteId,
+        readSiteDirectorySort(workspace, siteId));
     const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground });
     return result === "loaded";
-  }, [currentNavigationEntry, loadFolderLocation]);
+  }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
 
   const acceptDashboard = useCallback((next: Dashboard) => {
     const workspaceChanged = dashboardRef.current !== null
@@ -567,9 +588,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         || (requestedWorkspace && next.workspace_name !== requestedWorkspace)) return;
       acceptDashboard(next);
       const requestedSite = selectedSiteRef.current;
-      const nextSite = next.sites.some((site) => site.id === requestedSite)
-        ? requestedSite
-        : next.sites[0]?.id ?? null;
+      const savedSite = readAtlasBrowsing(browsingScope, next.workspace_name).active_site_id;
+      const nextSite = [requestedSite, savedSite].find((id) => id !== null && currentSiteIdsRef.current.has(id))
+        ?? next.sites[0]?.id ?? null;
       const nextTarget = validTarget(next.sites, nextSite, targetSiteRef.current);
       if (nextSite && requestedSite === nextSite && nextTarget === targetSiteRef.current
         && (childrenLoadingRef.current || locationGeneration !== locationRequestRef.current)) return;
@@ -586,7 +607,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     } finally {
       if (dashboardRequestRef.current === requestId) setLoading(false);
     }
-  }, [acceptDashboard, clearLocation, refreshTree]);
+  }, [acceptDashboard, browsingScope, clearLocation, refreshTree]);
 
   const reloadDashboard = useCallback(async () => {
     if (!dashboardRef.current) {
@@ -896,7 +917,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const sites = dashboardRef.current?.sites ?? [];
     const target = validTarget(sites, siteId, targetSiteId);
     const current = currentNavigationEntry();
-    const sort = readSiteDirectorySort(workspaceNameRef.current, siteId);
+    const workspace = workspaceNameRef.current;
+    const sort = readSiteDirectorySort(workspace, siteId);
     const action = { title: `Couldn’t open ${sites.find((site) => site.id === siteId)?.name ?? "this source"}`, sourceSwitch: true };
     if (current?.site_id === siteId) {
       if (childrenLoadingRef.current) {
@@ -908,9 +930,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const previous = lastLocationBySite.current.get(siteId);
     const destination = previous
       ? { ...withDirectorySort(previous, sort), target_site_id: target }
-      : siteRootEntry(siteId, target, sort);
+      : rememberedSiteEntry(browsingScope, workspace, siteId, target, sort);
     return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
-  }, [currentNavigationEntry, loadFolderLocation]);
+  }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
 
   const selectCoverageTarget = useCallback(async (targetSiteId: string) => {
     const current = currentNavigationEntry();

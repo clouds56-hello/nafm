@@ -1,11 +1,11 @@
-import { StrictMode, type ReactNode } from "react";
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
+import App, { type AppProps } from "./App";
 
-export function mountApp(root: HTMLElement, toolbarExtension?: ReactNode) {
+export function mountApp(root: HTMLElement, props: AppProps = {}) {
   createRoot(root).render(
     <StrictMode>
-      <App toolbarExtension={toolbarExtension} />
+      <App {...props} />
     </StrictMode>,
   );
 }

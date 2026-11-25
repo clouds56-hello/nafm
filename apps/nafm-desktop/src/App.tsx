@@ -6,7 +6,12 @@ import { ManagementCenter } from "./management/ManagementCenter";
 import { SshAuthentication } from "./management/SshAuthentication";
 import "./styles/atlas.css";
 
-export default function App({ toolbarExtension }: { toolbarExtension?: ReactNode }) {
+export interface AppProps {
+  toolbarExtension?: ReactNode;
+  browsingScope?: string;
+}
+
+export default function App({ toolbarExtension, browsingScope = "desktop" }: AppProps) {
   const workspace = useWorkspace();
   const [addingToWorkspace, setAddingToWorkspace] = useState<string | null>(null);
   const [siteListRevision, setSiteListRevision] = useState(0);
@@ -29,6 +34,7 @@ export default function App({ toolbarExtension }: { toolbarExtension?: ReactNode
           siteListRevision={siteListRevision}
           onAddSite={openAddSite}
           toolbarExtension={toolbarExtension}
+          browsingScope={browsingScope}
         />
       </div>
       <ManagementCenter
