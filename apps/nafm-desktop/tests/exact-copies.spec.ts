@@ -117,6 +117,58 @@ test("compare exact copies in place, then inspect their destination and return",
   await expect(inspector(page)).toContainText(sourcePath);
 });
 
+test("the same file returns to the comparison or review that opened its Atlas visit", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 580 });
+  await inspectOriginalFile(page);
+  const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+  await details.getByRole("button", { name: "Exact copies", exact: true }).press("Enter");
+  const comparison = page.getByRole("dialog", { name: "Exact copies", exact: true });
+  await comparison.getByRole("button", { name: /Backup campaign/ }).press("Enter");
+  await comparison.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
+  await expect(comparison).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(details).toContainText(backupPath);
+  const backToComparison = details.getByRole("button", { name: "Back to comparison", exact: true });
+  const backToReview = details.getByRole("button", { name: "Back to review", exact: true });
+  await expect(backToComparison).toBeVisible();
+
+  await details.getByRole("button", { name: "Stage for review", exact: true }).press("Enter");
+  await details.getByRole("button", { name: "Open review", exact: true }).press("Enter");
+  const review = page.getByRole("dialog", { name: "Cleanup review", exact: true });
+  await review.getByRole("button", { name: "Preview cleanup", exact: true }).press("Enter");
+  const preview = review.getByRole("heading", { name: "Preview passed", exact: true });
+  await expect(preview).toBeVisible();
+  const staged = review.getByRole("list", { name: "Staged for cleanup", exact: true })
+    .getByRole("button", { name: `Inspect ${fileName} in Atlas`, exact: true });
+  await staged.scrollIntoViewIfNeeded();
+  const body = review.locator(".atlas-analysis-body");
+  const scrollPosition = await body.evaluate((element) => element.scrollTop);
+  await staged.press("Enter");
+  await expect(review).toBeHidden();
+  await expect(details).toContainText(backupPath);
+  await expect(backToReview).toBeVisible();
+  await expect(backToComparison).toBeHidden();
+
+  const previous = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  await previous.press("Enter");
+  await expect(backToComparison).toBeVisible();
+  await expect(backToReview).toBeHidden();
+  await expect(details).toContainText(backupPath);
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(backToReview).toBeVisible();
+  await expect(backToComparison).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+
+  await backToReview.press("Enter");
+  await expect(preview).toBeVisible();
+  await expect(staged).toBeFocused();
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(scrollPosition);
+  await page.keyboard.press("Escape");
+  await expect(review).toBeHidden();
+  await expect(details).toContainText(backupPath);
+  await expect(details).toBeFocused();
+});
+
 test("an exact-copy jump that fails keeps the comparison available to retry", async ({ page }) => {
   await inspectOriginalFile(page);
   const dialog = await openExactCopies(page);

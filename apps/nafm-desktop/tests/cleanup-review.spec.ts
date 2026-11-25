@@ -144,6 +144,7 @@ test("cleanup review can undo and redo a removal before running a fresh preview"
   await staged.getByRole("listitem").filter({ hasText: sourcePath })
     .getByRole("button", { name: `Remove ${fileName} from review`, exact: true }).press("Enter");
   await expect(preview).toBeHidden();
+  await expect(previewButton).toHaveAccessibleDescription("Staging was updated. Run a new preview to check this selection.");
   await expect(dialog.getByText(sourcePath, { exact: true })).toHaveCount(0);
   await expect(dialog.getByText(backupPath, { exact: true })).toBeVisible();
   await expect(undo).toBeFocused();
@@ -181,6 +182,62 @@ test("cleanup review can undo and redo a removal before running a fresh preview"
   await expect(retained.getByRole("listitem")).toHaveCount(2);
   await expect(retained).toContainText(sourcePath);
   await expect(retained).toContainText(sharedPath);
+});
+
+test("an inventory refresh interrupts an in-progress cleanup check and allows a new preview", async ({ page }) => {
+  await stageCopy(page, "Backup campaign");
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await sites.getByRole("button", { name: "Scan Field drive", exact: true }).press("Enter");
+  await expect(sites.getByRole("button", { name: "Stop scan of Field drive", exact: true })).toBeEnabled();
+  await inspector(page).getByRole("button", { name: "Open review", exact: true }).press("Enter");
+  const dialog = review(page);
+  const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+  const check = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+
+  const pending = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { count: 0, held: false, returned: false, release };
+    bridge.invoke = async (command, args) => {
+      if (command !== "preview_cleanup" || ++read.count !== 1) return invoke(command, args);
+      const report = await invoke(command, args);
+      read.held = true;
+      await gate;
+      requestAnimationFrame(() => { read.returned = true; });
+      return report;
+    };
+    return read;
+  });
+
+  try {
+    await check.press("Enter");
+    await expect.poll(() => pending.evaluate((read) => read.held)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Checking…", exact: true })).toBeFocused();
+    await page.clock.runFor(3_100);
+    await expect(check).toBeEnabled();
+    await expect(check).toHaveAccessibleDescription("Workspace inventory was refreshed. Run a new preview.");
+    await expect(check).toBeFocused();
+
+    await pending.evaluate((read) => read.release());
+    await page.clock.runFor(50);
+    await expect.poll(() => pending.evaluate((read) => read.returned)).toBe(true);
+    await expect(preview).toBeHidden();
+    await expect(check).toHaveAccessibleDescription("Workspace inventory was refreshed. Run a new preview.");
+
+    await check.press("Enter");
+    await expect(preview.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
+    await expect(dialog.getByText("Workspace inventory was refreshed. Run a new preview.", { exact: true })).toHaveCount(0);
+    expect(await pending.evaluate((read) => read.count)).toBe(2);
+  } finally {
+    await pending.evaluate((read) => read.release());
+  }
 });
 
 test("cleanup review refreshes staging when a newer change invalidates an undo", async ({ page }) => {
@@ -305,7 +362,13 @@ test("cleanup review verifies the potential retained copy in place before a fres
   const dialog = review(page);
   const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
   await expect(previewButton).toBeDisabled();
-  await expect(dialog.getByText("Would remove the last copy", { exact: true })).toBeVisible();
+  const blockedCopies = dialog.getByRole("list", { name: "Staged copies", exact: true });
+  await expect(blockedCopies.getByRole("listitem")).toHaveCount(2);
+  for (const path of [sourcePath, backupPath]) {
+    const row = blockedCopies.getByRole("listitem").filter({ hasText: path });
+    await expect(row.getByText("Retained copy needs verification", { exact: true })).toBeVisible();
+  }
+  await expect(blockedCopies.getByText("Would remove the last copy", { exact: true })).toHaveCount(0);
   const recovery = dialog.getByRole("region", { name: "Verification needed", exact: true });
   await expect(recovery.getByText("Team share", { exact: true })).toBeVisible();
   await expect(recovery.getByRole("button")).toHaveCount(1);
@@ -473,3 +536,41 @@ test("closing cleanup review cancels a pending inspection and allows reopening",
   await expect(currentFolder(page)).toHaveText("Campaign mirror");
   await expect(inspector(page).getByText(sharedPath, { exact: true })).toBeVisible();
 });
+
+for (const action of ["staged Inspect", "staged Remove", "retained Inspect", "preview summary", "Close"] as const) {
+  test(`cleanup review restores focus after an inventory refresh with ${action} focused`, async ({ page }) => {
+    await stageCopy(page, "Brand campaign");
+    await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    await sites.getByRole("button", { name: "Scan Field drive", exact: true }).press("Enter");
+    await expect(sites.getByRole("button", { name: "Stop scan of Field drive", exact: true })).toBeEnabled();
+    await sites.getByRole("button", { name: "Close sites", exact: true }).press("Enter");
+    await inspector(page).getByRole("button", { name: "Open review", exact: true }).press("Enter");
+    const dialog = review(page);
+    const previewButton = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+    const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+    const close = dialog.getByRole("button", { name: "Close cleanup review", exact: true });
+    const removeCopy = (list: string) => dialog.getByRole("list", { name: list, exact: true })
+      .getByRole("button", { name: `Remove ${fileName} from review`, exact: true });
+    await previewButton.press("Enter");
+    await expect(preview.getByRole("heading", { name: "Preview passed" })).toBeVisible();
+    const targets = {
+      "staged Inspect": [inspectCopy(dialog, "Staged for cleanup", sourcePath), inspectCopy(dialog, "Staged copies", sourcePath)],
+      "staged Remove": [removeCopy("Staged for cleanup"), removeCopy("Staged copies")],
+      "retained Inspect": [inspectCopy(dialog, "Would remain", sharedPath), previewButton],
+      "preview summary": [preview, previewButton],
+      Close: [close, close],
+    };
+    const [before, after] = targets[action];
+    await before.focus();
+    await expect(before).toBeFocused();
+
+    await page.clock.runFor(5_700);
+    await expect(preview).toHaveCount(0);
+    await expect(dialog.getByRole("list", { name: "Staged copies", exact: true })).toContainText(sourcePath);
+    await expect(after).toBeFocused();
+    await expect(after).toBeInViewport();
+  });
+}

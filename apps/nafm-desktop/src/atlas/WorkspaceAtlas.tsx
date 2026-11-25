@@ -48,6 +48,7 @@ interface FinderSession {
 }
 
 interface ReviewInspection {
+  session: symbol;
   workspace: string;
   siteId: string;
   path: string;
@@ -55,7 +56,7 @@ interface ReviewInspection {
   returning: boolean;
 }
 
-type ComparisonSession = { workspace: string; siteId: string; siteName: string; node: StorageNode; open: boolean } & (
+type ComparisonSession = { session: symbol; workspace: string; siteId: string; siteName: string; node: StorageNode; open: boolean } & (
   | { kind: "copies"; destination?: { siteId: string; path: string }; position: AnalysisPosition<FileContentMatchesPage> | null }
   | { kind: "similarity"; destination?: { siteId: string; nodeId: string }; position: AnalysisPosition<FolderSimilarityPage> | null }
 );
@@ -130,6 +131,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromInspectionDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [inspectionViews, setInspectionViews] = useState(() => new Map<AtlasInspection, InspectorPane>());
+  const [reviewSession, setReviewSession] = useState(() => Symbol());
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
@@ -236,17 +238,19 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
   const finderPosition = inspection?.kind === "finder" && inspection.position.session === finder?.id ? inspection.position : null;
+  const analysisSession = inspection?.kind === "analysis" ? inspection.session : null;
   const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
-  const returnToReview = !finderPosition && reviewed && selected?.kind === "file"
+  const returnToReview = reviewed && reviewed.session === analysisSession && selected?.kind === "file"
     && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
   const comparison = comparisonSession?.workspace === findWorkspace ? comparisonSession : null;
-  const returnToComparison = comparison?.destination && comparison.destination.siteId === siteId && (comparison.kind === "copies"
-    ? selected?.kind === "file" && selected.path === comparison.destination.path
-    : !selected && folder?.id === comparison.destination.nodeId);
+  const returnToComparison = comparison?.destination && comparison.session === analysisSession
+    && comparison.destination.siteId === siteId && (comparison.kind === "copies"
+      ? selected?.kind === "file" && selected.path === comparison.destination.path
+      : !selected && folder?.id === comparison.destination.nodeId);
 
   function openComparison(kind: ComparisonKind) {
     if (!findWorkspace || !site || !selectedNode) return;
-    const source = { workspace: findWorkspace, siteId: site.id, siteName: site.name, node: selectedNode, open: true };
+    const source = { session: Symbol(), workspace: findWorkspace, siteId: site.id, siteName: site.name, node: selectedNode, open: true };
     setComparisonSession({ ...source, kind, position: null });
   }
 
@@ -256,6 +260,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
 
   function openReview() {
+    setReviewSession(Symbol());
     setReviewInspection(null);
     state.setReviewOpen(true);
   }
@@ -816,7 +821,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                        onReview={returnToReview && !returnToComparison ? undefined : openReview}
+                        onReview={returnToReview ? undefined : openReview}
                         onCompare={openComparison}
                       />
                     )}
@@ -881,7 +886,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           workspaceName={comparison.workspace} siteId={comparison.siteId}
           source={{ name: comparison.node.name, site: comparison.siteName, path: comparison.node.path, size: comparison.node.total_bytes }}
           verification={comparisonVerification} onScanSite={state.scan}
-          contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToContentMatch} onClose={closeComparison}
+          contentRevision={state.contentRevision} position={comparison.position}
+          onJump={(match, signal) => state.jumpToContentMatch(match, signal, comparison.session)} onClose={closeComparison}
           onShown={(match, position) => {
             setComparisonSession({ ...comparison, open: false, position, destination: { siteId: match.site_id, path: match.path } });
             showAnalysisDetails();
@@ -893,7 +899,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           workspaceName={comparison.workspace} siteId={comparison.siteId}
           siteName={comparison.siteName} node={comparison.node}
           verification={comparisonVerification} onScanSite={state.scan}
-          contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToSimilarFolder} onClose={closeComparison}
+          contentRevision={state.contentRevision} position={comparison.position}
+          onJump={(match, signal) => state.jumpToSimilarFolder(match, signal, comparison.session)} onClose={closeComparison}
           onShown={(match, position) => {
             setComparisonSession({
               ...comparison, open: false, position, destination: { siteId: match.folder.site_id, nodeId: match.folder.node_id },
@@ -970,6 +977,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           }}
           onScanSite={state.scan}
           preview={state.preview}
+          previewInvalidation={state.previewInvalidation}
           position={reviewed?.returning ? reviewed.position : null}
           loadingPreview={state.previewLoading}
           error={state.reviewError}
@@ -978,9 +986,10 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
           onHistoryStep={state.stepStageHistory}
-          onInspect={state.jumpToContentMatch}
+          onInspect={(file, signal) => state.jumpToContentMatch(file, signal, reviewSession)}
           onInspected={(file, position) => {
-            setReviewInspection({ workspace: dashboard.workspace_name, siteId: file.site_id, path: file.path, position, returning: false });
+            setReviewInspection({ session: reviewSession, workspace: dashboard.workspace_name,
+              siteId: file.site_id, path: file.path, position, returning: false });
             state.setReviewOpen(false);
             showAnalysisDetails();
           }}

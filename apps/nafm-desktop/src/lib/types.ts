@@ -509,6 +509,8 @@ export interface CleanupPreview {
   }>;
 }
 
+export type CleanupPreviewInvalidation = "staging" | "inventory" | "scan";
+
 export interface StageReviewGroup {
   group_id: string;
   staged_file_ids: string[];

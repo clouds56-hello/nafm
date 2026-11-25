@@ -33,6 +33,7 @@ import {
 } from "../lib/scanView";
 import type {
   CleanupPreview,
+  CleanupPreviewInvalidation,
   CancelScanMode,
   Dashboard,
   DirectoryRefreshTarget,
@@ -69,6 +70,11 @@ const ANALYSIS_REFRESH_DELAY_MS = 650;
 const FINAL_ANALYSIS_REFRESH_DELAY_MS = 75;
 const FINAL_ANALYSIS_REFRESH_RETRY_MS = 150;
 
+type CleanupPreviewState =
+  | { status: "idle" | "checking" }
+  | { status: "complete"; report: CleanupPreview }
+  | { status: "stale"; reason: CleanupPreviewInvalidation };
+
 interface NavigationEntry {
   site_id: string;
   target_site_id: string | null;
@@ -85,7 +91,7 @@ interface NavigationEntry {
 
 export type AtlasInspection =
   | { kind: "finder"; position: FinderPosition }
-  | { kind: "analysis" }
+  | { kind: "analysis"; session: symbol }
   | { kind: "file" };
 
 interface AtlasSelection {
@@ -264,8 +270,10 @@ export function useDashboard(
   const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [preview, setPreview] = useState<CleanupPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState<CleanupPreviewState>({ status: "idle" });
+  const preview = cleanupPreview.status === "complete" ? cleanupPreview.report : null;
+  const previewLoading = cleanupPreview.status === "checking";
+  const previewInvalidation = cleanupPreview.status === "stale" ? cleanupPreview.reason : null;
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [contentRevision, setContentRevision] = useState(0);
   const selectedSiteRef = useRef<string | null>(null);
@@ -312,10 +320,13 @@ export function useDashboard(
     });
   }, []);
 
-  const invalidateCleanupPreview = useCallback(() => {
+  const invalidateCleanupPreview = useCallback((reason: CleanupPreviewInvalidation | null) => {
     cleanupPreviewRequestRef.current += 1;
-    setPreview(null);
-    setPreviewLoading(false);
+    setCleanupPreview((current) => {
+      if (reason === null) return current.status === "idle" ? current : { status: "idle" };
+      return current.status === "checking" || current.status === "complete"
+        ? { status: "stale", reason } : current;
+    });
   }, []);
 
   const clearAnalysisRefreshes = useCallback(() => {
@@ -382,6 +393,8 @@ export function useDashboard(
       clearLocation();
       lastLocationBySite.current.clear();
       if (!dashboardMatchesWorkspace) {
+        invalidateCleanupPreview(null);
+        setReviewError(null);
         setProgressBySite(new Map());
         updateCompletionBySite(() => new Map());
         setActiveRequestIds(new Set());
@@ -396,7 +409,7 @@ export function useDashboard(
       }
     }
     workspaceNameRef.current = expectedWorkspace;
-  }, [clearAnalysisRefreshes, clearLocation, expectedWorkspace, updateCompletionBySite]);
+  }, [clearAnalysisRefreshes, clearLocation, expectedWorkspace, invalidateCleanupPreview, updateCompletionBySite]);
 
   const workspaceName = dashboard?.workspace_name;
   const locationSite = location?.site_id;
@@ -656,8 +669,9 @@ export function useDashboard(
   }, [browsingScope, currentNavigationEntry, directoryRefresh, loadFolderLocation]);
 
   const acceptDashboard = useCallback((next: Dashboard) => {
-    const workspaceChanged = dashboardRef.current !== null
-      && dashboardRef.current.workspace_name !== next.workspace_name;
+    const previous = dashboardRef.current;
+    const workspaceChanged = previous !== null && previous.workspace_name !== next.workspace_name;
+    const stagingChanged = previous?.stage_history.snapshot_id !== next.stage_history.snapshot_id;
     if (workspaceChanged) {
       clearAnalysisRefreshes();
       lastLocationBySite.current.clear();
@@ -695,7 +709,7 @@ export function useDashboard(
       }
       return !changed && retain.size === current.size ? current : retain;
     });
-    invalidateCleanupPreview();
+    invalidateCleanupPreview(workspaceChanged ? null : stagingChanged ? "staging" : "inventory");
     setActiveRequestIds(activeIds);
     setActiveScanTasks(new Map(activeTasks.map((task) => [task.request_id, task])));
     setCancellingRequestIds((current) => {
@@ -1169,7 +1183,7 @@ export function useDashboard(
       dashboardRequestRef.current += 1;
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
       setActiveScanTasks((current) => current.has(task.request_id) ? current : new Map(current).set(task.request_id, task));
-      invalidateCleanupPreview();
+      invalidateCleanupPreview("scan");
       const siteIds = siteId
         ? [siteId]
         : dashboardRef.current?.sites.map((site) => site.id) ?? [];
@@ -1570,14 +1584,17 @@ export function useDashboard(
   }, [currentNavigationEntry, selectLocationNode]);
 
   const jumpToContentMatch = useCallback(async (
-    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, finderPosition?: FinderPosition,
+    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, origin: FinderPosition | symbol,
   ): Promise<string | null> => {
-    const inspection: AtlasInspection = finderPosition ? { kind: "finder", position: finderPosition } : { kind: "analysis" };
+    const inspection: AtlasInspection = typeof origin === "symbol"
+      ? { kind: "analysis", session: origin } : { kind: "finder", position: origin };
     const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection });
     return result.error;
   }, [revealFile]);
 
-  const jumpToSimilarFolder = useCallback(async (match: FolderSimilarityMatch, signal: AbortSignal): Promise<string | null> => {
+  const jumpToSimilarFolder = useCallback(async (
+    match: FolderSimilarityMatch, signal: AbortSignal, session: symbol,
+  ): Promise<string | null> => {
     const workspace = workspaceNameRef.current;
     const currentSiteId = selectedSiteRef.current;
     const currentDashboard = dashboardRef.current;
@@ -1592,7 +1609,7 @@ export function useDashboard(
     const sort = readSiteDirectorySort(workspace, site_id);
     let message = "The matched folder could not be opened.";
     const result = await loadFolderLocation({
-      site_id, node_id, target_site_id: target, selected_node_id: node_id, inspection: { kind: "analysis" },
+      site_id, node_id, target_site_id: target, selected_node_id: node_id, inspection: { kind: "analysis", session },
       offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, sort,
     }, "push", { signal, onError: (error) => { message = error; } });
     if (result === "superseded") return "Folder navigation was cancelled.";
@@ -1608,7 +1625,7 @@ export function useDashboard(
   }, [revealFile]);
 
   const updateStaged = useCallback((update: (files: DuplicateFile[]) => DuplicateFile[], history: StageHistoryState) => {
-    invalidateCleanupPreview();
+    invalidateCleanupPreview("staging");
     const current = dashboardRef.current;
     if (!current) return;
     dashboardRequestRef.current += 1;
@@ -1706,7 +1723,7 @@ export function useDashboard(
 
   const stepStageHistory = useCallback((request: StageHistoryRequest) => runStageMutation(async (workspace) => {
     setReviewError(null);
-    invalidateCleanupPreview();
+    invalidateCleanupPreview("staging");
     try {
       const report = await moveStageHistory(workspace, request);
       if (workspaceNameRef.current !== workspace) return;
@@ -1731,20 +1748,18 @@ export function useDashboard(
     }
     const requestId = cleanupPreviewRequestRef.current + 1;
     cleanupPreviewRequestRef.current = requestId;
-    setPreview(null);
-    setPreviewLoading(true);
+    setCleanupPreview({ status: "checking" });
     setReviewError(null);
     try {
       const report = await previewCleanup(workspace);
       if (cleanupPreviewRequestRef.current !== requestId || workspaceNameRef.current !== workspace) return;
-      setPreview(report);
       applyStagingReport(report);
+      setCleanupPreview({ status: "complete", report });
     } catch (previewError) {
-      if (cleanupPreviewRequestRef.current === requestId) {
+      if (cleanupPreviewRequestRef.current === requestId && workspaceNameRef.current === workspace) {
+        setCleanupPreview({ status: "idle" });
         setReviewError(errorMessage(previewError));
       }
-    } finally {
-      if (cleanupPreviewRequestRef.current === requestId) setPreviewLoading(false);
     }
   }, [applyStagingReport]);
 
@@ -1862,6 +1877,7 @@ export function useDashboard(
     reviewOpen,
     setReviewOpen,
     preview,
+    previewInvalidation,
     previewLoading,
     reviewError,
     runPreview,
@@ -1903,6 +1919,7 @@ export function useDashboard(
     locationProgress,
     notice,
     preview,
+    previewInvalidation,
     previewLoading,
     progressBySite,
     refresh,

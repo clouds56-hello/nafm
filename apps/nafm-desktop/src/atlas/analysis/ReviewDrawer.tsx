@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type {
-  CleanupPreview, DuplicateFile, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
+  CleanupPreview, CleanupPreviewInvalidation, DuplicateFile, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
   StageVerificationBlocker, StageWarning, StageWarningReason,
 } from "../../lib/types";
 import type { ScanSite, SiteVerification } from "../siteVerification";
@@ -26,6 +26,7 @@ interface ReviewDrawerProps {
   verificationForSite: (id: string) => SiteVerification | undefined;
   stageHistory: StageHistoryState;
   preview: CleanupPreview | null;
+  previewInvalidation: CleanupPreviewInvalidation | null;
   loadingPreview: boolean;
   stagingBusy?: boolean;
   error: string | null;
@@ -45,6 +46,12 @@ const warningLabels: Record<StageWarningReason, string> = {
   already_staged: "Already staged",
   not_staged: "No longer staged",
   would_remove_last_copy: "Would remove the last copy",
+};
+
+const previewMessages: Record<CleanupPreviewInvalidation, string> = {
+  staging: "Staging was updated. Run a new preview to check this selection.",
+  inventory: "Workspace inventory was refreshed. Run a new preview.",
+  scan: "A scan started. Run a new preview.",
 };
 
 interface ReviewFileProps {
@@ -85,7 +92,8 @@ function ReviewFile({ file, site, warning, disabled, onRemove, onInspect }: Revi
             )}
             {onRemove && (
               <button
-                type="button" className="atlas-review-unstage" aria-disabled={disabled || undefined}
+                type="button" className="atlas-review-unstage" data-review-remove={file.file_id}
+                aria-disabled={disabled || undefined}
                 aria-label={`Remove ${name} from review`} aria-description={description}
                 onClick={disabled ? undefined : (event) => onRemove(file, event.currentTarget)}
               >
@@ -149,6 +157,7 @@ function OpenReviewDrawer({
   verificationForSite,
   stageHistory,
   preview,
+  previewInvalidation,
   loadingPreview,
   stagingBusy,
   error,
@@ -169,6 +178,7 @@ function OpenReviewDrawer({
   const removalFocus = useRef<{ id: string; button: HTMLButtonElement } | null>(null);
   const [historyAnnouncement, setHistoryAnnouncement] = useState("");
   const blockedMessageId = useId();
+  const previewMessageId = useId();
   const verificationHeadingId = useId();
   const initialPosition = useRef(position);
   const previousPreview = useRef(preview);
@@ -188,6 +198,33 @@ function OpenReviewDrawer({
       });
     };
   }, []);
+
+  const trackPreviewFocus = useCallback((section: HTMLElement | null) => {
+    if (!section) return;
+    return () => {
+      const active = document.activeElement;
+      if (!active || !section.contains(active)) return;
+      const attribute = active.hasAttribute("data-review-inspect") ? "data-review-inspect" : "data-review-remove";
+      const fileId = active.getAttribute(attribute);
+      queueMicrotask(() => {
+        if (!previewButton.current?.isConnected || document.activeElement !== document.body) return;
+        const replacement = fileId ? results.current?.querySelector<HTMLButtonElement>(
+          `[${attribute}="${CSS.escape(fileId)}"]`,
+        ) : null;
+        if (replacement) replacement.focus();
+        else previewButton.current.focus({ preventScroll: true });
+      });
+    };
+  }, []);
+
+  const trackPreviewSummary = useCallback((section: HTMLElement | null) => {
+    previewSummary.current = section;
+    const restoreFocus = trackPreviewFocus(section);
+    return () => {
+      previewSummary.current = null;
+      restoreFocus?.();
+    };
+  }, [trackPreviewFocus]);
 
   useLayoutEffect(() => {
     const saved = initialPosition.current;
@@ -237,6 +274,7 @@ function OpenReviewDrawer({
   const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0 && activeBlockers.length === 0;
   const busy = Boolean(loadingPreview || stagingBusy || navigation.opening);
   const canPreview = staged.length > 0 && effectiveReady && !busy;
+  const showPreviewPrompt = canPreview && !preview && !error;
   const undoSnapshot = stageHistory?.undo_snapshot_id;
   const redoSnapshot = stageHistory?.redo_snapshot_id;
   const blockedPaths = new Map(blockedWarnings.map(({ path, reason }) => [path, reason]));
@@ -246,7 +284,16 @@ function OpenReviewDrawer({
     const name = siteNames.get(siteId);
     return verification && name ? [{ siteId, name, verification, files }] : [];
   });
-  const awaitingVerification = new Set(activeBlockers.flatMap(({ files }) => files.map((file) => file.file_id)));
+  const awaitingVerification = new Map<string, string>();
+  for (const { siteId, files } of activeBlockers) {
+    for (const file of files) {
+      if (file.site_id === siteId) {
+        awaitingVerification.set(file.file_id, "Verification pending");
+      } else if (!awaitingVerification.has(file.file_id)) {
+        awaitingVerification.set(file.file_id, "Retained copy needs verification");
+      }
+    }
+  }
   const readyPreview = effectiveReady && preview?.db_entry_count_stable ? preview : null;
   const groups = readyPreview?.review_groups ?? [];
   const groupedIds = new Set(groups.flatMap((group) => group.staged_file_ids));
@@ -308,7 +355,8 @@ function OpenReviewDrawer({
           <button
             type="button" className="atlas-analysis-primary" ref={previewButton}
             onClick={canPreview ? onPreview : undefined} aria-disabled={!canPreview || undefined}
-            aria-describedby={!effectiveReady || staged.length === 0 ? blockedMessageId : undefined}
+            aria-describedby={!effectiveReady || staged.length === 0 ? blockedMessageId
+              : showPreviewPrompt && previewInvalidation ? previewMessageId : undefined}
           >
             {loadingPreview ? "Checking…" : "Preview cleanup"}
           </button>
@@ -323,8 +371,10 @@ function OpenReviewDrawer({
         {staged.length === 0 && (
           <p id={blockedMessageId} role="status">No copies staged. Select a folder or file with verified duplicates to start a review.</p>
         )}
-        {staged.length > 0 && effectiveReady && !preview && !loadingPreview && !error && (
-          <p role="status">Preview cleanup to see which copies would remain.</p>
+        {showPreviewPrompt && (
+          <p id={previewMessageId} role="status">
+            {previewInvalidation ? previewMessages[previewInvalidation] : "Preview cleanup to see which copies would remain."}
+          </p>
         )}
         {staged.length > 0 && pending > 0 && (
           <p id={blockedMessageId} className="atlas-analysis-warning" role="status">
@@ -351,7 +401,7 @@ function OpenReviewDrawer({
         {error && <p className="atlas-analysis-error" role="alert">{error}</p>}
         {preview && (
           <section
-            className="atlas-comparison-details atlas-review-result" aria-label="Cleanup preview" ref={previewSummary} tabIndex={-1}
+            className="atlas-comparison-details atlas-review-result" aria-label="Cleanup preview" ref={trackPreviewSummary} tabIndex={-1}
             data-ready={readyPreview ? "" : undefined}
           >
             {readyPreview ? (
@@ -373,7 +423,7 @@ function OpenReviewDrawer({
         {groups.map((group) => {
           const removing = group.staged_file_ids.flatMap((id) => stagedById.get(id) ?? []);
           return (
-            <section className="atlas-review-group" key={group.group_id} aria-label="Exact copy group">
+            <section className="atlas-review-group" key={group.group_id} aria-label="Exact copy group" ref={trackPreviewFocus}>
               <div>
                 <h3>Staged for cleanup</h3>
                 <ul className="atlas-review-files" aria-label="Staged for cleanup">
@@ -398,9 +448,9 @@ function OpenReviewDrawer({
           <ul className="atlas-review-files" aria-label="Staged copies">
             {ungrouped.map((file) => {
               const warning = blockedPaths.get(file.path);
-              const waiting = awaitingVerification.has(file.file_id);
-              const warningLabel = waiting && (!warning || warning === "not_duplicate")
-                ? "Verification pending" : warning ? warningLabels[warning] : undefined;
+              const waiting = awaitingVerification.get(file.file_id);
+              const warningLabel = waiting && (!warning || warning === "not_duplicate" || warning === "would_remove_last_copy")
+                ? waiting : warning ? warningLabels[warning] : undefined;
               return (
                 <ReviewFile
                   key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warningLabel}
