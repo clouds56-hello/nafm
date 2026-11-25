@@ -37,11 +37,24 @@ interface FileFinderDialogProps extends Omit<FileFinderProps, "open"> {
 }
 
 function FileFinderDialog({ workspace, contentRevision, session, position, cache, onOpen, onOpened, onClose }: FileFinderDialogProps) {
-  const search = useIndexedFileSearch(workspace, contentRevision, position?.query ?? "", position?.row_index ?? 0, cache);
-  const total = search.total ?? 0;
+  const search = useIndexedFileSearch(workspace, contentRevision, position?.query ?? "", position?.row_index ?? 0, cache, position?.file_id);
+  const total = search.locatingFile ? 0 : search.total ?? 0;
   const input = useRef<HTMLInputElement>(null);
   const scrollPane = useRef<HTMLDivElement>(null);
   const [scrollPositions] = useState(() => new Map<string, number | "end">(position ? [[search.key, position.scroll_position]] : []));
+  const anchorApplied = useRef(false);
+  const restoredIndex = search.anchorIndex ?? Math.min(position?.row_index ?? 0, Math.max(0, total - 1));
+
+  useLayoutEffect(() => {
+    if (!position || search.anchorIndex === undefined || anchorApplied.current || !total) return;
+    anchorApplied.current = true;
+    // Preserve the row's relative offset, or keep the scrollbar at the end if the same tail still follows it.
+    const top = position.scroll_position === "end"
+      ? total - restoredIndex <= position.result_count - position.row_index ? "end" : restoredIndex
+      : Math.max(0, position.scroll_position + restoredIndex - position.row_index);
+    scrollPositions.set(search.key, top);
+  }, [position, restoredIndex, scrollPositions, search.anchorIndex, search.key, total]);
+
   const viewport = useDirectoryViewport({
     contentsKey: search.key, anchorIndex: 0, total, active: total > 0, scrollPane, scrollPositions,
     rowHeightProperty: "--finder-row-height",
@@ -67,15 +80,20 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
 
   useLayoutEffect(() => {
     const saved = restoring.current;
-    if (!saved) return;
+    if (!saved || search.locatingFile) return;
     if (document.activeElement !== input.current) {
       restoring.current = null;
       return;
     }
+    if (search.total === 0) {
+      restoring.current = null;
+      return;
+    }
     if (!ready || !scrollPane.current) return;
-    const row = listRef.current?.querySelector<HTMLButtonElement>('button[aria-current="true"]');
+    const row = listRef.current?.querySelector<HTMLButtonElement>(search.anchorIndex === null
+      ? `[data-virtual-row="${restoredIndex}"] button` : 'button[aria-current="true"]');
     if (!row) {
-      if (search.fileAt(saved.row_index) || (search.total !== null && saved.row_index >= total)) restoring.current = null;
+      if (search.fileAt(restoredIndex)) restoring.current = null;
       return;
     }
     restoring.current = null;
@@ -83,7 +101,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     const bounds = scrollPane.current.getBoundingClientRect();
     const rowBounds = row.getBoundingClientRect();
     if (rowBounds.bottom <= bounds.top || rowBounds.top >= bounds.bottom) row.scrollIntoView({ block: "nearest" });
-  }, [ready, start, end, total, search.total, search.fileAt, listRef]);
+  }, [ready, start, end, restoredIndex, search.anchorIndex, search.locatingFile, search.total, search.fileAt, listRef]);
 
   useLayoutEffect(() => {
     const pending = pendingFocus.current;
@@ -160,7 +178,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
       file,
       position: {
         session, query: search.query, file_id: file.file_id, row_index: index,
-        scroll_position: scrollPosition,
+        scroll_position: scrollPosition, result_count: total,
       },
     });
   }
@@ -177,8 +195,9 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
   }
 
   const status = navigation.opening ? "Opening file…"
-    : search.loading && search.total === null ? "Searching…"
-      : search.name && search.total !== null ? `${formatCount(total)} ${total === 1 ? "match" : "matches"}` : "";
+    : search.locatingFile ? search.loading ? "Locating previous result…" : ""
+      : search.loading && search.total === null ? "Searching…"
+        : search.name && search.total !== null ? `${formatCount(total)} ${total === 1 ? "match" : "matches"}` : "";
 
   return (
     <AnalysisDialog
@@ -194,7 +213,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
               onChange={(event) => {
                 restoring.current = null;
                 const text = event.currentTarget.value;
-                if (text.trim() !== search.name) {
+                if (text.trim() !== search.name || search.locatingFile) {
                   pendingFocus.current = null;
                   scrollPositions.clear();
                   if (scrollPane.current) scrollPane.current.scrollTop = 0;
@@ -224,6 +243,9 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
             />
           </div>
           <span className="atlas-finder-count" role="status">{status}</span>
+          {search.anchorIndex === null && (
+            <span className="atlas-finder-feedback atlas-finder-count" role="status">The previous file is no longer in these results.</span>
+          )}
           {search.error && <div className="atlas-finder-feedback">
             <AnalysisError error={search.error} retry={retrySearch} />
           </div>}

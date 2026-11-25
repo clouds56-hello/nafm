@@ -392,11 +392,12 @@ pub async fn search_indexed_files(
   query: String,
   offset: u64,
   limit: u64,
+  anchor_file_id: Option<String>,
 ) -> Result<IndexedFileSearchPage, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .search_indexed_files(&query, offset, limit)
+    .search_indexed_files_with_anchor(&query, offset, limit, anchor_file_id.as_deref())
     .await
     .map_err(|error| error.to_string())
 }

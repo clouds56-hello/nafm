@@ -476,6 +476,89 @@ async fn indexed_file_search_matches_names_across_published_sites() {
 }
 
 #[tokio::test]
+async fn indexed_file_search_anchors_a_file_at_its_current_published_rank() {
+  let fixture = Fixture::new().await;
+  let first_root = fixture.mkdir("z-root");
+  let second_root = fixture.mkdir("a-root");
+  let anchor_path = second_root.join("anchor needle.txt");
+  fs::write(first_root.join("original needle.txt"), b"first").unwrap();
+  fs::write(&anchor_path, b"anchor").unwrap();
+  fs::write(second_root.join("tail needle.txt"), b"tail").unwrap();
+
+  let second_site = fixture.repo.create_site("B archive").await.unwrap();
+  let first_site = fixture.repo.create_site("A archive").await.unwrap();
+  fixture
+    .add_site_folder(&second_site.id, &second_root, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder(&first_site.id, &first_root, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let initial = fixture.repo.search_indexed_files("needle", 0, 2).await.unwrap();
+  assert_eq!(initial.matches[1].name, "anchor needle.txt");
+  assert!(initial.anchor_index.is_none());
+  let anchor_id = initial.matches[1].file_id.as_str();
+
+  fs::write(first_root.join("earlier needle.txt"), b"earlier").unwrap();
+  fs::write(first_root.join("another needle.txt"), b"another").unwrap();
+  fixture.repo.scan_site(&first_site.id).await.unwrap();
+
+  let moved = fixture
+    .repo
+    .search_indexed_files_with_anchor(" NEEdle ", 0, 2, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!((moved.anchor_index, moved.offset, moved.total_matches), (Some(3), 2, 5));
+  assert_eq!(moved.matches[0].name, "original needle.txt");
+  assert_eq!(moved.matches[1].file_id, anchor_id);
+
+  let nonmatching = fixture
+    .repo
+    .search_indexed_files_with_anchor("earlier", u64::MAX, 2, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!(
+    (nonmatching.anchor_index, nonmatching.offset, nonmatching.total_matches),
+    (None, 0, 1)
+  );
+  assert_eq!(nonmatching.matches[0].name, "earlier needle.txt");
+  assert!(serde_json::to_value(nonmatching).unwrap().get("anchor_index").is_none());
+
+  fs::remove_file(&anchor_path).unwrap();
+  fixture.repo.scan_site(&second_site.id).await.unwrap();
+  let missing = fixture
+    .repo
+    .search_indexed_files_with_anchor("needle", u64::MAX, 2, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!(
+    (missing.anchor_index, missing.offset, missing.total_matches),
+    (None, 2, 4)
+  );
+  assert_eq!(missing.matches[1].name, "tail needle.txt");
+  let in_range = fixture
+    .repo
+    .search_indexed_files_with_anchor("needle", 1, 2, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!(in_range.offset, 1);
+  assert_eq!(in_range.matches[0].name, "earlier needle.txt");
+  let empty = fixture
+    .repo
+    .search_indexed_files_with_anchor("absent", 1, 2, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!((empty.anchor_index, empty.offset, empty.total_matches), (None, 0, 0));
+  assert!(empty.matches.is_empty());
+
+  let unanchored = fixture.repo.search_indexed_files("needle", 3, 2).await.unwrap();
+  assert_eq!((unanchored.anchor_index, unanchored.offset), (None, 3));
+  assert_eq!(unanchored.matches.len(), 1);
+  assert_eq!(unanchored.matches[0].name, "tail needle.txt");
+}
+
+#[tokio::test]
 async fn storage_file_reveal_returns_exact_local_parent_page_and_coverage() {
   let fixture = Fixture::new().await;
   let source_root = fs::canonicalize(fixture.mkdir("reveal-source")).unwrap();

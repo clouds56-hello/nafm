@@ -48,8 +48,10 @@ export function findSimilarFolders(request: FolderSimilarityRequest): Promise<Fo
   return invoke<FolderSimilarityPage>("find_similar_folders", { request });
 }
 
-export function searchIndexedFiles(expectedWorkspace: string, query: string, offset: number, limit: number): Promise<IndexedFileSearchPage> {
-  return invoke("search_indexed_files", { expected_workspace: expectedWorkspace, query, offset, limit });
+export function searchIndexedFiles(
+  expectedWorkspace: string, query: string, offset: number, limit: number, anchorFileId?: string,
+): Promise<IndexedFileSearchPage> {
+  return invoke("search_indexed_files", { expected_workspace: expectedWorkspace, query, offset, limit, anchor_file_id: anchorFileId });
 }
 
 export function completeRemotePath(request: PathCompletionRequest): Promise<PathCompletion> {

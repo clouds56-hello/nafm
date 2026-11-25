@@ -323,6 +323,7 @@ export interface IndexedFileSearchPage {
   offset: number;
   limit: number;
   total_matches: number;
+  anchor_index?: number;
 }
 
 export interface FinderPosition {
@@ -331,6 +332,7 @@ export interface FinderPosition {
   file_id: string;
   row_index: number;
   scroll_position: number | "end";
+  result_count: number;
 }
 
 export interface ScanSelector {

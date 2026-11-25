@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { IndexedFileSearchPage } from "../src/lib/types";
 
 const mirroredTrailer = "smb://media.example.test/Studio/Campaign mirror/Trailer master.mov";
 const studioTrailer = "/demo/Studio Archive/Projects/Brand campaign/Trailer master.mov";
@@ -305,6 +306,94 @@ test("Home supersedes a pending Finder End jump without losing focus", async ({ 
   await expect.poll(() => distantRead.evaluate((read) => read.replied)).toBe(true);
   await expect(second).toBeFocused();
   await expect(second).toBeInViewport();
+});
+
+test("Back to results follows the same file after its search rank changes", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  const finderCalls = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const reads: { offset: number; anchor_file_id: string | null }[] = [];
+    bridge.invoke = (command, args) => {
+      if (command === "search_indexed_files" && args.query === ".") {
+        reads.push({
+          offset: Number(args.offset),
+          anchor_file_id: typeof args.anchor_file_id === "string" ? args.anchor_file_id : null,
+        });
+      }
+      return invoke(command, args);
+    };
+    async function search(offset: number) {
+      return await invoke("search_indexed_files", {
+        expected_workspace: "Studio workspace", query: ".", offset, limit: 48,
+      }) as IndexedFileSearchPage;
+    }
+    return {
+      reads,
+      async moveOtherSite() {
+        const tail = await search(4128);
+        const oldIndex = tail.matches.findIndex((file) => file.name === "Dailies.mov" && file.site_id === "team-share");
+        const selected = tail.matches[oldIndex];
+        if (!selected) throw new Error("Dailies.mov is missing from the original Finder page.");
+        // Change the mock index independently so the open Details view and Finder session survive.
+        await invoke("rename_site", { workspaceName: "Studio workspace", siteId: "studio-archive", name: "Z Studio archive" });
+        const head = await search(0);
+        return {
+          file_id: selected.file_id,
+          old_rank: tail.offset + oldIndex + 1,
+          new_rank: head.matches.findIndex((file) => file.file_id === selected.file_id) + 1,
+          old_count: tail.total_matches,
+          new_count: head.total_matches,
+        };
+      },
+    };
+  });
+
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  const input = query(dialog);
+  const dailies = result(dialog, /^Dailies\.mov/);
+  const pane = dialog.locator(".atlas-analysis-body");
+  const searchText = "  .  ";
+  await input.fill(searchText);
+  await expect(dialog.getByRole("list", { name: "Matching files" }).getByRole("listitem").first())
+    .toHaveAttribute("aria-setsize", "4166");
+  await pane.evaluate((body) => { body.scrollTop = body.scrollHeight; });
+  await expect(dailies).toBeInViewport();
+  await dailies.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Incoming");
+  const dailiesHeading = details(page).getByRole("heading", { name: "Dailies.mov", exact: true });
+  await expect(dailiesHeading).toBeVisible();
+
+  const moved = await finderCalls.evaluate((calls) => calls.moveOtherSite());
+  expect(moved).toMatchObject({ old_rank: 4164, new_rank: 12, old_count: 4166, new_count: 4166 });
+  await sites.getByRole("button", { name: "Scan Field drive", exact: true }).click();
+  await page.getByRole("button", { name: "Scan activity", exact: true }).click();
+  const activity = page.getByRole("group", { name: "Scan activity", exact: true });
+  await expect(activity.getByRole("region", { name: "Latest scan result" })
+    .getByText("Scan finished", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await expect(activity).toBeHidden();
+  await expect(dailiesHeading).toBeVisible();
+
+  const before = await finderCalls.evaluate((calls) => calls.reads.length);
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(searchText);
+  await expect(dailies).toBeFocused();
+  await expect(dailies).toBeInViewport({ ratio: 0.99 });
+  await expect(dialog.locator('[aria-posinset="12"] button')).toBeFocused();
+  await expect(dialog.locator('[aria-posinset="4164"]')).toHaveCount(0);
+  const restoredReads = await finderCalls.evaluate((calls, start) => calls.reads.slice(start), before);
+  expect(restoredReads.flatMap(({ anchor_file_id }) => anchor_file_id ? [anchor_file_id] : [])).toEqual([moved.file_id]);
+  expect(restoredReads.filter(({ anchor_file_id, offset }) => !anchor_file_id && offset >= 96)).toEqual([]);
+  await page.keyboard.press("ArrowDown");
+  await expect(dialog.locator('[aria-posinset="13"] button')).toBeFocused();
 });
 
 test("Find files restores the search that opened each inspected result in Atlas history", async ({ page }) => {

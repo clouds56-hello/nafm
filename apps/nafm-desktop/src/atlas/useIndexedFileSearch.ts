@@ -12,12 +12,22 @@ interface SearchRange {
   end: number;
 }
 
+interface SearchIntent {
+  query: string;
+  range: SearchRange;
+  anchorFileId?: string;
+}
+
 interface CachedSearch {
   total: number;
   pages: Map<number, IndexedFileSearchResult[]>;
 }
 
 export type FinderSearchCache = Map<string, CachedSearch>;
+
+function searchKey(workspace: string, revision: number, name: string) {
+  return JSON.stringify([workspace, revision, name]);
+}
 
 function pageOffset(index: number) {
   return Math.floor(index / PAGE_SIZE) * PAGE_SIZE;
@@ -46,20 +56,28 @@ export function useIndexedFileSearch(
   initialQuery: string,
   initialIndex: number,
   cache: FinderSearchCache,
+  initialFileId?: string,
 ) {
-  const [intent, setIntent] = useState(() => ({
-    query: initialQuery,
-    range: { start: initialIndex, end: initialIndex + 1 },
-  }));
+  const [intent, setIntent] = useState<SearchIntent>(() => {
+    const start = pageOffset(initialIndex);
+    const cached = cache.get(searchKey(workspace, revision, initialQuery.trim()));
+    const knownFile = cached?.pages.get(start)?.[initialIndex - start];
+    return {
+      query: initialQuery,
+      range: { start: initialIndex, end: initialIndex + 1 },
+      anchorFileId: knownFile?.file_id === initialFileId ? undefined : initialFileId,
+    };
+  });
   const latest = useRef(intent);
   const [, refreshCache] = useState(0);
+  const [anchorIndex, setAnchorIndex] = useState<number | null>();
   const [failure, setFailure] = useState<{ key: string; offset: number; message: string } | null>(null);
-  const { query, range } = intent;
+  const { query, range, anchorFileId } = intent;
   const name = query.trim();
-  const key = JSON.stringify([workspace, revision, name]);
+  const key = searchKey(workspace, revision, name);
   const cached = cache.get(key);
   const total = name ? cached?.total ?? null : 0;
-  const offset = firstMissingPage(coveringPages(range, total), cached);
+  const offset = name && anchorFileId ? pageOffset(range.start) : firstMissingPage(coveringPages(range, total), cached);
   const error = failure?.key === key && failure.offset === offset ? failure.message : null;
   const loading = offset !== null && !error;
   const initialRead = total === null;
@@ -70,21 +88,28 @@ export function useIndexedFileSearch(
     // A thumb drag can cross distant windows before settling on one viewport.
     const timer = window.setTimeout(async () => {
       const stillWanted = () => active && latest.current.query.trim() === name
-        && includesPage(coveringPages(latest.current.range, cache.get(key)?.total ?? null), offset);
+        && latest.current.anchorFileId === anchorFileId
+        && (Boolean(anchorFileId) || includesPage(coveringPages(latest.current.range, cache.get(key)?.total ?? null), offset));
       if (!stillWanted()) return;
       try {
-        const page = await searchIndexedFiles(workspace, name, offset, PAGE_SIZE);
+        const page = await searchIndexedFiles(workspace, name, offset, PAGE_SIZE, anchorFileId);
         if (!stillWanted()) return;
         const count = page.total_matches;
-        if (page.offset !== offset || page.matches.length !== Math.min(PAGE_SIZE, Math.max(0, count - offset))) {
+        const index = anchorFileId ? page.anchor_index : undefined;
+        const expectedOffset = !anchorFileId ? offset : index !== undefined ? pageOffset(index)
+          : Math.min(offset, pageOffset(Math.max(0, count - 1)));
+        if (page.offset !== expectedOffset || page.matches.length !== Math.min(PAGE_SIZE, Math.max(0, count - page.offset))
+          || (index !== undefined && page.matches[index - page.offset]?.file_id !== anchorFileId)) {
           throw new Error("The search returned an unexpected page.");
         }
 
         const previous = cache.get(key);
         // A changed result count can move rows between pages.
         const pages = previous?.total === count ? new Map(previous.pages) : new Map<number, IndexedFileSearchResult[]>();
-        if (offset < count) pages.set(offset, page.matches);
-        const wanted = coveringPages(latest.current.range, count);
+        if (page.offset < count) pages.set(page.offset, page.matches);
+        const target = index ?? Math.min(latest.current.range.start, Math.max(0, count - 1));
+        const nextRange = anchorFileId ? { start: target, end: target + 1 } : latest.current.range;
+        const wanted = coveringPages(nextRange, count);
         for (const start of pages.keys()) {
           if (pages.size <= MAX_CACHED_PAGES) break;
           if (start !== 0 && !includesPage(wanted, start)) pages.delete(start);
@@ -97,7 +122,14 @@ export function useIndexedFileSearch(
           const oldest = cache.keys().next().value;
           if (oldest !== undefined) cache.delete(oldest);
         }
-        refreshCache((version) => version + 1);
+        if (anchorFileId) {
+          const next = { query: latest.current.query, range: nextRange };
+          latest.current = next;
+          setAnchorIndex(index ?? null);
+          setIntent(next);
+        } else {
+          refreshCache((version) => version + 1);
+        }
       } catch (error) {
         if (stillWanted()) {
           setFailure({ key, offset, message: error instanceof Error ? error.message : String(error) });
@@ -108,21 +140,23 @@ export function useIndexedFileSearch(
       active = false;
       window.clearTimeout(timer);
     };
-  }, [cache, error, initialRead, key, name, offset, workspace]);
+  }, [anchorFileId, cache, error, initialRead, key, name, offset, workspace]);
 
   const changeQuery = useCallback((text: string) => {
     const current = latest.current;
     if (current.query === text) return;
     const nameChanged = text.trim() !== current.query.trim();
-    const next = { query: text, range: nameChanged ? firstRow : current.range };
+    const next = { query: text, range: nameChanged || current.anchorFileId ? firstRow : current.range };
     latest.current = next;
     setIntent(next);
-    if (nameChanged) setFailure(null);
+    setAnchorIndex(undefined);
+    if (nameChanged || current.anchorFileId) setFailure(null);
   }, []);
 
   const loadRange = useCallback((start: number, end: number) => {
     const current = latest.current;
-    if (!name || current.query.trim() !== name || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    if (!name || current.anchorFileId || current.query.trim() !== name
+      || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
     const range = { start: Math.max(0, Math.floor(start)), end: Math.max(1, Math.ceil(end)) };
     if (range.start === current.range.start && range.end === current.range.end) return;
     const next = { query: current.query, range };
@@ -137,5 +171,8 @@ export function useIndexedFileSearch(
     return cached?.pages.get(offset)?.[index - offset];
   }, [cached]);
 
-  return { query, name, key, changeQuery, loading, error, total, fileAt, loadRange, retry: () => setFailure(null) };
+  return {
+    query, name, key, changeQuery, loading, error, total, fileAt, loadRange, retry: () => setFailure(null),
+    locatingFile: Boolean(anchorFileId), anchorIndex,
+  };
 }

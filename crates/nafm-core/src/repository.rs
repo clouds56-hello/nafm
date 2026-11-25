@@ -1865,11 +1865,24 @@ impl Repository {
   }
 
   pub async fn search_indexed_files(&self, query: &str, offset: u64, limit: u64) -> Result<IndexedFileSearchPage> {
+    self.search_indexed_files_with_anchor(query, offset, limit, None).await
+  }
+
+  pub async fn search_indexed_files_with_anchor(
+    &self,
+    query: &str,
+    offset: u64,
+    limit: u64,
+    anchor_file_id: Option<&str>,
+  ) -> Result<IndexedFileSearchPage> {
     let db_path = self.db_path.clone();
     let query = query.trim().to_lowercase();
+    let anchor_file_id = anchor_file_id.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      with_deferred_transaction(&conn, || indexed_file_search::search(&conn, query, offset, limit))
+      with_deferred_transaction(&conn, || {
+        indexed_file_search::search(&conn, query, offset, limit, anchor_file_id.as_deref())
+      })
     })
     .await?
   }
