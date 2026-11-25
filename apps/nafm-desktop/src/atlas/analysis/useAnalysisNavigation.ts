@@ -4,20 +4,15 @@ export function useAnalysisNavigation<Match>(
   onJump: (match: Match, signal: AbortSignal) => Promise<string | null>,
   onClose: () => void,
   onOpened: (match: Match) => void = onClose,
-  revision?: number,
 ) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<AbortController | null>(null);
 
-  useLayoutEffect(() => {
-    setOpening(false);
-    setError(null);
-    return () => {
-      attempt.current?.abort();
-      attempt.current = null;
-    };
-  }, [revision]);
+  useLayoutEffect(() => () => {
+    attempt.current?.abort();
+    attempt.current = null;
+  }, []);
 
   function close() {
     attempt.current?.abort();

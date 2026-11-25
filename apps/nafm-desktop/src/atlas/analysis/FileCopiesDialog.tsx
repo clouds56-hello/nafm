@@ -52,7 +52,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
   const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, Boolean(page && !loading && !error));
   const navigation = useAnalysisNavigation(onJump, onClose, (match) => {
     if (page) onShown(match, { page, selected_id: match.file_id, scroll_top: readScroll(), revision: contentRevision });
-  }, contentRevision);
+  });
   const busy = loading || Boolean(error) || navigation.opening;
   const matches = page?.matches.filter((match) => !match.is_current) ?? [];
   const selectedMatch = matches.find((match) => match.file_id === selectedId);
@@ -70,10 +70,10 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
       title="Exact copies"
       closeButtonRef={closeButton}
       onClose={navigation.close}
-      footer={selected ? (
+      footer={selected || navigation.opening || navigation.error ? (
         <AnalysisNavigationFooter
           error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
-          pendingLabel="Opening copy…" buttonRef={showButton} onShow={() => void navigation.show(selected)}
+          pendingLabel="Opening copy…" buttonRef={showButton} onShow={selected ? () => void navigation.show(selected) : undefined}
         />
       ) : scan && (
         <VerificationScanButton action={{ ...scan, disabled: scan.disabled || busy }} onScanSite={onScanSite}

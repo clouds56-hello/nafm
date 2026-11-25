@@ -144,6 +144,76 @@ test("an exact-copy jump that fails keeps the comparison available to retry", as
   await expect(inspector(page)).toContainText(backupPath);
 });
 
+for (const scanSite of ["Field drive", "Studio archive"]) {
+  test(`opening an exact copy survives a scan of ${scanSite}`, async ({ page }) => {
+    await inspectOriginalFile(page);
+    await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+
+    const reads = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = { release, reveal_pending: false, reveal_reads: 0, match_reads: 0 };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_file_content_matches") read.match_reads += 1;
+        if (command !== "get_storage_file_reveal") return response;
+        read.reveal_reads += 1;
+        if (read.reveal_reads === 1) {
+          read.reveal_pending = true;
+          await gate;
+        }
+        return response;
+      };
+      return read;
+    });
+
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    await sites.getByRole("button", { name: `Scan ${scanSite}`, exact: true }).press("Enter");
+    await expect(sites.getByRole("button", { name: `Stop scan of ${scanSite}`, exact: true })).toBeEnabled();
+    await sites.getByRole("button", { name: "Close sites", exact: true }).press("Enter");
+    await inspector(page).getByRole("button", { name: "Exact copies", exact: true }).press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Exact copies", exact: true });
+    const shared = dialog.getByRole("button", { name: /Team share.*Campaign mirror/ });
+    const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+    const opening = dialog.getByRole("button", { name: "Opening copy…", exact: true });
+    await page.clock.runFor(10);
+    await shared.press("Enter");
+    await expect(shared).toHaveAttribute("aria-pressed", "true");
+    await show.press("Enter");
+
+    try {
+      await expect.poll(() => reads.evaluate((read) => read.reveal_pending)).toBe(true);
+      await expect(opening).toBeFocused();
+      await page.clock.runFor(5_700);
+      await expect.poll(() => reads.evaluate((read) => read.match_reads)).toBeGreaterThan(1);
+      await expect(dialog.locator(".atlas-analysis-results")).toHaveAttribute("aria-busy", "false");
+      await expect(opening).toBeFocused();
+      await expect(shared).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      await reads.evaluate((read) => read.release());
+    }
+
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Campaign mirror");
+    const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+    await expect(details).toContainText(sharedPath);
+    expect(await reads.evaluate((read) => read.reveal_reads)).toBe(1);
+
+    await details.getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+    await page.clock.runFor(10);
+    await expect(dialog.getByRole("region", { name: "Selected file", exact: true })).toContainText(sourcePath);
+    await expect(dialog.getByRole("region", { name: "Matching copy", exact: true })).toContainText(sharedPath);
+    await expect(shared).toHaveAttribute("aria-pressed", "true");
+    await expect(show).toBeFocused();
+  });
+}
+
 test("dismissing an exact-copy comparison cancels its pending navigation", async ({ page }) => {
   await inspectOriginalFile(page);
   const dialog = await openExactCopies(page);

@@ -94,13 +94,11 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
   const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, Boolean(page && !loading && !error));
   const navigation = useAnalysisNavigation(onJump, onClose, (match) => {
     if (page) onShown(match, { page, selected_id: folderKey(match), scroll_top: readScroll(), revision: contentRevision });
-  }, contentRevision);
+  });
   const busy = loading || Boolean(error) || navigation.opening;
   const selectedMatch = page?.matches.find((match) => folderKey(match) === selectedKey);
   const selected = selectedMatch ?? page?.matches[0];
-  const matchChanged = position && page && position.revision !== contentRevision && !loading && !error
-    && (page.offset === position.page.offset || page.total_matches <= position.page.offset)
-    && selectedKey === position.selected_id && !selectedMatch;
+  const matchChanged = selectedKey !== null && page && !loading && !error && !selectedMatch;
   const source = page?.source;
   const emptyFolder = source?.inventory_ready && source.file_count === 0;
   const needsVerification = source?.distinct_content_count === 0 && (!source.inventory_ready || source.pending_hash_count > 0);
@@ -123,10 +121,10 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
       title="Similar folders"
       closeButtonRef={closeButton}
       onClose={navigation.close}
-      footer={selected ? (
+      footer={selected || navigation.opening || navigation.error ? (
         <AnalysisNavigationFooter
           error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
-          pendingLabel="Opening folder…" buttonRef={showButton} onShow={() => void navigation.show(selected)}
+          pendingLabel="Opening folder…" buttonRef={showButton} onShow={selected ? () => void navigation.show(selected) : undefined}
         />
       ) : scan && (
         <VerificationScanButton action={{ ...scan, disabled: scan.disabled || busy }} onScanSite={onScanSite}
@@ -202,7 +200,10 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, co
             {scanFailure && <p className="atlas-analysis-warning" role="alert">{scanFailure}</p>}
             <div className="atlas-analysis-meta">
               {page.total_matches > 0 && <span role="status">{formatCount(page.total_matches)} {page.total_matches === 1 ? "match" : "matches"}</span>}
-              <button className="atlas-folder-refresh" type="button" aria-disabled={busy || undefined} onClick={busy ? undefined : () => browse(0)}>Refresh results</button>
+              <button className="atlas-folder-refresh" type="button" aria-disabled={busy || undefined} onClick={busy ? undefined : () => {
+                navigation.clearError();
+                retry();
+              }}>Refresh results</button>
             </div>
             {page.matches.length > 0 && (
               <ul className="atlas-analysis-list atlas-analysis-choices atlas-folder-match-list" aria-label="Matching folders">

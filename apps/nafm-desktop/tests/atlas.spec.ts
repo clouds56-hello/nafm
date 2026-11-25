@@ -261,18 +261,22 @@ test.describe("touch exploration", () => {
     await expect(file).toBeFocused();
 
     const toolbar = page.getByRole("button", { name: "Workspace actions", exact: true });
-    await page.evaluate(() => { window.scrollTo(0, 0); });
-    await toolbar.focus();
+    async function focusToolbarAboveInspector() {
+      await toolbar.evaluate((button: HTMLButtonElement) => button.focus({ preventScroll: true }));
+      await expect(toolbar).toBeFocused();
+      await toolbar.hover();
+      // Scroll from the toolbar so the wheel moves the page instead of the Contents list.
+      await page.mouse.wheel(0, -1800);
+      await expect(inspector).not.toBeInViewport();
+    }
+    await focusToolbarAboveInspector();
     await expect(back).toBeHidden();
-    await expect(inspector).not.toBeInViewport();
     await page.keyboard.press("Alt+ArrowRight");
 
     await expect(back).toBeFocused();
     await expect(back).toBeInViewport({ ratio: 0.99 });
     await expect(sites).toBeVisible();
-    await page.evaluate(() => { window.scrollTo(0, 0); });
-    await toolbar.focus();
-    await expect(back).not.toBeInViewport();
+    await focusToolbarAboveInspector();
     await page.keyboard.press("Alt+ArrowLeft");
 
     await expect(file).toBeFocused();

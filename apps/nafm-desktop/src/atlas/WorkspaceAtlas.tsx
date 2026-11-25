@@ -127,7 +127,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const [contentsReveal, setContentsReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
+  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromFinderDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
+  const [finderViews, setFinderViews] = useState(() => new Map<FinderPosition, InspectorView>());
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
@@ -141,7 +143,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       : { id: Symbol(), workspace: findWorkspace, openedFrom: "atlas", latestPosition: null });
   }, [findWorkspace]);
   const siteId = site?.id;
-  const pane = inspectorOpen && siteId ? inspectorBySite.get(siteId) ?? "contents" : null;
+  const finderVisit = selectedNode?.kind === "file" ? state.finderPosition : null;
+  const pane = inspectorOpen && siteId
+    ? finderVisit ? finderViews.get(finderVisit) ?? "details" : inspectorBySite.get(siteId) ?? "contents"
+    : null;
   const visit = typeof pane === "object" ? pane : null;
   const inspectorView = typeof pane === "string" ? pane : visit?.view ?? null;
 
@@ -155,6 +160,16 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     rememberPane(next);
     setInspectorOpen(true);
   }, [rememberPane]);
+  function changeInspectorView(next: InspectorView) {
+    if (finderVisit) {
+      lastOpened.current = "inspector";
+      setRevealedRow(null);
+      setFinderViews((saved) => new Map(saved).set(finderVisit, next));
+      setInspectorOpen(true);
+    } else {
+      openInspector(next);
+    }
+  }
   const closeInspector = useCallback(() => {
     pendingReveal.current?.abort();
     setRevealedRow(null);
@@ -218,8 +233,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
-  const finderPosition = selected?.kind === "file" && state.finderPosition?.session === finder?.id
-    ? state.finderPosition : null;
+  const finderPosition = finderVisit?.session === finder?.id ? finderVisit : null;
   const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
   const returnToReview = !finderPosition && reviewed && selected?.kind === "file"
     && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
@@ -414,16 +428,32 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     if (currentVisit?.view === "contents") openInspector({ ...currentVisit, view: "details" });
     else return forwardLocation();
   }, [currentVisit, forwardLocation, openInspector]);
+
+  useLayoutEffect(() => {
+    if (!historyFocusRequest) return;
+    setHistoryFocusRequest(null);
+    const { origin, fromFinderDetails } = historyFocusRequest;
+    const pane = contentsPane.current;
+    const focus = document.activeElement;
+    if (!pane || (focus !== origin && focus !== document.body && focus !== pane)) return;
+    if (inspectorView === "contents") {
+      if (fromFinderDetails) revealInCompactAtlas(pane.closest("aside"));
+      setHistoryFocusOrigin(origin);
+    } else if (inspectorView === "details" && finderVisit) {
+      revealInCompactAtlas(pane.closest("aside"));
+      setAnalysisFocusRequested(true);
+    }
+  }, [finderVisit, historyFocusRequest, inspectorView]);
+
   useEffect(() => {
     function moveHistory(move: () => Promise<boolean> | undefined, target: EventTarget | null) {
       const pane = contentsPane.current;
       const result = move();
-      if (!result || !(target instanceof HTMLElement) || !pane?.contains(target)) return;
+      if (!result || !(target instanceof HTMLElement) || !pane) return;
+      const fromFinderDetails = Boolean(finderVisit && inspectorView === "details" && pane.closest("aside")?.contains(target));
+      if (!fromFinderDetails && !pane.contains(target)) return;
       void result.then((moved) => {
-        const focus = document.activeElement;
-        if (moved && contentsPane.current === pane && (focus === target || focus === document.body || focus === pane)) {
-          setHistoryFocusOrigin(target);
-        }
+        if (moved && contentsPane.current === pane) setHistoryFocusRequest({ origin: target, fromFinderDetails });
       });
     }
 
@@ -458,7 +488,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, openFileFinder]);
+  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, finderVisit, openFileFinder]);
 
   async function showFileInContents(file: StorageNode) {
     if (!folder || (pendingReveal.current && !pendingReveal.current.signal.aborted)) return;
@@ -486,7 +516,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       // A previous visit to this list may have scrolled away from the file.
       contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
       inspectorOrigin.current = null;
-      openInspector("contents");
+      changeInspectorView("contents");
       setRevealedRow({ key, id: file.id });
     } finally {
       if (pendingReveal.current === attempt) {
@@ -496,11 +526,11 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     }
   }
 
-  function showAnalysisDetails(siteId: string) {
+  function showAnalysisDetails(siteId?: string) {
     inspectorOrigin.current = null;
     lastOpened.current = "inspector";
     setRevealedRow(null);
-    setInspectorBySite((saved) => new Map(saved).set(siteId, "details"));
+    if (siteId) setInspectorBySite((saved) => new Map(saved).set(siteId, "details"));
     setInspectorOpen(true);
     setAnalysisFocusRequested(true);
   }
@@ -707,12 +737,13 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                 detailsKey={selected?.id ?? folder?.id ?? null}
                 contentsPane={contentsPane}
                 siteId={site.id}
+                finderVisit={finderVisit}
                 fileOpen={fileOpen}
                 folderName={folder?.name}
                 view={inspectorView}
                 initialView={selected?.kind === "file" ? "details" : "contents"}
                 origin={inspectorOrigin}
-                onViewChange={openInspector}
+                onViewChange={changeInspectorView}
                 onBackToContents={goBack}
                 onClose={closeInspector}
                 details={location ? (
@@ -815,6 +846,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       </main>
       {comparison?.open && (comparison.kind === "copies" ? comparison.node.path !== null && (
         <FileCopiesDialog
+          key={comparison.node.id}
           workspaceName={comparison.workspace} siteId={comparison.siteId}
           source={{ name: comparison.node.name, site: comparison.siteName, path: comparison.node.path, size: comparison.node.total_bytes }}
           verification={comparisonVerification} onScanSite={state.scan}
@@ -826,6 +858,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
         />
       ) : (
         <SimilarFoldersDialog
+          key={comparison.node.id}
           workspaceName={comparison.workspace} siteId={comparison.siteId}
           siteName={comparison.siteName} node={comparison.node}
           verification={comparisonVerification} onScanSite={state.scan}
@@ -845,10 +878,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           session={finder.id} position={finder.openedFrom === "details" ? finderPosition : finder.latestPosition}
           open={finder.openedFrom !== null && finder.workspace === findWorkspace}
           onOpen={state.jumpToContentMatch}
-          onOpened={(file, position) => {
+          onOpened={(_, position) => {
             setFinderSession((session) => session?.id === finder.id
               ? { ...session, openedFrom: null, latestPosition: position } : session);
-            showAnalysisDetails(file.site_id);
+            showAnalysisDetails();
           }}
           onClose={() => {
             setFinderSession(null);

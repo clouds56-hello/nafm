@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import type { FinderPosition } from "../lib/types";
 import { CloseIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import "./inspector.css";
@@ -10,6 +11,7 @@ interface AtlasInspectorProps {
   view: InspectorView | null;
   initialView: InspectorView;
   siteId: string;
+  finderVisit: FinderPosition | null;
   contentsPane: RefObject<HTMLDivElement | null>;
   fileOpen: boolean;
   folderName?: string;
@@ -45,7 +47,7 @@ function focusContentsRow(pane: HTMLDivElement) {
 }
 
 export function AtlasInspector({
-  view, initialView, siteId, contentsPane, fileOpen, folderName, detailsKey, origin,
+  view, initialView, siteId, finderVisit, contentsPane, fileOpen, folderName, detailsKey, origin,
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
@@ -55,8 +57,8 @@ export function AtlasInspector({
   const detailsTab = useRef<HTMLButtonElement>(null);
   const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const backButton = useRef<HTMLButtonElement>(null);
-  const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null }>({
-    screen: null, siteId, file: null,
+  const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null; finderVisit: FinderPosition | null }>({
+    screen: null, siteId, file: null, finderVisit: null,
   });
   const enterList = useRef(false);
   const detailsPane = useRef<HTMLDivElement>(null);
@@ -73,11 +75,14 @@ export function AtlasInspector({
     const previous = previousView.current;
     const file = screen === "file" ? detailsKey : null;
     const changedFile = file !== null && file !== previous.file;
-    previousView.current = { screen, siteId, file };
+    previousView.current = { screen, siteId, file, finderVisit };
     const active = document.activeElement;
-    if ((previous.screen === screen && !changedFile)
-      || (previous.siteId !== siteId && active && active !== document.body && !drawer.current?.contains(active))) return;
     const inspectingFile = screen === "file" || previous.screen === "file";
+    // Atlas history owns focus when entering or leaving a Finder result.
+    const finderHistory = previous.screen && screen && !inspectingFile && previous.finderVisit !== finderVisit;
+    if ((previous.screen === screen && !changedFile)
+      || finderHistory
+      || (previous.siteId !== siteId && active && active !== document.body && !drawer.current?.contains(active))) return;
     if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
@@ -94,7 +99,7 @@ export function AtlasInspector({
       origin.current = null;
     }
     enterList.current = false;
-  }, [screen, siteId, detailsKey, contentsPane, origin]);
+  }, [screen, siteId, finderVisit, detailsKey, contentsPane, origin]);
 
   if (!view) {
     return (

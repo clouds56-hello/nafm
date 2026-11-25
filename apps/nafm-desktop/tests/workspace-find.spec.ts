@@ -618,6 +618,71 @@ test("an older finder result cannot replace a newer query and a failed search ca
 test.describe("compact workspace finder", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
 
+  test("keyboard history resumes the same-site Contents cursor after inspecting a Finder result", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 620 });
+    await page.goto("/mock/?scenario=large");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Sites", exact: true }).tap();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const grid = contents.getByRole("grid");
+    const proof = grid.getByRole("button", { name: /^Proof 095\.jpg/ });
+    const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+    await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+    const filterText = "  pRoOf  ";
+    await filter.fill(filterText);
+    await expect(grid).toHaveAttribute("aria-rowcount", "96");
+    await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+    await expect(proof).toBeInViewport();
+    await proof.focus();
+    const scrollPosition = await contents.evaluate((pane) => pane.scrollTop);
+    expect(scrollPosition).toBeGreaterThan(0);
+
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+    await actions.tap();
+    await page.getByRole("group", { name: "Workspace actions", exact: true })
+      .getByRole("button", { name: "Find files", exact: true }).tap();
+    const dialog = finder(page);
+    await query(dialog).fill("trailer master");
+    await result(dialog, /^Trailer master\.mov/i).filter({ hasText: studioTrailer }).tap();
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(details(page)).toBeFocused();
+
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(filter).toHaveValue(filterText);
+    await expect(grid).toHaveAttribute("aria-rowcount", "96");
+    await expect(proof).toBeFocused();
+    await expect(proof).toBeInViewport();
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollPosition);
+    await expect(page.getByRole("button", { name: "Close sites", exact: true })).toBeVisible();
+
+    await page.keyboard.press("ArrowDown");
+    await expect(grid.getByRole("button", { name: /^Proof 096\.jpg/ })).toBeFocused();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(details(page)).toContainText(studioTrailer);
+    await expect(details(page)).toBeFocused();
+    await expect(backToResults(page)).toBeInViewport();
+
+    const workspaceActions = page.getByRole("group", { name: "Workspace actions", exact: true });
+    await actions.tap();
+    await workspaceActions.getByRole("button", { name: "Previous location", exact: true }).tap();
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(filter).toHaveValue(filterText);
+    await expect(actions).toBeFocused();
+
+    await actions.tap();
+    await workspaceActions.getByRole("button", { name: "Next location", exact: true }).tap();
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(details(page)).toContainText(studioTrailer);
+    await page.getByRole("tab", { name: "Contents", exact: true }).tap();
+    await expect(grid.getByRole("button", { name: /^Trailer master\.mov/ })).toBeVisible();
+  });
+
   test("can open and dismiss Find files from Workspace actions without losing focus", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");

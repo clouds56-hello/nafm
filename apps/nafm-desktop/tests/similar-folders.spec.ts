@@ -151,7 +151,49 @@ test("the compact comparison restores the chosen folder and scroll position afte
   expect(await comparisonReads.jsonValue()).toEqual([]);
 });
 
-test("the comparison returns to the same result page", async ({ page }) => {
+test("refresh keeps the chosen folder while it remains a match", async ({ page }) => {
+  const dialog = await openComparison(page);
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const backup = dialog.getByRole("button", { name: /Studio archive.*Backup campaign/ });
+  const mirror = dialog.getByRole("button", { name: /Team share.*Campaign mirror/ });
+  const refresh = dialog.getByRole("button", { name: "Refresh results", exact: true });
+  const refreshes = await page.evaluateHandle((backupPath) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const state = { count: 0, remove_backup: false };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command !== "find_similar_folders") return response;
+      state.count += 1;
+      if (!state.remove_backup) return response;
+      const result = response as FolderSimilarityPage;
+      const matches = result.matches.filter(({ folder }) => folder.path !== backupPath);
+      return { ...result, matches, total_matches: matches.length };
+    };
+    return state;
+  }, backupPath);
+
+  await backup.press("Enter");
+  await expect(match).toContainText(backupPath);
+  await refresh.press("Enter");
+  await expect.poll(() => refreshes.evaluate((state) => state.count)).toBe(1);
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).toBeFocused();
+  await expect(backup).toHaveAttribute("aria-pressed", "true");
+  await expect(match).toContainText(backupPath);
+
+  await refreshes.evaluate((state) => { state.remove_backup = true; });
+  await refresh.press("Enter");
+  await expect(backup).toHaveCount(0);
+  await expect(mirror).toHaveAttribute("aria-pressed", "true");
+  await expect(match).toContainText(mirrorPath);
+  await expect(dialog.getByRole("status").filter({ hasText: /^The comparison results changed\.$/ })).toBeVisible();
+  await expect(refresh).toBeFocused();
+});
+
+test("refreshing and reopening a comparison keep the same result page", async ({ page }) => {
   await inspectSource(page);
   const comparisonReads = await page.evaluateHandle((paths) => {
     const { __TAURI_INTERNALS__: bridge } = window as unknown as {
@@ -179,6 +221,13 @@ test("the comparison returns to the same result page", async ({ page }) => {
   await pages.getByRole("button", { name: "Next", exact: true }).click();
   await expect(match).toContainText(backupPath);
 
+  const refresh = dialog.getByRole("button", { name: "Refresh results", exact: true });
+  await refresh.press("Enter");
+  await expect.poll(() => comparisonReads.jsonValue()).toEqual([0, 1, 1]);
+  await expect(refresh).toBeEnabled();
+  await expect(match).toContainText(backupPath);
+  await expect(pages.getByRole("button", { name: "Previous", exact: true })).toBeEnabled();
+
   await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
   await expect(dialog).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Backup campaign");
@@ -186,7 +235,7 @@ test("the comparison returns to the same result page", async ({ page }) => {
   await expect(match).toContainText(backupPath);
   await expect(pages.getByRole("button", { name: "Previous", exact: true })).toBeEnabled();
   await expect(pages.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
-  expect(await comparisonReads.jsonValue()).toEqual([0, 1]);
+  expect(await comparisonReads.jsonValue()).toEqual([0, 1, 1]);
 });
 
 test("a failed folder jump keeps the chosen comparison open for retry", async ({ page }) => {

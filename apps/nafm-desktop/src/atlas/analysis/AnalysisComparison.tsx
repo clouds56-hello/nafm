@@ -31,7 +31,7 @@ interface AnalysisNavigationFooterProps {
   opening: boolean;
   disabled: boolean;
   pendingLabel: string;
-  onShow: () => void;
+  onShow?: () => void;
   buttonRef: RefObject<HTMLButtonElement | null>;
 }
 
@@ -39,14 +39,16 @@ export function AnalysisNavigationFooter({ error, opening, disabled, pendingLabe
   return (
     <>
       {error && <p className="atlas-analysis-reveal-error" role="alert">{error}</p>}
-      <button
-        className="atlas-analysis-primary atlas-analysis-reveal-button" type="button"
-        ref={buttonRef}
-        aria-disabled={disabled || opening || undefined} aria-busy={opening || undefined}
-        onClick={disabled || opening ? undefined : onShow}
-      >
-        {opening ? pendingLabel : "Show in Atlas"} <OpenInIcon />
-      </button>
+      {(opening || onShow) && (
+        <button
+          className="atlas-analysis-primary atlas-analysis-reveal-button" type="button"
+          ref={buttonRef}
+          aria-disabled={disabled || opening || undefined} aria-busy={opening || undefined}
+          onClick={disabled || opening ? undefined : onShow}
+        >
+          {opening ? pendingLabel : "Show in Atlas"} <OpenInIcon />
+        </button>
+      )}
     </>
   );
 }
