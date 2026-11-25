@@ -728,6 +728,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   function activateNode(node: StorageNode, origin?: SVGGElement, step?: DirectoryAdjacentFile) {
     if (node.kind === "smaller_items") {
+      origin?.focus({ preventScroll: true });
       const focusOrigin = document.activeElement;
       state.selectNode(node, {
         onGroupArrival(destination, page) {
@@ -738,12 +739,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           );
           inspectorOrigin.current = origin ?? null;
           openInspector("contents");
-          if (inspectorView === "contents" && document.activeElement === focusOrigin) {
-            const pane = contentsPane.current;
-            // A nested arc can disappear as the new folder replaces the map.
-            pane?.focus({ preventScroll: true });
-            revealInCompactAtlas(pane?.closest("aside") ?? null);
-          }
           if (firstGrouped) {
             setContentsReveal({ key, index, onApplied: () => setContentsReveal(null) });
             setRevealedRow({ key, id: firstGrouped.id, origin: focusOrigin });

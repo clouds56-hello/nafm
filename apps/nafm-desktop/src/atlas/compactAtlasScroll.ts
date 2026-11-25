@@ -43,9 +43,13 @@ export function revealInCompactAtlas(element: Element | null) {
 }
 
 export function restoreAtlasPanelFocus(launcher: HTMLButtonElement | null, origin?: SVGGElement | null) {
-  if (origin?.isConnected) {
-    revealInCompactAtlas(origin);
-    origin.focus({ preventScroll: true });
+  const originId = origin?.dataset.nodeId;
+  const arc = origin?.isConnected ? origin : originId
+    ? launcher?.closest(".atlas-visualization")?.querySelector<SVGGElement>(`.radial-atlas__sector[data-node-id="${CSS.escape(originId)}"]`)
+    : null;
+  if (arc) {
+    revealInCompactAtlas(arc);
+    arc.focus({ preventScroll: true });
     return;
   }
 

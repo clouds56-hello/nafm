@@ -776,15 +776,20 @@ test("Smaller items opens its group and preserves the folder search across the v
   await expect(sites).toBeVisible();
 });
 
+async function nestedPhotoGroup(page: Page) {
+  const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+  const photoId = await map.getByRole("button", { name: /^Photo Library,/ }).getAttribute("data-node-id");
+  const nestedGroup = map.getByRole("button", { name: /^Smaller items,/ })
+    .and(map.locator(`[data-tier="1"][data-node-id$=":${photoId}"]`));
+  return { map, photoId, nestedGroup };
+}
+
 test("a nested Smaller items arc focuses the first grouped row in its containing folder", async ({ page }) => {
   const contents = await openPortraitSearch(page);
   const path = page.getByRole("navigation", { name: "Folder path" });
   await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Studio archive");
-  const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
-  const photoId = await map.getByRole("button", { name: /^Photo Library,/ }).getAttribute("data-node-id");
-  const nestedGroup = map.getByRole("button", { name: /^Smaller items,/ })
-    .and(map.locator(`[data-tier="1"][data-node-id$=":${photoId}"]`));
+  const { nestedGroup } = await nestedPhotoGroup(page);
   await nestedGroup.press("Enter");
 
   await expect(currentFolder(page)).toHaveText("Photo Library");
@@ -795,6 +800,89 @@ test("a nested Smaller items arc focuses the first grouped row in its containing
   await expect(grouped).toHaveAccessibleName(/^Rooftop portraits 1428\.tif/);
   await expect(grouped).toBeFocused();
   await expect(grouped).toBeInViewport({ ratio: 0.99 });
+});
+
+test.describe("compact Smaller items handoff", () => {
+  test.use({ viewport: { width: 390, height: 520 }, reducedMotion: "reduce" });
+
+  test("opening a nested group moves focus into visible Contents and closing returns to the group arc", async ({ page }) => {
+    await page.goto("/mock/?scenario=large");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const { map, nestedGroup } = await nestedPhotoGroup(page);
+    const groupId = await nestedGroup.getAttribute("data-node-id");
+    await expect(page.getByRole("button", { name: "Contents & details", exact: true })).toBeVisible();
+    await nestedGroup.press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const grid = contents.getByRole("grid");
+    const grouped = grid.locator('[aria-rowindex="12"] [data-entry-id]');
+    await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+    await expect(grouped).toHaveAccessibleName(/^Rooftop portraits 1428\.tif/);
+    await expect(grouped).toBeFocused();
+    await expect(grouped).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(() => grouped.evaluate((row) => {
+      const toolbar = document.querySelector(".atlas-toolbar");
+      return row.getBoundingClientRect().top >= (toolbar?.getBoundingClientRect().bottom ?? 0);
+    })).toBe(true);
+    await page.keyboard.press("ArrowDown");
+    const next = grid.locator('[aria-rowindex="13"] [data-entry-id]');
+    await expect(next).toBeFocused();
+    await expect(next).toBeInViewport({ ratio: 0.99 });
+
+    await page.getByRole("button", { name: "Close inspector", exact: true }).press("Enter");
+    await expect(contents).toBeHidden();
+    await expect(sites).toBeVisible();
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    const currentGroup = map.locator(`[data-tier="0"][data-node-id="${groupId}"]`);
+    await expect(currentGroup).toBeFocused();
+    await expect(currentGroup).toBeInViewport();
+  });
+
+  test("opening Sites during a delayed nested group keeps focus in Sites", async ({ page }) => {
+    await page.goto("/mock/?scenario=large");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    const { photoId, nestedGroup } = await nestedPhotoGroup(page);
+    const load = await page.evaluateHandle((folderId) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string; offset?: number }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const request = { pending: false, release };
+      bridge.invoke = async (command, args) => {
+        const result = await invoke(command, args);
+        if (!request.pending && command === "get_storage_view_snapshot" && args.nodeId === folderId && args.offset === 11) {
+          request.pending = true;
+          await gate;
+        }
+        return result;
+      };
+      return request;
+    }, photoId);
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const selectedSite = sites.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+    try {
+      await nestedGroup.press("Enter");
+      await expect.poll(() => load.evaluate((request) => request.pending)).toBe(true);
+      await expect(currentFolder(page)).toHaveText("Studio archive");
+      await page.getByRole("button", { name: "Sites", exact: true }).click();
+      await expect(selectedSite).toBeFocused();
+      await load.evaluate((request) => request.release());
+
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      const grid = page.getByRole("tabpanel", { name: "Contents", exact: true }).getByRole("grid");
+      await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+      await expect(grid.locator('[aria-rowindex="12"] [data-entry-id]')).toHaveAccessibleName(/^Rooftop portraits 1428\.tif/);
+      await expect(selectedSite).toBeFocused();
+      await expect(selectedSite).toBeInViewport({ ratio: 0.99 });
+    } finally {
+      await load.evaluate((request) => request.release());
+    }
+  });
 });
 
 test("a nested file arc returns to the source search or reveals in its containing search", async ({ page }) => {

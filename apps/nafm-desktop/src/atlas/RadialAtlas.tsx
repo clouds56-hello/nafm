@@ -131,12 +131,21 @@ function RadialPlot({
   const touchPreviewSlot = useRef<HTMLDivElement>(null);
   const pointing = useRef<string | null>(null);
   const up = useRef<HTMLButtonElement>(null);
+  const childCursors = useRef(new Map<string, string>());
   const awaitingInventory = Boolean(firstScan);
   const wasAwaitingInventory = useRef(awaitingInventory);
   const [announcement, setAnnouncement] = useState<string | null>(awaitingInventory ? "" : null);
   const sectors = useMemo(() => awaitingInventory
     ? []
     : branchSectors(root, 0, ORIGIN + SEAM / 2, ORIGIN + TURN - SEAM / 2), [root, awaitingInventory]);
+  useLayoutEffect(() => {
+    const cursors = childCursors.current;
+    if (!cursors.size) return;
+    const visibleParents = new Map(sectors.map(({ node, parentId }) => [node.id, parentId] as const));
+    for (const [parentId, childId] of cursors) {
+      if (visibleParents.get(childId) !== parentId) cursors.delete(parentId);
+    }
+  }, [sectors]);
   const labels = useRingLabels(plotRef, sectors, metric, targetCompleteness);
   const previewSector = sectors.find((sector) => sector.node.id === preview?.id);
   const touchPreviewId = preview?.input === "touch" ? previewSector?.node.id : undefined;
@@ -243,6 +252,7 @@ function RadialPlot({
 
   function openSector(sector: Sector, origin: SVGGElement) {
     setPreview(null);
+    if (sector.node.kind === "smaller_items") onNavigateWithFocus(null);
     onSelect(sector.node, origin);
   }
 
@@ -252,6 +262,12 @@ function RadialPlot({
     if (area) revealKeyboardSector(area);
     element?.focus({ preventScroll: true });
     showPreview(sector, "keyboard");
+  }
+
+  function childToFocus(parentId: string) {
+    const children = sectors.filter((entry) => entry.parentId === parentId);
+    const remembered = childCursors.current.get(parentId);
+    return children.find((entry) => entry.node.id === remembered) ?? children[0];
   }
 
   function handleSectorKey(event: KeyboardEvent<SVGGElement>, sector: Sector) {
@@ -276,7 +292,7 @@ function RadialPlot({
       case "ArrowRight": next = siblings[(index + 1) % siblings.length]; break;
       case "Home": next = siblings[0]; break;
       case "End": next = siblings.at(-1); break;
-      case "ArrowDown": next = sectors.find((entry) => entry.parentId === sector.node.id); break;
+      case "ArrowDown": next = childToFocus(sector.node.id); break;
       case "ArrowUp": next = sectors.find((entry) => entry.node.id === sector.parentId); break;
       default: return;
     }
@@ -389,6 +405,7 @@ function RadialPlot({
                   }}
                   onPointerLeave={() => setPreview((current) => current?.input === "pointer" && current.id === node.id ? null : current)}
                   onFocus={(event) => {
+                    childCursors.current.set(sector.parentId, node.id);
                     onSectorFocus(node.id);
                     if (!pointing.current && event.currentTarget.matches(":focus-visible")) showPreview(sector, "keyboard");
                   }}
@@ -436,10 +453,11 @@ function RadialPlot({
               <button
                 ref={up} className="radial-atlas__up" type="button" disabled={!canGoUp}
                 onKeyDown={(event) => {
-                  if (event.key === "ArrowDown" && !event.altKey && !event.metaKey && sectors[0]) {
-                    event.preventDefault();
-                    focusKeyboardSector(sectors[0]);
-                  }
+                  if (event.key !== "ArrowDown" || event.altKey || event.metaKey) return;
+                  const child = childToFocus(root.id);
+                  if (!child) return;
+                  event.preventDefault();
+                  focusKeyboardSector(child);
                 }}
                 aria-label={`Up to ${parentName}`} title={`Up to ${parentName}`}
                 onClick={(event) => {

@@ -5,6 +5,7 @@ import type {
   StorageChildrenPage, StorageLocation, StorageNode,
 } from "../lib/types";
 import { CloseIcon, SearchIcon } from "../management/Icons";
+import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { DirectorySortControl } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
@@ -131,6 +132,7 @@ export function DirectoryContents({
         return;
       }
       const retry = request.id && error ? retryButton.current : null;
+      if (request.origin) revealInCompactAtlas(pane.closest("[data-atlas-panel]"));
       (row || retry || searchInput.current || headingRef.current)?.focus({ preventScroll: true });
       if (row && request.id) {
         const paneBounds = pane.getBoundingClientRect();

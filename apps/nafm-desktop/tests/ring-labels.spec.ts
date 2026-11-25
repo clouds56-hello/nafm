@@ -84,6 +84,53 @@ test("nested arcs identify the folders containing identical file copies", async 
     .toHaveAttribute("title", "Backup campaign");
 });
 
+test("Down restores the last focused child of each ring branch and the center", async ({ page }) => {
+  await page.goto("/mock/");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const arc = (name: RegExp) => map.getByRole("button", { name });
+  const projects = arc(/^Projects,/);
+  const brand = arc(/^Brand campaign,/);
+  const backup = arc(/^Backup campaign,/);
+  const photos = arc(/^Photo Library,/);
+  const editorial = arc(/^Editorial,/);
+  const camera = arc(/^Camera originals\.mxf,/);
+  const up = map.getByRole("button", { name: "Up to Studio archive", exact: true });
+  async function move(key: string, destination: Locator) {
+    await page.keyboard.press(key);
+    await expect(destination).toBeFocused();
+  }
+
+  await projects.focus();
+  await move("ArrowDown", brand);
+  await move("ArrowDown", arc(/^Trailer master\.mov,/).first());
+  await move("ArrowRight", camera);
+  await move("ArrowUp", brand);
+  await move("ArrowDown", camera);
+  await move("ArrowUp", brand);
+  await move("ArrowRight", backup);
+  await move("ArrowUp", projects);
+
+  await move("ArrowRight", photos);
+  await move("ArrowDown", arc(/^Studio portraits,/));
+  await move("ArrowRight", editorial);
+  await move("ArrowUp", photos);
+  await move("ArrowLeft", projects);
+  await move("ArrowDown", backup);
+  await move("ArrowUp", projects);
+  await move("ArrowRight", photos);
+  await move("ArrowDown", editorial);
+
+  await move("ArrowUp", photos);
+  await move("ArrowLeft", projects);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]')).toHaveText("Projects");
+  await expect(brand).toBeFocused();
+  await move("ArrowRight", backup);
+  await move("ArrowUp", up);
+  await move("ArrowDown", backup);
+  await move("ArrowLeft", brand);
+});
+
 test("keyboard movement uncovers an arc hidden by the compact toolbar", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 320 });
   await page.emulateMedia({ reducedMotion: "reduce" });
