@@ -109,8 +109,14 @@ type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
 
 interface LocationAction {
   title: string;
+  progress: string;
   sourceSwitch?: boolean;
   retry?: () => Promise<boolean>;
+}
+
+interface LocationProgress {
+  message: string;
+  opening_site_id?: string;
 }
 
 interface LocationFailure {
@@ -245,7 +251,8 @@ export function useDashboard(
   const [backHistory, setBackHistory] = useState<NavigationEntry[]>([]);
   const [forwardHistory, setForwardHistory] = useState<NavigationEntry[]>([]);
   const [childrenPage, setChildrenPage] = useState<DirectoryWindow | null>(null);
-  const [childrenLoading, setChildrenLoading] = useState(false);
+  const [locationProgress, setLocationProgress] = useState<LocationProgress | null>(null);
+  const childrenLoading = locationProgress !== null;
   const [loadingMoreChildren, setLoadingMoreChildren] = useState(false);
   const [childrenError, setChildrenError] = useState<string | null>(null);
   const [progressBySite, setProgressBySite] = useState<Map<string, ScanProgressView>>(new Map());
@@ -362,7 +369,7 @@ export function useDashboard(
     setTreeError(null);
     setLocationFailure(null);
     setChildrenError(null);
-    setChildrenLoading(false);
+    setLocationProgress(null);
     setLoadingMoreChildren(false);
     setBackHistory([]);
     setForwardHistory([]);
@@ -445,7 +452,7 @@ export function useDashboard(
     const finish = () => {
       if (!silent && ownsRequest()) {
         childrenLoadingRef.current = false;
-        setChildrenLoading(false);
+        setLocationProgress(null);
       }
     };
     signal?.addEventListener("abort", finish, { once: true });
@@ -456,7 +463,10 @@ export function useDashboard(
       }
       childrenLoadingRef.current = true;
       childrenRetryRef.current = null;
-      setChildrenLoading(true);
+      setLocationProgress({
+        message: action?.progress ?? "Reading inventory…",
+        opening_site_id: action?.sourceSwitch ? entry.site_id : undefined,
+      });
       setChildrenError(null);
       setTreeError(null);
       if (!retrying) setLocationFailure(null);
@@ -587,7 +597,9 @@ export function useDashboard(
     writeSiteDirectorySort(workspace, current.site_id, sort);
     const destination = withDirectorySort(current, sort);
     if (destination !== current || childrenLoadingRef.current) {
-      await loadFolderLocation(destination, "preserve", { action: { title: "Couldn’t change the Contents order" } });
+      await loadFolderLocation(destination, "preserve", {
+        action: { title: "Couldn’t change the Contents order", progress: "Sorting Contents…" },
+      });
     }
   }, [currentNavigationEntry, loadFolderLocation]);
 
@@ -596,7 +608,7 @@ export function useDashboard(
     if (!current?.atlas_group) return true;
     const sort = readSiteDirectorySort(workspaceNameRef.current, current.site_id);
     return (await loadFolderLocation(withDirectorySort(current, sort), "preserve", {
-      action: { title: "Couldn’t restore Contents" },
+      action: { title: "Couldn’t restore Contents", progress: "Opening Contents…" },
     })) === "loaded";
   }, [currentNavigationEntry, loadFolderLocation]);
 
@@ -1089,7 +1101,12 @@ export function useDashboard(
     const current = currentNavigationEntry();
     const workspace = workspaceNameRef.current;
     const sort = readSiteDirectorySort(workspace, siteId);
-    const action = { title: `Couldn’t open ${sites.find((site) => site.id === siteId)?.name ?? "this source"}`, sourceSwitch: true };
+    const siteName = sites.find((site) => site.id === siteId)?.name;
+    const action = {
+      title: `Couldn’t open ${siteName ?? "this source"}`,
+      progress: `Opening ${siteName ?? "source"}…`,
+      sourceSwitch: true,
+    };
     if (current?.site_id === siteId) {
       if (childrenLoadingRef.current) {
         const destination = current.atlas_group ? current : withDirectorySort(current, sort);
@@ -1111,7 +1128,10 @@ export function useDashboard(
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
     const targetName = dashboardRef.current?.sites.find((site) => site.id === targetSiteId)?.name;
     await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push", {
-      action: { title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target" },
+      action: {
+        title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target",
+        progress: targetName ? `Comparing with ${targetName}…` : "Changing comparison target…",
+      },
       anchor: inspectedFileId && current.selected_node_id === inspectedFileId
         ? inspectFileAnchor(inspectedFileId)
         : undefined,
@@ -1244,7 +1264,7 @@ export function useDashboard(
         navigationOperationRef.current += 1;
         navigationInProgressRef.current = false;
         childrenLoadingRef.current = false;
-        setChildrenLoading(false);
+        setLocationProgress(null);
       }
       selectLocationNode(node, inspection);
       return;
@@ -1266,7 +1286,7 @@ export function useDashboard(
       sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
       atlas_group: group ? true : undefined,
     }, "push", {
-      action: { title: `Couldn’t open ${node.name}` },
+      action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…` },
       anchor: group && onGroupArrival ? { onArrival: onGroupArrival } : undefined,
     });
   }, [loadFolderLocation, selectLocationNode]);
@@ -1287,6 +1307,7 @@ export function useDashboard(
         const result = await loadFolderLocation(entry.atlas_group ? entry : withDirectorySort(entry, sort), direction, {
           action: {
             title: direction === "back" ? "Couldn’t open the previous location" : "Couldn’t open the next location",
+            progress: direction === "back" ? "Opening previous location…" : "Opening next location…",
             retry: () => navigateHistory(direction, true),
           },
           retrying,
@@ -1341,7 +1362,7 @@ export function useDashboard(
         sort,
       },
       "push",
-      { action: { title: `Couldn’t open ${node.name}` }, anchor },
+      { action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…` }, anchor },
     );
   }, [loadFolderLocation]);
 
@@ -1447,7 +1468,7 @@ export function useDashboard(
       }
       if (locationRequestRef.current === requestId) {
         childrenLoadingRef.current = false;
-        setChildrenLoading(false);
+        setLocationProgress(null);
       }
     };
     // IPC may still finish after closing the dialog. Release navigation immediately and discard its reply.
@@ -1458,7 +1479,7 @@ export function useDashboard(
     childrenRetryRef.current = null;
     setLoadingMoreChildren(false);
     navigationInProgressRef.current = true;
-    setChildrenLoading(true);
+    setLocationProgress({ message: destination.kind === "node" ? "Locating file in Contents…" : "Opening file…" });
     childrenLoadingRef.current = true;
     setChildrenError(null);
     setLocationFailure(null);
@@ -1762,6 +1783,7 @@ export function useDashboard(
     notice,
     clearNotice: () => setNotice(null),
     locationFailure,
+    locationProgress,
     retryLocation,
     clearLocationFailure: () => setLocationFailure(null),
     openFolderExternally,
@@ -1865,6 +1887,7 @@ export function useDashboard(
     leaveContentsGroup,
     location,
     locationFailure,
+    locationProgress,
     notice,
     preview,
     previewLoading,

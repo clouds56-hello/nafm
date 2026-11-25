@@ -353,6 +353,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   const recoveryInSources = sourcesOpen && state.locationFailure?.sourceSwitch;
   const recoveryOnMap = !recoveryInSources && Boolean(state.locationFailure) && !state.treeError && !state.error;
+  const openingSiteId = state.locationProgress?.opening_site_id;
+  const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
 
   useLayoutEffect(() => {
     if (recoveryOnMap) revealInCompactAtlas(mapRegion.current?.querySelector(".atlas-location-recovery") ?? null);
@@ -696,8 +698,10 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
               <EmptyOrbit label={state.loading || state.treeLoading ? "Reading inventory"
                 : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"} />
             )}
-            {folder && (state.childrenLoading || state.treeLoading) && (
-              <span className="atlas-location-progress" role="status">Reading inventory…</span>
+            {folder && state.locationProgress && (
+              <span className="atlas-location-progress" role={openingSiteInPanel ? undefined : "status"}>
+                {state.locationProgress.message}
+              </span>
             )}
           </div>
 
@@ -741,6 +745,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
             <SiteRail
               sites={dashboard?.sites ?? []}
               activeId={site?.id ?? null}
+              openingSiteId={openingSiteId}
               addedSite={siteAddition?.origin === "sites" ? addedSite : undefined}
               scanRequests={state.scanRequestBySite}
               blockedIds={state.scanBlockedSiteIds}
@@ -929,6 +934,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           sites={dashboard?.sites ?? []}
           workspaceName={dashboard?.workspace_name ?? null}
           activeId={site?.id ?? null}
+          openingSiteId={openingSiteId}
           addedSite={siteAddition?.origin === "sources" ? addedSite : undefined}
           onSelect={(id) => void selectSite(id)}
           onClose={() => setSourcesOpen(false)}

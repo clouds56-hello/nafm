@@ -328,6 +328,10 @@ button:disabled { cursor: default; }
 .atlas-location-progress {
   position: absolute;
   inset: auto auto 12px 12px;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 6px 9px;
   border: 1px solid var(--atlas-border);
   border-radius: 5px;

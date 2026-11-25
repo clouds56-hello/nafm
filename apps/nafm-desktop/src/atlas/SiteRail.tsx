@@ -11,6 +11,7 @@ interface SiteRailProps {
   open: boolean;
   sites: SiteOverview[];
   activeId: string | null;
+  openingSiteId?: string;
   addedSite?: AddedSiteRow;
   scanRequests: ReadonlyMap<string, number>;
   blockedIds: ReadonlySet<string>;
@@ -48,6 +49,7 @@ export function SiteRail({
   open,
   sites,
   activeId,
+  openingSiteId,
   addedSite,
   scanRequests,
   blockedIds,
@@ -169,6 +171,8 @@ export function SiteRail({
             const justAdded = addedSite?.id === site.id;
             const showAdded = justAdded && !hasInventory && !scanning && !recovery && site.scan_state === "idle";
             const selected = activeId === site.id;
+            const opening = openingSiteId === site.id;
+            const openingId = `${titleId}-opening-${site.id}`;
             const DeviceIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
 
             return (
@@ -179,11 +183,13 @@ export function SiteRail({
                   type="button"
                   aria-current={selected || undefined}
                   aria-label={`Open ${site.name} in Atlas`}
-                  aria-describedby={showAdded ? addedStatusId : undefined}
+                  aria-busy={opening || undefined}
+                  aria-disabled={opening || undefined}
+                  aria-describedby={[showAdded ? addedStatusId : null, opening ? openingId : null].filter(Boolean).join(" ") || undefined}
                   onKeyDown={(event) => moveSite(event, index)}
                   onClick={(event) => {
                     event.currentTarget.focus({ preventScroll: true });
-                    onSelect(site.id);
+                    if (!opening) onSelect(site.id);
                   }}
                 >
                   <span className="atlas-site-rail-device"><DeviceIcon /></span>
@@ -192,6 +198,11 @@ export function SiteRail({
                     <span title={site.location}>{site.location}</span>
                   </span>
                 </button>
+                {opening && (
+                  <p id={openingId} className="atlas-site-rail-opening" role="status" aria-label={`Opening ${site.name} in Atlas…`}>
+                    Opening in Atlas…
+                  </p>
+                )}
                 {hasInventory && (
                   <p className="atlas-site-rail-stats">
                     <span>{formatCount(site.total_files)} {site.total_files === 1 ? "file" : "files"}</span>

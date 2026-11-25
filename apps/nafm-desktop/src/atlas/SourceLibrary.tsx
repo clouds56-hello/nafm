@@ -9,6 +9,7 @@ interface SourceLibraryProps {
   sites: SiteOverview[];
   workspaceName: string | null;
   activeId: string | null;
+  openingSiteId?: string;
   addedSite?: AddedSiteRow;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -38,7 +39,7 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 }
 
 export function SourceLibrary({
-  sites, workspaceName, activeId, addedSite, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
+  sites, workspaceName, activeId, openingSiteId, addedSite, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
   scanAllRequests, cancellingRequests, progressBySite, firstScanInterruptions, onCancelScan, onManage, error, errorAction, recovery,
 }: SourceLibraryProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -102,6 +103,8 @@ export function SourceLibrary({
                 const hasInventory = siteHasInventory(site);
                 const justAdded = addedSite?.id === site.id;
                 const showAdded = justAdded && !scanning && !firstScan && site.scan_state === "idle" && !hasInventory;
+                const opening = openingSiteId === site.id;
+                const openingId = `source-opening-${site.id}`;
                 return (
                   <li key={site.id} className="source-row" data-added={showAdded || undefined}>
                     <button
@@ -110,8 +113,13 @@ export function SourceLibrary({
                       className="source-open"
                       aria-current={activeId === site.id ? "true" : undefined}
                       aria-label={`Open ${site.name} in Atlas`}
-                      aria-describedby={`source-location-${site.id} source-inventory-${site.id}`}
-                      onClick={() => onSelect(site.id)}
+                      aria-busy={opening || undefined}
+                      aria-disabled={opening || undefined}
+                      aria-describedby={`source-location-${site.id} source-inventory-${site.id}${opening ? ` ${openingId}` : ""}`}
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        if (!opening) onSelect(site.id);
+                      }}
                     >
                       <span className="source-identity">
                         <span className="source-shape" data-kind={site.kind} aria-hidden="true" />
@@ -144,6 +152,11 @@ export function SourceLibrary({
                       )}
                       <button className="source-action" type="button" aria-label={`Manage ${site.name}`} onClick={() => onManage(site.id)}>Manage</button>
                     </div>
+                    {opening && (
+                      <p id={openingId} className="source-opening" role="status" aria-label={`Opening ${site.name} in Atlas…`}>
+                        Opening in Atlas…
+                      </p>
+                    )}
                   </li>
                 );
               })}

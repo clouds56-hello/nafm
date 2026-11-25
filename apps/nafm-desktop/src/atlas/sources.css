@@ -218,6 +218,15 @@
   outline-offset: -3px;
 }
 
+.source-open[aria-busy="true"] { cursor: progress; }
+
+.source-opening {
+  grid-column: 1 / -1;
+  margin: 0 0 9px;
+  color: var(--source-signal);
+  font: 600 12px/1.35 var(--source-mono);
+}
+
 .source-identity {
   display: flex;
   align-items: center;

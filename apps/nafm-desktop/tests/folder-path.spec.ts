@@ -190,6 +190,50 @@ test.describe("minimum desktop toolbar", () => {
 test.describe("compact touch toolbar", () => {
   test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
 
+  test("history shortcuts leave focus in the folder path when an ancestor disappears", async ({ page }) => {
+    await page.goto("/mock/");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    for (const name of ["Projects", "Brand campaign"]) {
+      await map.getByRole("button", { name: new RegExp(`^${name},`) }).press("Enter");
+      await expect(currentFolder(page)).toHaveText(name);
+    }
+
+    const path = folderPath(page);
+    const pathButton = path.getByRole("button", { name: "Show folder path", exact: true });
+    const hierarchy = page.getByRole("group", { name: "Folder hierarchy", exact: true });
+    const ancestor = (name: string) => hierarchy.getByRole("button", { name, exact: true });
+    const goFromHierarchy = async (name: string, shortcut: string) => {
+      await pathButton.press("ArrowDown");
+      await ancestor(name).press(shortcut);
+      await expect(hierarchy).toBeHidden();
+    };
+
+    await pathButton.press("ArrowDown");
+    await ancestor("Projects").press("Alt+ArrowRight");
+    await expect(hierarchy).toBeVisible();
+    await expect(ancestor("Projects")).toBeFocused();
+    await ancestor("Projects").press("Alt+ArrowLeft");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(hierarchy).toBeHidden();
+    await expect(pathButton).toBeFocused();
+
+    await goFromHierarchy("Studio archive", "Alt+ArrowRight");
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(pathButton).toBeFocused();
+    await goFromHierarchy("Projects", "Alt+ArrowLeft");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(pathButton).toBeFocused();
+
+    await goFromHierarchy("Studio archive", "Alt+ArrowLeft");
+    const root = path.getByRole("heading", { name: "Studio archive", exact: true });
+    await expect(root).toBeFocused();
+    await expect(root).toBeInViewport();
+    await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+    await expect(page.getByRole("tabpanel", { name: "Contents", exact: true })).toBeVisible();
+  });
+
   test("the folder name stays readable with scan and folder actions available", async ({ page }) => {
     await page.goto("/mock/?scenario=partial");
     const map = page.getByRole("region", { name: "Circular storage map" });

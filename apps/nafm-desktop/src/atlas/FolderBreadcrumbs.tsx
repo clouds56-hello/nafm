@@ -7,12 +7,17 @@ import "./folder-breadcrumbs.css";
 interface FolderBreadcrumbsProps {
   breadcrumbs: readonly StorageNode[];
   siteName: string | null;
+  canBack: boolean;
+  canForward: boolean;
+  canUp: boolean;
   onNavigate: (node: StorageNode) => void;
   heading: RefObject<HTMLHeadingElement | null>;
   onTriggerRemoved: (focused: HTMLElement) => void;
 }
 
-export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate, heading, onTriggerRemoved }: FolderBreadcrumbsProps) {
+export function FolderBreadcrumbs({
+  breadcrumbs, siteName, canBack, canForward, canUp, onNavigate, heading, onTriggerRemoved,
+}: FolderBreadcrumbsProps) {
   const id = useId();
   const { open, trigger, panel, show, toggle, close, containerProps } = useAnchoredPopover("button", "follow", "start");
   const attachTrigger = useCallback((button: HTMLButtonElement | null) => {
@@ -98,7 +103,12 @@ export function FolderBreadcrumbs({ breadcrumbs, siteName, onNavigate, heading, 
         {open && hasAncestors && (
           <div className="atlas-folder-hierarchy" id={id} ref={panel} role="group" aria-label="Folder hierarchy" popover="manual"
             onKeyDown={(event) => {
-              if (!event.defaultPrevented && event.key === "ArrowUp" && (event.altKey || event.metaKey)) close(true);
+              if (event.defaultPrevented) return;
+              const { altKey, metaKey, key } = event;
+              const back = canBack && ((altKey && key === "ArrowLeft") || (metaKey && key === "["));
+              const forward = canForward && ((altKey && key === "ArrowRight") || (metaKey && key === "]"));
+              const up = canUp && (altKey || metaKey) && key === "ArrowUp";
+              if (back || forward || up) close(true);
             }}>
             <ol>
               {breadcrumbs.map((node) => {

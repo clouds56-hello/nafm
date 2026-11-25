@@ -129,6 +129,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
         </div>
       )}
       <FolderBreadcrumbs breadcrumbs={navigation.breadcrumbs} siteName={navigation.siteName} onNavigate={navigation.onBreadcrumb}
+        canBack={navigation.canBack} canForward={navigation.canForward} canUp={navigation.canUp}
         heading={heading} onTriggerRemoved={restoreFocus} />
       {current && <FolderOpenControl node={current} onOpen={navigation.onOpenFolder} />}
     </nav>

@@ -919,9 +919,11 @@ test("the slow-read scenario keeps the current map interactive until navigation 
   await page.getByLabel("Scenario").selectOption("slow");
   await expect(currentFolder(page)).toHaveText("Studio archive");
   await clickArc(page, /^Projects,/);
-  await expect(page.getByRole("status").filter({ hasText: "Reading inventory" })).toBeVisible();
+  const progress = page.getByRole("region", { name: "Circular storage map" }).getByRole("status");
+  await expect(progress).toHaveText("Opening Projects…");
   await expect(currentFolder(page)).toHaveText("Studio archive");
   await clickArc(page, /^Photo Library,/);
+  await expect(progress).toHaveText("Opening Photo Library…");
   await expect(currentFolder(page)).toHaveText("Photo Library");
   await expect(page.locator(".atlas-location-progress")).toBeHidden();
 });

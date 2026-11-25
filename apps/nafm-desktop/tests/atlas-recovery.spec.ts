@@ -45,10 +45,13 @@ test("retrying a failed source switch opens the intended site and closes Sources
   await page.getByRole("button", { name: "Workspace actions" }).click();
   await page.getByRole("button", { name: /^Sources\b/ }).click();
   const sources = page.getByRole("dialog", { name: "Sources", exact: true });
-  await sources.getByRole("button", { name: "Open Team share in Atlas", exact: true }).click();
+  const team = sources.getByRole("button", { name: "Open Team share in Atlas", exact: true });
+  await team.click();
 
   const failure = sources.getByRole("alert").filter({ hasText: teamFailure });
   await expect(failure).toContainText(readError);
+  await expect(team).toBeEnabled();
+  await expect(sources.getByRole("status", { name: "Opening Team share in Atlas…", exact: true })).toHaveCount(0);
   await expect(sources.getByRole("button", { name: "Open Studio archive in Atlas", exact: true }))
     .toHaveAttribute("aria-current", "true");
 
@@ -59,6 +62,96 @@ test("retrying a failed source switch opens the intended site and closes Sources
   await expect(currentFolder(page)).toHaveText("Studio archive");
   await expect(back(page)).toBeDisabled();
 });
+
+for (const surface of ["Sites", "Sources"] as const) {
+  test(`${surface} shows which site is opening and lets another site supersede it`, async ({ page }) => {
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    if (surface === "Sites") {
+      await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    } else {
+      await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+      await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+    }
+    const chooser = page.getByRole(surface === "Sites" ? "complementary" : "dialog", { name: surface, exact: true });
+    const studio = chooser.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+    const field = chooser.getByRole("button", { name: "Open Field drive in Atlas", exact: true });
+    const team = chooser.getByRole("button", { name: "Open Team share in Atlas", exact: true });
+    const openingField = chooser.getByRole("status", { name: "Opening Field drive in Atlas…", exact: true });
+    const openingTeam = chooser.getByRole("status", { name: "Opening Team share in Atlas…", exact: true });
+
+    const reads = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { siteId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const attempts = ["field-drive", "team-share"].map((site_id) => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        return { site_id, count: 0, pending: false, replied: false, gate, release };
+      });
+      bridge.invoke = async (command, args) => {
+        const attempt = command === "get_storage_view_snapshot" ? attempts.find(({ site_id }) => site_id === args.siteId) : undefined;
+        if (!attempt) return invoke(command, args);
+        attempt.count += 1;
+        const response = await invoke(command, args);
+        attempt.pending = true;
+        await attempt.gate;
+        requestAnimationFrame(() => requestAnimationFrame(() => { attempt.replied = true; }));
+        return response;
+      };
+      return attempts;
+    });
+
+    try {
+      await field.press("Enter");
+      await expect(openingField).toHaveText("Opening in Atlas…");
+      await expect(field).toBeDisabled();
+      await expect(field).toHaveAttribute("aria-busy", "true");
+      await expect(field).toBeFocused();
+      await expect(studio).toHaveAttribute("aria-current", "true");
+      await expect(chooser.getByRole("listitem").filter({ hasText: "Field drive" }).getByText("Indexed", { exact: true })).toBeVisible();
+      await expect.poll(() => reads.evaluate(([field]) => field.pending)).toBe(true);
+      await field.press("Enter");
+      expect(await reads.evaluate(([field]) => field.count)).toBe(1);
+
+      await team.press("Enter");
+      await expect(openingField).toHaveCount(0);
+      await expect(field).toBeEnabled();
+      await expect(openingTeam).toHaveText("Opening in Atlas…");
+      await expect(team).toBeDisabled();
+      await expect(team).toBeFocused();
+      await expect(studio).toHaveAttribute("aria-current", "true");
+      await expect.poll(() => reads.evaluate(([, team]) => team.pending)).toBe(true);
+      if (surface === "Sites") {
+        await reads.evaluate(([field]) => field.release());
+        await expect.poll(() => reads.evaluate(([field]) => field.replied)).toBe(true);
+        await expect(openingTeam).toHaveText("Opening in Atlas…");
+        await expect(team).toBeDisabled();
+        await expect(studio).toHaveAttribute("aria-current", "true");
+      }
+      await reads.evaluate(([, team]) => team.release());
+      await expect(currentFolder(page)).toHaveText("Team share");
+      if (surface === "Sites") {
+        await expect(team).toHaveAttribute("aria-current", "true");
+        await expect(team).toBeEnabled();
+        await expect(team).toBeFocused();
+        await expect(openingTeam).toHaveCount(0);
+      } else {
+        await expect(chooser).toBeHidden();
+      }
+    } finally {
+      await reads.evaluate((attempts) => attempts.forEach(({ release }) => release()));
+    }
+
+    await expect.poll(() => reads.evaluate((attempts) => attempts.every(({ replied }) => replied))).toBe(true);
+    await expect(currentFolder(page)).toHaveText("Team share");
+    expect(await reads.evaluate((attempts) => attempts.map(({ count }) => count))).toEqual([1, 1]);
+    await back(page).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await expect(back(page)).toBeDisabled();
+  });
+}
 
 test("retrying a failed Previous location read preserves the Next location step", async ({ page }) => {
   const map = atlas(page);
