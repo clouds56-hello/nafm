@@ -3,6 +3,7 @@ import { formatBytes, formatCount, percent } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
+import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import "./site-rail.css";
 
 interface SiteRailProps {
@@ -58,6 +59,7 @@ export function SiteRail({
   onManage,
 }: SiteRailProps) {
   const titleId = useId();
+  const rail = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -67,9 +69,10 @@ export function SiteRail({
     if (open && !wasOpen.current) {
       const current = list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select[aria-current]")
         ?? list.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-select");
+      revealInCompactAtlas(rail.current);
       (current ?? closeButton.current)?.focus();
     } else if (!open && wasOpen.current && document.activeElement === document.body) {
-      trigger.current?.focus({ preventScroll: true });
+      restoreAtlasPanelFocus(trigger.current);
     }
     wasOpen.current = open;
   }, [open]);
@@ -107,7 +110,7 @@ export function SiteRail({
   }
 
   return (
-    <aside className="atlas-site-rail" data-atlas-panel="sites" aria-labelledby={titleId}>
+    <aside className="atlas-site-rail" ref={rail} data-atlas-panel="sites" aria-labelledby={titleId}>
       <header className="atlas-site-rail-header">
         <h2 id={titleId}>Sites</h2>
         <span className="atlas-site-rail-count" aria-label={`${sites.length} sites`}>{formatCount(sites.length)}</span>
@@ -127,7 +130,10 @@ export function SiteRail({
           type="button"
           ref={closeButton}
           aria-label="Close sites"
-          onClick={onClose}
+          onClick={(event) => {
+            event.currentTarget.focus({ preventScroll: true });
+            onClose();
+          }}
         >
           <CloseIcon />
         </button>

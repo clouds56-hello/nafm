@@ -95,13 +95,6 @@
 
 .atlas-inspector-pane:has(.atlas-directory-search-row) { scroll-padding-block-start: 92px; }
 
-@media (max-width: 760px) {
-  .atlas-inspector.atlas-inspector-drawer:has(.atlas-inspector-pane:not([hidden]) .atlas-directory-search-row) {
-    height: min(72vh, 520px);
-    height: min(72dvh, 520px, calc(100dvh - 120px));
-  }
-}
-
 @media (pointer: coarse) {
   .atlas-directory-search-toggle,
   .atlas-directory-search-row button { width: 40px; height: 40px; }

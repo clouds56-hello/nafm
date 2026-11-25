@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { CloseIcon } from "../management/Icons";
+import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import "./inspector.css";
 import "./atlas-inspector-drawer.css";
 
@@ -50,6 +51,7 @@ export function AtlasInspector({
   onViewChange, onBackToContents, onClose, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
+  const drawer = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const contentsTab = useRef<HTMLButtonElement>(null);
   const detailsTab = useRef<HTMLButtonElement>(null);
@@ -74,6 +76,7 @@ export function AtlasInspector({
     previousSite.current = siteId;
     previousScreen.current = screen;
     if (previous === screen || (switchingSites && document.activeElement?.closest('[data-atlas-panel="sites"]'))) return;
+    if (screen && (!previous || origin.current)) revealInCompactAtlas(drawer.current);
     if (screen === "file") {
       backButton.current?.focus({ preventScroll: true });
     } else if (screen === "contents" && (previous === "file" || enterList.current)) {
@@ -84,8 +87,7 @@ export function AtlasInspector({
       (screen === "contents" ? contentsTab : detailsTab).current?.focus({ preventScroll: true });
     } else if (previous) {
       if (document.activeElement === document.body) {
-        const target = origin.current?.isConnected ? origin.current : trigger.current;
-        target?.focus({ preventScroll: true });
+        restoreAtlasPanelFocus(trigger.current, origin.current);
       }
       origin.current = null;
     }
@@ -138,7 +140,9 @@ export function AtlasInspector({
 
   return (
     <aside
-      id={id} className="atlas-inspector atlas-inspector-drawer" data-atlas-panel="inspector" aria-label="Inspector"
+      ref={drawer}
+      id={id} className="atlas-inspector atlas-inspector-drawer"
+      data-atlas-panel="inspector" data-atlas-view={view} aria-label="Inspector"
       onKeyDown={(event) => {
         if (screen !== "file" || event.key !== "ArrowLeft" || event.defaultPrevented
           || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -177,7 +181,10 @@ export function AtlasInspector({
             ))}
           </div>
         )}
-        <button className="atlas-inspector-close" type="button" aria-label="Close inspector" onClick={onClose}>
+        <button className="atlas-inspector-close" type="button" aria-label="Close inspector" onClick={(event) => {
+          event.currentTarget.focus({ preventScroll: true });
+          onClose();
+        }}>
           <CloseIcon />
         </button>
       </header>

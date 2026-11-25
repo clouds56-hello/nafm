@@ -11,6 +11,7 @@ import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
 import { StorageDetails } from "./StorageDetails";
+import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { useDashboard } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
@@ -226,6 +227,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const recoveryInSources = sourcesOpen && state.locationFailure?.sourceSwitch;
   const recoveryOnMap = !recoveryInSources && Boolean(state.locationFailure) && !state.treeError && !state.error;
 
+  useLayoutEffect(() => {
+    if (recoveryOnMap) revealInCompactAtlas(mapRegion.current?.querySelector(".atlas-location-recovery") ?? null);
+  }, [recoveryOnMap]);
+
   function focusAfterRecovery(button: HTMLButtonElement) {
     if (document.activeElement !== button && document.activeElement !== document.body) return;
     const heading = button.closest("dialog")?.querySelector<HTMLElement>("h1")
@@ -352,10 +357,15 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   function activateNode(node: StorageNode, origin?: SVGGElement) {
     state.selectNode(node);
     if (node.kind === "file" && !origin) {
+      inspectorOrigin.current = null;
       openInspector({ view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision });
     } else if (node.kind === "file" || node.kind === "smaller_items") {
+      const view = node.kind === "file" ? "details" : "contents";
       if (origin) inspectorOrigin.current = origin;
-      openInspector(node.kind === "file" ? "details" : "contents");
+      if (origin && inspectorView === view) {
+        revealInCompactAtlas(mapRegion.current?.querySelector('[data-atlas-panel="inspector"]') ?? null);
+      }
+      openInspector(view);
     }
   }
 
@@ -410,8 +420,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
       <main className="atlas-main">
         <section
           ref={mapRegion} className="atlas-visualization" aria-label="Circular storage map" tabIndex={-1}
-          data-both-panels={sitesOpen && inspectorView ? "" : undefined}
-          data-location-recovery={recoveryOnMap || undefined}
+          data-sites-open={sitesOpen || undefined}
+          data-inspector-open={Boolean(inspectorView) || undefined}
         >
           <div
             className="atlas-chart-well"

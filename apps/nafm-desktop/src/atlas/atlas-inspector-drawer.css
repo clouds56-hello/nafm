@@ -135,12 +135,14 @@
 
 @media (max-width: 760px) {
   .atlas-inspector.atlas-inspector-drawer {
-    position: fixed;
-    inset: auto 8px max(8px, env(safe-area-inset-bottom));
-    width: auto;
-    max-height: min(72vh, 520px);
-    max-height: min(72dvh, 520px, calc(100dvh - 120px));
+    max-height: min(58vh, 400px);
+    max-height: min(58dvh, 400px);
   }
+  .atlas-inspector-drawer[data-atlas-view="contents"] {
+    height: min(58vh, 400px);
+    height: min(58dvh, 400px);
+  }
+  .atlas-inspector-pane { overscroll-behavior-y: auto; }
 }
 
 @media (max-width: 760px), (pointer: coarse) {
