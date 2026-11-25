@@ -1,11 +1,13 @@
-import { useCallback, useRef, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import type { WorkspaceSwitchFailure } from "../hooks/useWorkspace";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, SearchIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
+import { LocationRecovery } from "./LocationRecovery";
 import { ScanActivity, type ScanActivityProps } from "./ScanActivity";
 import { CoverageScanActions } from "./CoverageScanActions";
 import type { SiteVerification } from "./siteVerification";
@@ -31,7 +33,12 @@ export interface AtlasToolbarProps {
     name: string | null;
     options: readonly WorkspaceSummary[];
     disabled: boolean;
+    pending: boolean;
+    failure: WorkspaceSwitchFailure | null;
+    focusRequested: boolean;
     onSwitch: (name: string) => void;
+    onDismissFailure: () => void;
+    onFocusHandled: () => void;
   };
   navigation: {
     siteName: string | null;
@@ -201,23 +208,29 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
   );
 }
 
-function WorkspacePicker({ workspace, inActions }: Pick<AtlasToolbarProps, "workspace"> & { inActions?: boolean }) {
+function WorkspacePicker({ workspace, inActions, selectRef }: Pick<AtlasToolbarProps, "workspace"> & {
+  inActions?: boolean;
+  selectRef?: RefObject<HTMLSelectElement | null>;
+}) {
   if (!workspace.name) return null;
   return (
     <label className={inActions ? "atlas-actions-workspace" : "atlas-toolbar-workspace"} title={workspace.name}>
       {inActions ? <span>Workspace</span> : <WorkspaceIcon />}
-      <select aria-label="Workspace" value={workspace.name} disabled={workspace.disabled} onChange={(event) => workspace.onSwitch(event.target.value)}>
+      <select ref={selectRef} aria-label="Workspace" value={workspace.name} disabled={workspace.disabled}
+        onChange={(event) => workspace.onSwitch(event.target.value)}>
         {workspace.options.map((option) => <option key={option.name} value={option.name}>{option.name}</option>)}
       </select>
     </label>
   );
 }
 
-function WorkspaceActions({ actions, navigation, workspace, extension }: Pick<AtlasToolbarProps, "actions" | "navigation" | "workspace" | "extension">) {
+function WorkspaceActions({ actions, navigation, workspace, extension, triggerRef }:
+  Pick<AtlasToolbarProps, "actions" | "navigation" | "workspace" | "extension"> & { triggerRef: RefObject<HTMLButtonElement | null> }) {
   const parent = navigation.breadcrumbs.at(-2);
   return (
     <ToolbarDisclosure
       label="Workspace actions"
+      triggerRef={triggerRef}
       summary={(
         <>
           Actions
@@ -282,13 +295,41 @@ function WorkspaceActions({ actions, navigation, workspace, extension }: Pick<At
 
 export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity, extension }: AtlasToolbarProps) {
   const hasTrafficLights = isTauri() && /Mac/.test(navigator.platform);
+  const workspacePicker = useRef<HTMLSelectElement>(null);
+  const workspaceActions = useRef<HTMLButtonElement>(null);
+  const workspaceRecovery = useRef<HTMLDivElement>(null);
+  const { pending, failure, focusRequested, onFocusHandled } = workspace;
+
+  useLayoutEffect(() => {
+    if (pending) return;
+    if (document.activeElement === document.body) {
+      if (failure) {
+        workspaceRecovery.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus({ preventScroll: true });
+      } else if (focusRequested) {
+        const picker = workspacePicker.current;
+        const control = picker && !picker.disabled && picker.getClientRects().length ? picker : workspaceActions.current;
+        control?.focus({ preventScroll: true });
+      }
+    }
+    if (focusRequested) onFocusHandled();
+  }, [pending, failure, focusRequested, onFocusHandled]);
+
   return (
     <header className="atlas-toolbar" data-native-inset={hasTrafficLights || undefined} data-tauri-drag-region>
       <div className="atlas-toolbar-brand" data-tauri-drag-region>
         <span className="atlas-toolbar-orbit" aria-hidden="true" />
         <span className="atlas-toolbar-wordmark" data-tauri-drag-region>NAFM</span>
       </div>
-      <WorkspacePicker workspace={workspace} />
+      <WorkspacePicker workspace={workspace} selectRef={workspacePicker} />
+      {failure && (
+        <div className="atlas-toolbar-workspace-recovery" ref={workspaceRecovery}>
+          <LocationRecovery
+            title={`Couldn’t switch to ${failure.name}`} message={failure.message}
+            retrying={pending} retryDisabled={workspace.disabled}
+            onRetry={() => workspace.onSwitch(failure.name)} onDismiss={workspace.onDismissFailure}
+          />
+        </div>
+      )}
 
       <FolderNavigation navigation={navigation} />
 
@@ -305,7 +346,7 @@ export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity
         </button>
         {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
         <ScanActivity {...scanActivity} />
-        <WorkspaceActions actions={actions} navigation={navigation} workspace={workspace} extension={extension} />
+        <WorkspaceActions actions={actions} navigation={navigation} workspace={workspace} extension={extension} triggerRef={workspaceActions} />
         {extension && (
           <ToolbarDisclosure label={extension.label} className="atlas-toolbar-extension" icon={extension.icon} summary={extension.label}>
             {extension.render}

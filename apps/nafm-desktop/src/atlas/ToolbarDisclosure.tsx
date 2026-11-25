@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import "./atlas-toolbar.css";
 
 interface ToolbarDisclosureProps {
@@ -7,14 +7,16 @@ interface ToolbarDisclosureProps {
   description?: string;
   icon: ReactNode;
   summary?: ReactNode;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
   children: (close: () => void) => ReactNode;
 }
 
-export function ToolbarDisclosure({ label, className, description, icon, summary, children }: ToolbarDisclosureProps) {
+export function ToolbarDisclosure({ label, className, description, icon, summary, triggerRef, children }: ToolbarDisclosureProps) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
+  const localTrigger = useRef<HTMLButtonElement>(null);
+  const trigger = triggerRef ?? localTrigger;
   const panel = useRef<HTMLDivElement>(null);
 
   function close() {

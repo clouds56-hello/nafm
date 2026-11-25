@@ -38,6 +38,70 @@ async function expectFullCompactChart(page: Page) {
 test.describe("compact Atlas panels", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
+  test("quick workspace switches restore keyboard focus to Actions and resume the previous folder", async ({ page }) => {
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    for (const folder of ["Projects", "Brand campaign"]) {
+      await atlas(page).getByRole("button", { name: new RegExp(`^${folder},`) }).press("Enter");
+      await expect(currentFolder(page)).toHaveText(folder);
+    }
+
+    const switchRequests = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { name?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const requests = { names: [] as string[], pending: false, release };
+      bridge.invoke = async (command, args) => {
+        if (command !== "switch_workspace") return invoke(command, args);
+        requests.names.push(args.name ?? "");
+        const response = await invoke(command, args);
+        if (args.name === "Field notes") {
+          requests.pending = true;
+          await gate;
+        }
+        return response;
+      };
+      return requests;
+    });
+
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true, includeHidden: true });
+    const menu = page.getByRole("group", { name: "Workspace actions", exact: true, includeHidden: true });
+    const picker = menu.getByRole("combobox", { name: "Workspace", exact: true, includeHidden: true });
+    const switching = page.getByRole("status").filter({ hasText: "Switching to Field notes…" });
+    await actions.press("Enter");
+    await expect(picker).toHaveValue("Studio workspace");
+    await picker.focus();
+    try {
+      await picker.selectOption("Field notes");
+      await expect.poll(() => switchRequests.evaluate((requests) => requests.pending)).toBe(true);
+      await expect(page.locator('[inert][aria-busy="true"]').filter({ has: actions })).toHaveCount(1);
+      await expect(switching).toBeVisible();
+      await expect(actions).toHaveAttribute("aria-expanded", "false");
+      const button = await bounds(actions);
+      await page.touchscreen.tap(button.left + button.width / 2, button.top + button.height / 2);
+      await expect(actions).toHaveAttribute("aria-expanded", "false");
+      expect(await switchRequests.evaluate((requests) => requests.names)).toEqual(["Field notes"]);
+    } finally {
+      await switchRequests.evaluate((requests) => requests.release());
+    }
+
+    await expect(atlas(page).getByText("No source selected", { exact: true })).toBeVisible();
+    await expect(switching).toBeHidden();
+    await expect(actions).toBeFocused();
+    await expect(actions).toBeInViewport({ ratio: 0.99 });
+    await actions.press("Enter");
+    await expect(picker).toHaveValue("Field notes");
+    await picker.focus();
+    await picker.selectOption("Studio workspace");
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(actions).toBeFocused();
+    await expect(actions).toBeInViewport({ ratio: 0.99 });
+    expect(await switchRequests.evaluate((requests) => requests.names)).toEqual(["Field notes", "Studio workspace"]);
+  });
+
   test("Sites and Contents leave the Atlas full width and stay independently open", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");
@@ -114,6 +178,18 @@ test.describe("compact Atlas panels", () => {
 
 test.describe("desktop Atlas panels", () => {
   test.use({ viewport: { width: 1080, height: 700 } });
+
+  test("a quick workspace switch restores focus to the new Workspace picker", async ({ page }) => {
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    const picker = page.getByRole("combobox", { name: "Workspace", exact: true });
+    await picker.focus();
+    await picker.selectOption("Field notes");
+    await expect(atlas(page).getByText("No source selected", { exact: true })).toBeVisible();
+    await expect(picker).toHaveValue("Field notes");
+    await expect(picker).toBeFocused();
+    await expect(picker).toBeInViewport({ ratio: 0.99 });
+  });
 
   test("each panel docks beside the Atlas and leaves the arcs clickable", async ({ page }) => {
     await page.goto("/mock/");

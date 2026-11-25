@@ -101,6 +101,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   let nextRequest = 1;
   const management = createManagementApi(scenario, () => scans.size > 0);
   const storage = createStorageApi(management.current);
+  let interruptWorkspaceSwitch = scenario === "workspace-recovery";
   const interruptedReads = new Map<string, "interrupt" | "recover">(scenario === "recovery" ? [
     ["site_folder:studio-archive:0", "interrupt"],
     ["site:team-share", "interrupt"],
@@ -238,7 +239,14 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     load_dashboard: loadDashboard,
     load_management: management.load,
     create_workspace: management.createWorkspace,
-    switch_workspace: management.switchWorkspace,
+    async switch_workspace(args) {
+      if (interruptWorkspaceSwitch) {
+        interruptWorkspaceSwitch = false;
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+        throw new Error("The workspace folder is unavailable. Reconnect its drive and try again.");
+      }
+      return management.switchWorkspace(args);
+    },
     create_site: management.createSite,
     rename_site: management.renameSite,
     remove_site: management.removeSite,

@@ -102,6 +102,63 @@ test("switching workspaces restores the independent folder in each workspace", a
   await expectFreshHistory(page);
 });
 
+test("a failed quick workspace switch keeps Atlas open and retries the intended workspace", async ({ page }) => {
+  await page.goto("/mock/?scenario=workspace-recovery");
+  await openFolder(page, "Projects");
+  await openFolder(page, "Brand campaign");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const camera = grid.getByRole("button", { name: /^Camera originals\.mxf/ });
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  const search = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+    .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+  const query = "  cAmErA  ";
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  await expect(camera).toBeVisible();
+
+  const attempts = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { name?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const names: Array<string | undefined> = [];
+    bridge.invoke = (command, args) => {
+      if (command === "switch_workspace") names.push(args.name);
+      return invoke(command, args);
+    };
+    return names;
+  });
+
+  const workspace = page.getByRole("combobox", { name: "Workspace", exact: true });
+  await workspace.focus();
+  await workspace.selectOption(fieldWorkspace);
+  const feedback = page.getByRole("alert").filter({ hasText: "Couldn’t switch to Field notes" });
+  await expect(feedback.getByText("Couldn’t switch to Field notes", { exact: true })).toBeVisible();
+  await expect(feedback.getByText("The workspace folder is unavailable. Reconnect its drive and try again.", { exact: true })).toBeVisible();
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(settings).toBeHidden();
+  await expect(workspace).toHaveValue(studioWorkspace);
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(sites(page)).toBeVisible();
+  await expect(contents).toBeVisible();
+  await expect(search).toHaveValue(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  await expect(camera).toBeVisible();
+  expect(await attempts.jsonValue()).toEqual([fieldWorkspace]);
+
+  await page.getByRole("button", { name: "Retry", exact: true }).press("Enter");
+  await expect(workspace).toHaveValue(fieldWorkspace);
+  await expect(page.getByRole("region", { name: "Circular storage map" })
+    .getByText("No source selected", { exact: true })).toBeVisible();
+  await expect(feedback).toBeHidden();
+  await expect(settings).toBeHidden();
+  await expect(workspace).toBeFocused();
+  expect(await attempts.jsonValue()).toEqual([fieldWorkspace, fieldWorkspace]);
+});
+
 test("a missing folder falls back to the remembered site's root", async ({ page }) => {
   await seedLocation(page, "field-drive", "site_folder:field-drive:0/No longer indexed");
   await page.goto("/mock/");

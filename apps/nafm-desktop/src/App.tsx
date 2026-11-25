@@ -44,6 +44,9 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
           browsingScope={browsingScope}
         />
       </div>
+      {workspace.pendingWorkspaceName && (
+        <div className="atlas-alert" role="status">Switching to {workspace.pendingWorkspaceName}…</div>
+      )}
       <ManagementCenter
         open={workspace.managementOpen}
         section={workspace.managementSection}

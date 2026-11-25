@@ -10,6 +10,7 @@ export const scenarioLabels = {
   "scan-failed": "Interrupted scan",
   slow: "Slow folder reads",
   recovery: "Interrupted navigation",
+  "workspace-recovery": "Workspace switch recovery",
 } satisfies Record<PreviewScenario, string>;
 
 export function getScenario(url: URL): PreviewScenario {

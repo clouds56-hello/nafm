@@ -591,7 +591,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           name: workspace.management?.active_workspace.name ?? null,
           options: workspace.management?.workspaces ?? [],
           disabled: state.activeTaskCount > 0 || workspace.workspaceSwitching,
+          pending: workspace.workspaceSwitching,
+          failure: workspace.workspaceSwitchFailure,
+          focusRequested: workspace.workspaceSwitchFocus,
           onSwitch: (name) => void workspace.quickSwitchWorkspace(name),
+          onDismissFailure: workspace.dismissWorkspaceSwitchFailure,
+          onFocusHandled: workspace.finishWorkspaceSwitchFocus,
         }}
         navigation={{
           siteName: site?.name ?? null,

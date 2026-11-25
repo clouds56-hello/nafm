@@ -5,11 +5,12 @@ interface LocationRecoveryProps {
   title: string;
   message: string;
   retrying: boolean;
+  retryDisabled?: boolean;
   onRetry?: MouseEventHandler<HTMLButtonElement>;
   onDismiss: MouseEventHandler<HTMLButtonElement>;
 }
 
-export function LocationRecovery({ title, message, retrying, onRetry, onDismiss }: LocationRecoveryProps) {
+export function LocationRecovery({ title, message, retrying, retryDisabled, onRetry, onDismiss }: LocationRecoveryProps) {
   return (
     <div className="atlas-location-recovery">
       <div className="atlas-location-error" role="alert">
@@ -21,8 +22,8 @@ export function LocationRecovery({ title, message, retrying, onRetry, onDismiss 
       </div>
       <div className="atlas-location-recovery-actions">
         {onRetry && (
-          <button className="atlas-location-retry" type="button" aria-disabled={retrying || undefined}
-            onClick={retrying ? undefined : onRetry}>
+          <button className="atlas-location-retry" type="button" aria-disabled={retrying || retryDisabled || undefined}
+            onClick={retrying || retryDisabled ? undefined : onRetry}>
             {retrying ? "Retrying…" : "Retry"}
           </button>
         )}

@@ -71,6 +71,18 @@
 
 .atlas-toolbar-workspace select:disabled { opacity: .55; }
 
+.atlas-toolbar-workspace-recovery {
+  position: absolute;
+  inset-block-start: calc(100% + 6px);
+  inset-inline-start: 8px;
+  width: min(420px, calc(100% - 16px));
+  padding: 10px 12px;
+  border: 1px solid #665261;
+  border-radius: 6px;
+  background: #292335;
+  box-shadow: 0 12px 28px #090a15a6;
+}
+
 .atlas-toolbar-navigation {
   display: flex;
   min-width: 0;

@@ -3,6 +3,11 @@ import { type ManagementSection } from "../management/ManagementCenter";
 import { loadManagement, switchWorkspace } from "../lib/tauri";
 import type { ManagementMutationResult, ManagementSnapshot } from "../lib/types";
 
+export interface WorkspaceSwitchFailure {
+  name: string;
+  message: string;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -17,7 +22,9 @@ export function useWorkspace() {
   const [managementBusy, setManagementBusy] = useState(false);
   const [managementSection, setManagementSection] = useState<ManagementSection>("workspaces");
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
-  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+  const [pendingWorkspaceName, setPendingWorkspaceName] = useState<string | null>(null);
+  const [workspaceSwitchFailure, setWorkspaceSwitchFailure] = useState<WorkspaceSwitchFailure | null>(null);
+  const [workspaceSwitchFocus, setWorkspaceSwitchFocus] = useState(false);
   const [dashboardRevision, setDashboardRevision] = useState(0);
   const [activeTaskCount, setActiveTaskCount] = useState(0);
   const managementRef = useRef<ManagementSnapshot | null>(null);
@@ -28,6 +35,8 @@ export function useWorkspace() {
   const remountDashboard = useCallback(() => {
     previousActiveTaskCountRef.current = 0;
     setActiveTaskCount(0);
+    setWorkspaceSwitchFailure(null);
+    setWorkspaceSwitchFocus(false);
     setDashboardRevision((current) => current + 1);
   }, []);
 
@@ -149,7 +158,7 @@ export function useWorkspace() {
     function openManagementShortcut(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key !== ",") return;
       event.preventDefault();
-      openManagement("workspaces");
+      if (!workspaceSwitchingRef.current) openManagement("workspaces");
     }
     document.addEventListener("keydown", openManagementShortcut);
     return () => document.removeEventListener("keydown", openManagementShortcut);
@@ -163,24 +172,31 @@ export function useWorkspace() {
   }, [refreshManagement]);
 
   const quickSwitchWorkspace = useCallback(async (name: string) => {
-    if (workspaceSwitchingRef.current || activeTaskCount > 0 || name === management?.active_workspace.name) return;
+    if (workspaceSwitchingRef.current || activeTaskCount > 0 || name === managementRef.current?.active_workspace.name) return;
     workspaceSwitchingRef.current = true;
-    setWorkspaceSwitching(true);
-    setManagementError(null);
+    setPendingWorkspaceName(name);
+    setWorkspaceSwitchFailure((current) => current?.name === name ? current : null);
     try {
       acceptMutation(await switchWorkspace(name), true);
+      setWorkspaceSwitchFocus(true);
     } catch (error) {
-      setManagementError(errorMessage(error));
-      openManagement("workspaces");
+      setWorkspaceSwitchFailure({ name, message: errorMessage(error) });
     } finally {
       workspaceSwitchingRef.current = false;
-      setWorkspaceSwitching(false);
+      setPendingWorkspaceName(null);
     }
-  }, [acceptMutation, activeTaskCount, management?.active_workspace.name, openManagement]);
+  }, [acceptMutation, activeTaskCount]);
+
+  const dismissWorkspaceSwitchFailure = useCallback(() => {
+    setWorkspaceSwitchFailure(null);
+    setWorkspaceSwitchFocus(true);
+  }, []);
+  const finishWorkspaceSwitchFocus = useCallback(() => setWorkspaceSwitchFocus(false), []);
 
   return {
     management, managementLoading, managementError, managementOpen, managementBusy, managementSection,
-    selectedSiteId, workspaceSwitching, dashboardRevision, activeTaskCount,
+    selectedSiteId, pendingWorkspaceName, workspaceSwitching: pendingWorkspaceName !== null, dashboardRevision, activeTaskCount,
+    workspaceSwitchFailure, workspaceSwitchFocus, dismissWorkspaceSwitchFailure, finishWorkspaceSwitchFocus,
     openManagement, setManagementOpen, setManagementSection, setManagementBusy, setSelectedSiteId,
     acceptMutation, refreshManagement, quickSwitchWorkspace, handleActiveTaskCountChange,
   };
