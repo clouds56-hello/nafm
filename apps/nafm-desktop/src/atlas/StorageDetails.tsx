@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
-import { formatCompleteness, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
+import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { FolderOpenDestination, HealthMetric, StorageLocation, StorageNode } from "../lib/types";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { CheckIcon } from "../management/Icons";
@@ -29,8 +29,8 @@ function findContainingFolder(folder: StorageNode, id: string): StorageNode | un
 }
 
 function HealthDetail({
-  label, score, evidence, active, emptyLabel = "Unavailable",
-}: { label: string; score: HealthPresentation; evidence: string | null; active: boolean; emptyLabel?: string }) {
+  label, score, evidence, active, metric, emptyLabel = "Unavailable",
+}: { label: string; score: HealthPresentation; evidence: string | null; active: boolean; metric: "coverage" | "space"; emptyLabel?: string }) {
   return (
     <div className="atlas-detail-health" data-active={active || undefined}>
       <dt>{label}</dt>
@@ -40,7 +40,7 @@ function HealthDetail({
           {isPerfectHealth(score) && <CheckIcon className="atlas-score-check" role="img" aria-hidden={false} aria-label="Perfect score" />}
         </span>
         {evidence && score.value !== null && <span className="atlas-detail-note">{evidence}</span>}
-        {score.state === "partial" && <span className="atlas-detail-note">{formatCompleteness(score.completeness)} verified</span>}
+        {score.state === "partial" && <span className="atlas-detail-note">{estimatedHealthEvidence(score, metric)}</span>}
       </dd>
     </div>
   );
@@ -113,9 +113,9 @@ export function StorageDetails({
           <dt>Verification</dt>
           <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
         </div>
-        <HealthDetail label="Space health" score={space} active={metric === "space_health"}
+        <HealthDetail label="Space health" score={space} active={metric === "space_health"} metric="space"
           evidence={node.space_total_files > 0 ? `${formatFileEquivalent(node.space_healthy_file_equivalents)} of ${formatCount(node.space_total_files)} file equivalents` : null} />
-        <HealthDetail label={targetName ? `Coverage → ${targetName}` : "Coverage"} score={coverage} active={metric === "coverage_health"}
+        <HealthDetail label={targetName ? `Coverage → ${targetName}` : "Coverage"} score={coverage} active={metric === "coverage_health"} metric="coverage"
           emptyLabel={targetName ? "Unavailable" : "Choose a target"}
           evidence={node.coverage_total_files > 0 ? `${formatCount(node.coverage_covered_files)} of ${formatCount(node.coverage_total_files)} content groups` : null} />
       </dl>

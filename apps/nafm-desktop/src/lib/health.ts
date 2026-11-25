@@ -124,23 +124,28 @@ export function formatHealthScore(presentation: HealthPresentation): string {
   return presentation.state === "partial" ? `≈${value}` : value;
 }
 
+export function estimatedHealthEvidence(presentation: HealthPresentation, metric: "coverage" | "space"): string {
+  return metric === "coverage" ? "Verified content only" : `${formatCompleteness(presentation.completeness)} verified`;
+}
+
 export function healthAriaDescription(
   presentation: HealthPresentation,
-  metricLabel: string,
+  metricLabel: "coverage" | "space",
   hasContent = true,
   unavailableReason?: string,
 ): string {
   if (presentation.state === "unavailable") {
     if (!hasContent) return `${metricLabel} health unavailable; no content to compare`;
     if (unavailableReason) return `${metricLabel} health unavailable; ${unavailableReason}`;
+    if (metricLabel === "coverage") return "coverage health unavailable; verified content cannot be compared across both sites";
     return presentation.completeness > 0
       ? `${metricLabel} health unavailable; ${formatCompleteness(presentation.completeness)} is verified but not comparable`
       : `${metricLabel} health unavailable; no content is verified`;
   }
   const score = formatHealth(presentation.value).replace(/^</, "less than ");
   if (presentation.state === "partial") {
-    const verified = formatCompleteness(presentation.completeness).replace(/^</, "less than ");
-    return `estimated ${score} ${metricLabel} health, ${verified} verified`;
+    const evidence = estimatedHealthEvidence(presentation, metricLabel).toLowerCase().replace(/^</, "less than ");
+    return `estimated ${score} ${metricLabel} health, ${evidence}`;
   }
   return `${score} ${metricLabel} health`;
 }

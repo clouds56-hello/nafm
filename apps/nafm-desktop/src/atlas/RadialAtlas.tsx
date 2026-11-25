@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { formatBytes, formatCount, formatShare } from "../lib/format";
-import { formatCompleteness, formatHealthScore, healthAriaDescription, isPerfectHealth, nodeHealthPresentation } from "../lib/health";
+import { estimatedHealthEvidence, formatHealthScore, healthAriaDescription, isPerfectHealth, nodeHealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
 import { CheckIcon } from "../management/Icons";
 import { FirstScanCenter, type FirstScanState } from "./FirstScanCenter";
@@ -94,7 +94,7 @@ function RadialPlot({
   let caption = sectors.length === 0 ? "No mapped entries" : null;
   if (root.file_count === 0 && root.kind === "site") caption = root.children.length ? "No files found" : "No folders configured";
   else if (root.file_count === 0 && root.children.length === 0) caption = "Folder is empty";
-  else if (rootScore?.state === "partial") caption = `${formatCompleteness(rootScore.completeness)} verified`;
+  else if (rootScore?.state === "partial") caption = estimatedHealthEvidence(rootScore, metric === "coverage_health" ? "coverage" : "space");
   else if (rootScore?.state === "unavailable" && !caption) caption = "Score unavailable";
   else if (!rootScore && !caption) caption = `${formatCount(root.file_count)} ${root.file_count === 1 ? "file" : "files"}`;
   const formattedSize = formatBytes(root.total_bytes);

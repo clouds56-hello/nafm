@@ -131,6 +131,12 @@
 .atlas-toolbar-button:focus-visible { outline-offset: 1px; }
 
 .atlas-toolbar-label { display: flex; align-items: center; gap: 6px; }
+.atlas-toolbar-coverage-target {
+  max-width: 135px;
+  overflow: hidden;
+  color: var(--atlas-accent);
+  text-overflow: ellipsis;
+}
 .atlas-toolbar-action-dot {
   width: 5px;
   height: 5px;
@@ -223,6 +229,15 @@
   padding-inline: 5px;
   color: var(--atlas-muted);
   font: 11px/1.3 var(--atlas-mono);
+}
+
+.atlas-toolbar-comparison-source {
+  padding-inline: 5px;
+  overflow: hidden;
+  color: var(--atlas-ink);
+  font: 11px/1.3 var(--atlas-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .atlas-toolbar-comparison select {

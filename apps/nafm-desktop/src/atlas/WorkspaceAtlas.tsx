@@ -3,6 +3,7 @@ import { ContentActions } from "./analysis/ContentActions";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type MapMode } from "./AtlasToolbar";
+import { CoverageFooter } from "./CoverageFooter";
 import { DirectoryContents } from "./DirectoryContents";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
@@ -11,9 +12,9 @@ import { StorageDetails } from "./StorageDetails";
 import { useDashboard } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
-import { metricAnalysisAvailability, siteAnalysisReady } from "../lib/analysis";
+import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
-import { siteCompleteness } from "../lib/health";
+import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import type { DirectorySort, FileContentMatch, FolderSimilarityMatch, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
@@ -34,6 +35,17 @@ function directoryKey(
 
 function EmptyOrbit({ label }: { label: string }) {
   return <div className="atlas-empty-orbit" role="status"><span>{label}</span></div>;
+}
+
+function HealthScale() {
+  return (
+    <div className="atlas-health-key" role="group" aria-label="Health scale runs from 0 to 100. Gray indicates pending or unavailable data.">
+      <span>0</span>
+      <i aria-hidden="true" style={{ background: `linear-gradient(90deg, ${healthColor(0)}, ${healthColor(50)}, ${healthColor(100)})` }} />
+      <span>100</span>
+      <span>Gray: pending or unavailable</span>
+    </div>
+  );
 }
 
 interface WorkspaceAtlasProps {
@@ -168,8 +180,17 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
   const targetCompleteness = siteCompleteness(target);
   const targetOptions = dashboard?.sites.filter((candidate) => candidate.id !== site?.id) ?? [];
   const coverage = mapMode === "coverage_health";
-  const analysis = site && metric ? metricAnalysisAvailability(metric, site, target) : null;
-  const analysisNotice = analysis?.message ?? (coverage && !target ? "Add another source to compare coverage." : null);
+  const folderCoverage = folder && coverage ? nodeHealthPresentation(folder, "coverage_health", targetCompleteness) : null;
+  const analysisNotice = site && metric === "space_health" ? spaceHealthNotice(site) : null;
+  const targetScanning = Boolean(target && state.scanRequestBySite.has(target.id));
+  const canScanTarget = Boolean(target && !state.scanBlockedSiteIds.has(target.id));
+  const changeCoverageTarget = (id: string) => void state.selectCoverageTarget(id);
+  const swapCoverageSites = () => { if (site && target) void selectSite(target.id, site.id); };
+  const scanCoverageTarget = () => { if (target) void state.scan(target.id); };
+  function coverageScan(id: string) {
+    const progress = state.progressBySite.get(id);
+    return progress?.request_id === state.scanRequestBySite.get(id) ? progress : undefined;
+  }
 
   useEffect(() => {
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
@@ -308,10 +329,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
           onModeChange: changeMode,
           targets: targetOptions,
           target,
-          onTargetChange: (id) => void state.selectCoverageTarget(id),
-          onSwap: () => { if (site && target) void selectSite(target.id, site.id); },
-          canScanTarget: Boolean(target && !state.scanBlockedSiteIds.has(target.id)),
-          onScanTarget: () => { if (target) void state.scan(target.id); },
+          navigationBusy: state.childrenLoading,
+          targetScanning,
+          onTargetChange: changeCoverageTarget,
+          onSwap: swapCoverageSites,
+          canScanTarget,
+          onScanTarget: scanCoverageTarget,
         }}
         actions={{
           ready: dashboard !== null,
@@ -370,17 +393,21 @@ export function WorkspaceAtlas({ workspace, siteListRevision, onAddSite, toolbar
                   onClick={openAddSite}
                 >Add site</button>
               </div>
-            ) : folder && !firstScan && (analysisNotice || metric) && (
+            ) : coverage && site && folder ? (
+              <CoverageFooter
+                source={site} target={target} targets={targetOptions} coverage={folderCoverage}
+                hasFolderContent={folder.file_count > 0}
+                sourceScan={coverageScan(site.id)} targetScan={target ? coverageScan(target.id) : undefined}
+                navigationBusy={state.childrenLoading}
+                canScanTarget={canScanTarget} onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
+                onScanTarget={scanCoverageTarget} onAddSite={openAddSite}
+              >
+                {target && <HealthScale />}
+              </CoverageFooter>
+            ) : folder && !firstScan && metric === "space_health" && (
               <>
                 {analysisNotice && <p className="atlas-map-notice" role="status">{analysisNotice}</p>}
-                {metric && (
-                  <div className="atlas-health-key" role="group" aria-label="Health scale runs from 0 to 100. Gray indicates pending or unavailable data.">
-                    <span>0</span>
-                    <i aria-hidden="true" style={{ background: `linear-gradient(90deg, ${healthColor(0)}, ${healthColor(50)}, ${healthColor(100)})` }} />
-                    <span>100</span>
-                    <span>Gray: pending or unavailable</span>
-                  </div>
-                )}
+                <HealthScale />
               </>
             )}
           </footer>

@@ -40,6 +40,8 @@ export interface AtlasToolbarProps {
     onModeChange: (mode: MapMode) => void;
     targets: readonly SiteOverview[];
     target: SiteOverview | null;
+    navigationBusy: boolean;
+    targetScanning: boolean;
     onTargetChange: (id: string) => void;
     onSwap: () => void;
     canScanTarget: boolean;
@@ -93,11 +95,14 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
   );
 }
 
-function MapOptions({ map }: Pick<AtlasToolbarProps, "map">) {
+function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sourceName: string }) {
+  const mode = mapModes.find(({ value }) => value === map.mode)?.title;
   return (
     <ToolbarDisclosure
       label="Map options"
-      summary={mapModes.find(({ value }) => value === map.mode)?.title}
+      summary={map.mode === "coverage_health" && map.target
+        ? <>{mode}<span className="atlas-toolbar-coverage-target" title={map.target.name}>→ {map.target.name}</span></>
+        : mode}
       icon={<ToolbarIcon><path d="M4 6h12M4 10h12M4 14h12" /><path d="M7 4v4m6 0v4m-5 0v4" /></ToolbarIcon>}
     >
       {(close) => (
@@ -120,25 +125,26 @@ function MapOptions({ map }: Pick<AtlasToolbarProps, "map">) {
           </div>
           {map.mode === "coverage_health" && (
             <div className="atlas-toolbar-comparison">
+              <span className="atlas-toolbar-comparison-source" title={sourceName}>From {sourceName}</span>
               <label>
                 <span>Compare with</span>
                 <select
                   value={map.target?.id ?? ""}
-                  disabled={map.targets.length === 0}
+                  disabled={map.targets.length === 0 || map.navigationBusy}
                   onChange={(event) => map.onTargetChange(event.target.value)}
                 >
                   {!map.target && <option value="">{map.targets.length ? "Choose a source" : "No other source"}</option>}
                   {map.targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
                 </select>
               </label>
-              <button className="atlas-toolbar-panel-action" type="button" disabled={!map.target} onClick={map.onSwap}>
+              <button className="atlas-toolbar-panel-action" type="button" disabled={!map.target || map.navigationBusy} onClick={map.onSwap}>
                 <ToolbarIcon><path d="M4 7h12m-3-3 3 3-3 3M16 13H4m3-3-3 3 3 3" /></ToolbarIcon>
                 Swap source and target
               </button>
-              {map.target?.hash_status === "unscanned" && (
+              {map.target && (map.targetScanning || map.target.hash_status !== "ready") && (
                 <button className="atlas-toolbar-panel-action" type="button" disabled={!map.canScanTarget} onClick={map.onScanTarget}>
                   <RefreshIcon />
-                  Scan target
+                  {map.targetScanning ? "Scanning target…" : map.target.hash_status === "pending" ? "Resume target scan" : "Scan target"}
                 </button>
               )}
             </div>
@@ -223,7 +229,7 @@ export function AtlasToolbar({ workspace, navigation, map, actions, extension }:
       <FolderNavigation navigation={navigation} />
 
       <div className="atlas-toolbar-controls">
-        {navigation.siteName && <MapOptions map={map} />}
+        {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
         <WorkspaceActions actions={actions} navigation={navigation} />
         {extension}
       </div>
