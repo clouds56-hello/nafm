@@ -2,6 +2,7 @@ import type { PreviewScenario } from "./fixtures";
 
 export const scenarioLabels = {
   populated: "Indexed workspace",
+  deep: "Deep folder hierarchy",
   partial: "Partial verification",
   empty: "Empty workspace",
   scanning: "Scan in progress",

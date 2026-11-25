@@ -94,55 +94,11 @@
   padding: 3px;
 }
 
-.atlas-toolbar-breadcrumbs {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  padding: 4px 4px 4px 2px;
-  overflow-x: auto;
-  list-style: none;
-  scrollbar-width: none;
-}
-
-.atlas-toolbar-breadcrumbs li {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  font: 11px/1.4 var(--atlas-mono);
-}
-
 .atlas-toolbar-navigation h1 {
   min-width: 0;
   margin: 0;
   font: 600 12px/1.4 var(--atlas-mono);
 }
-
-.atlas-toolbar-site-fallback,
-.atlas-toolbar-breadcrumbs button,
-.atlas-toolbar-current {
-  max-width: min(22vw, 205px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.atlas-toolbar-breadcrumbs button {
-  display: block;
-  padding: 3px 1px;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--atlas-muted);
-  font: inherit;
-  line-height: 1.4;
-}
-
-.atlas-toolbar-breadcrumbs button:hover { color: var(--atlas-ink); }
-.atlas-toolbar-current { color: var(--atlas-ink); }
-.atlas-toolbar-separator { color: #797fa6; }
 
 .atlas-toolbar-controls { gap: 5px; }
 
@@ -302,7 +258,6 @@
   .atlas-toolbar-workspace:focus-within { border-radius: 4px; outline: 2px solid var(--atlas-accent); }
   .atlas-toolbar-workspace select { position: absolute; inset: 0; width: 100%; min-width: 0; height: 100%; opacity: 0; cursor: pointer; }
   .atlas-toolbar-navigation { padding-inline-start: 4px; }
-  .atlas-toolbar-site-fallback, .atlas-toolbar-breadcrumbs button, .atlas-toolbar-current { max-width: 93px; }
   .atlas-toolbar-controls { gap: 3px; }
   .atlas-toolbar-button { min-width: 28px; min-height: 32px; padding-inline: 4px; }
   .atlas-toolbar-disclosure { position: static; }
@@ -314,4 +269,9 @@
     padding-top: 3px;
     border-top: 1px solid var(--atlas-border);
   }
+}
+
+@media (max-width: 380px) {
+  .atlas-toolbar-brand { display: none; }
+  .atlas-toolbar-navigation { gap: 5px; }
 }

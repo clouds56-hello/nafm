@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
+import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
 import "./atlas-toolbar.css";
 
 const mapModes = [
@@ -66,14 +67,8 @@ function ToolbarIcon({ children }: { children: ReactNode }) {
 }
 
 function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">) {
-  const breadcrumbList = useRef<HTMLOListElement>(null);
   const current = navigation.breadcrumbs.at(-1);
   const parent = navigation.breadcrumbs.at(-2);
-
-  useLayoutEffect(() => {
-    const list = breadcrumbList.current;
-    if (list) list.scrollLeft = list.scrollWidth;
-  }, [current?.id]);
 
   return (
     <nav className="atlas-toolbar-navigation" aria-label="Folder path">
@@ -92,28 +87,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
           )}
         </div>
       )}
-      {current ? (
-        <ol className="atlas-toolbar-breadcrumbs" ref={breadcrumbList}>
-          {navigation.breadcrumbs.map((node, index) => {
-            const name = node.name || navigation.siteName || "Storage";
-            const item = node.id === current.id ? (
-              <span className="atlas-toolbar-current" aria-current="location" title={name}>{name}</span>
-            ) : (
-              <button type="button" title={name} onClick={() => navigation.onBreadcrumb(node)}>{name}</button>
-            );
-            return (
-              <li key={node.id}>
-                {index > 0 && <span className="atlas-toolbar-separator" aria-hidden="true">/</span>}
-                {index === 0 ? <h1>{item}</h1> : item}
-              </li>
-            );
-          })}
-        </ol>
-      ) : (
-        <h1 className="atlas-toolbar-site-fallback" title={navigation.siteName ?? undefined}>
-          {navigation.siteName ?? "Explore your storage"}
-        </h1>
-      )}
+      <FolderBreadcrumbs breadcrumbs={navigation.breadcrumbs} siteName={navigation.siteName} onNavigate={navigation.onBreadcrumb} />
       {current && <FolderOpenControl node={current} onOpen={navigation.onOpenFolder} />}
     </nav>
   );

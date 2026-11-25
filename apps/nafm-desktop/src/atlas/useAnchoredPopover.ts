@@ -1,6 +1,10 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
-export function useAnchoredPopover(initialFocus: string, scrollBehavior: "follow" | "dismiss" = "follow") {
+export function useAnchoredPopover(
+  initialFocus: string,
+  scrollBehavior: "follow" | "dismiss" = "follow",
+  align: "start" | "end" = "end",
+) {
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [focusSelector, setFocusSelector] = useState<string | null>(null);
@@ -35,7 +39,8 @@ export function useAnchoredPopover(initialFocus: string, scrollBehavior: "follow
       const openAbove = popup.scrollHeight + 2 > below && above > below;
       popup.style.maxHeight = Math.max(0, openAbove ? above : below) + "px";
       popup.style.top = (openAbove ? anchor.top - gap - popup.offsetHeight : anchor.bottom + gap) + "px";
-      popup.style.left = Math.max(edge, Math.min(anchor.right - width, window.innerWidth - edge - width)) + "px";
+      const left = align === "start" ? anchor.left : anchor.right - width;
+      popup.style.left = Math.max(edge, Math.min(left, window.innerWidth - edge - width)) + "px";
     };
     const handleScroll = (event: Event) => {
       if (scrollBehavior === "dismiss" && event.target instanceof Node && event.target.contains(button)) {
@@ -62,7 +67,7 @@ export function useAnchoredPopover(initialFocus: string, scrollBehavior: "follow
       document.removeEventListener("pointerdown", dismissOutside, true);
       document.removeEventListener("focusin", dismissOutside);
     };
-  }, [focusSelector, scrollBehavior]);
+  }, [focusSelector, scrollBehavior, align]);
 
   const containerProps = {
     onMouseDown(event: MouseEvent) {

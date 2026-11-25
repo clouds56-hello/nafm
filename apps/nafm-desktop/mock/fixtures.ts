@@ -1,6 +1,6 @@
 import type { SiteOverview, StorageNode } from "../src/lib/types";
 
-export type PreviewScenario = "populated" | "partial" | "empty" | "scanning" | "slow";
+export type PreviewScenario = "populated" | "deep" | "partial" | "empty" | "scanning" | "slow";
 
 export const PREVIEW_WORKSPACE = "Studio workspace";
 
@@ -41,6 +41,23 @@ const projects: readonly SampleEntry[] = [
     `2024 ${month}`,
     [["Contact sheet.pdf", (16 + index * 7) * MiB], ["Production notes.txt", (8 + index) * 1024]],
   ]),
+];
+
+const productionArchive: readonly SampleEntry[] = [
+  ["2025 Campaigns", [
+    ["Spring Launch", [
+      ["Camera Originals", [
+        ["Second Unit", [
+          ["Interview Selects", [["Day 03 interview.mxf", 24 * GiB], ["Transcript.txt", 84 * 1024]]],
+          ["Location Footage", [["Street scenes.mxf", 11 * GiB]]],
+        ]],
+        ["First Unit", [["Set footage.mxf", 29 * GiB]]],
+      ]],
+      ["Edit References", [["Shot list.pdf", 14 * MiB]]],
+    ]],
+    ["Fall Launch", [["Proofs.pdf", 49 * MiB]]],
+  ]],
+  ["Delivery notes.txt", 19 * 1024],
 ];
 
 const photographs: readonly SampleEntry[] = [
@@ -184,6 +201,7 @@ export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview
     ["Sound Library", sound],
     ["Documents", documents],
     ["Sandbox", []],
+    ...(scenario === "deep" ? [["Production Archive", productionArchive]] as const : []),
   ] as const;
 
   const trees = new Map([
