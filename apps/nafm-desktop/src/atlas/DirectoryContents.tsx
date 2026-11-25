@@ -67,13 +67,15 @@ export function DirectoryContents({
   const searchOpen = searchText !== null;
   const filtering = Boolean(searchText?.trim());
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
   const [cursors, setCursors] = useState(() => new Map<string, string>());
   const cursor = cursors.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
   const keyboardRow = useRef<{
     key: string; index: number; refreshPage?: StorageChildrenPage; preventScroll?: boolean;
+    retryPosition?: { top: number; total: number };
   } | null>(null);
-  const returningEntry = useRef<{ id: string | null; origin?: Element | null } | null>(null);
+  const returningEntry = useRef<{ id: string | null; origin?: Element | null; index?: number } | null>(null);
   const [refreshReveal, setRefreshReveal] = useState<{
     key: string; page: StorageChildrenPage; index: number; position: number | "end"; onApplied: () => void;
   } | null>(null);
@@ -86,7 +88,7 @@ export function DirectoryContents({
     contentsKey, anchorIndex, total, active, scrollPane, scrollPositions,
     reveal: reveal ?? committedReveal,
   });
-  const { listRef, first, start, end, ready } = viewport;
+  const { listRef, first, start, end, ready, scrollToRow } = viewport;
   const rowPreview = useDirectoryPreview({
     root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
   });
@@ -96,21 +98,6 @@ export function DirectoryContents({
     searchFocus.current = null;
     (searchOpen ? searchInput.current : searchTrigger.current)?.focus({ preventScroll: true });
   }, [searchOpen, active]);
-
-  useEffect(() => {
-    if (!active || !ready || loading || placingRefresh || !page || end <= start) return;
-    const request = () => {
-      const { pending, focusedIndex } = readResultFocus();
-      const preferred = pending?.index ?? focusedIndex ?? first;
-      onLoadRange(start, end, preferred >= start && preferred < end ? preferred : first);
-    };
-    if (end <= offset || start >= offset + page.children.length) {
-      // Let a thumb drag cross distant ranges without reading every folder slice along its path.
-      const timer = window.setTimeout(request, 60);
-      return () => window.clearTimeout(timer);
-    }
-    request();
-  }, [active, ready, loading, placingRefresh, first, start, end, page, offset, cursor, contentsKey, listRef, onLoadRange]);
 
   useLayoutEffect(() => {
     if (!refreshHandler || !active) return;
@@ -134,8 +121,17 @@ export function DirectoryContents({
       const row = request.id
         ? listRef.current?.querySelector<HTMLButtonElement>(`[data-entry-id="${CSS.escape(request.id)}"]`)
         : visibleEntry(listRef.current, first, viewport.capacity, cursor);
-      if (!row && total && !error) return;
-      (row || searchInput.current || headingRef.current)?.focus({ preventScroll: true });
+      if (!row && total && !error) {
+        // The file's page can arrive after Contents has already reopened.
+        const index = request.id ? page?.children.findIndex((entry) => entry.id === request.id) ?? -1 : -1;
+        if (index >= 0) {
+          request.index = offset + index;
+          scrollToRow(request.index);
+        }
+        return;
+      }
+      const retry = request.id && error ? retryButton.current : null;
+      (row || retry || searchInput.current || headingRef.current)?.focus({ preventScroll: true });
       if (row && request.id) {
         const paneBounds = pane.getBoundingClientRect();
         const headerBottom = pane.querySelector(".atlas-directory-header")?.getBoundingClientRect().bottom ?? paneBounds.top;
@@ -144,7 +140,24 @@ export function DirectoryContents({
       }
     }
     returningEntry.current = null;
-  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, cursor, ready, loading, total, error, page, first, start, end, viewport.capacity, listRef, scrollPane]);
+  }, [active, returnEntryId, revealedEntry, resumeVisibleRow, cursor, ready, loading, total, error, page, offset, first, start, end, viewport.capacity, listRef, scrollPane, scrollToRow]);
+
+  useEffect(() => {
+    if (!active || !ready || loading || placingRefresh || !page || end <= start) return;
+    const index = returningEntry.current?.index;
+    if (index !== undefined && (index < start || index >= end)) return;
+    const request = () => {
+      const { pending, focusedIndex } = readResultFocus();
+      const preferred = pending?.index ?? focusedIndex ?? first;
+      onLoadRange(start, end, preferred >= start && preferred < end ? preferred : first);
+    };
+    if (end <= offset || start >= offset + page.children.length) {
+      // Let a thumb drag cross distant ranges without reading every folder slice along its path.
+      const timer = window.setTimeout(request, 60);
+      return () => window.clearTimeout(timer);
+    }
+    request();
+  }, [active, ready, loading, placingRefresh, first, start, end, page, offset, cursor, contentsKey, listRef, onLoadRange]);
 
   useLayoutEffect(() => {
     if (!active || loading) return;
@@ -152,7 +165,8 @@ export function DirectoryContents({
     const pending = keyboardRow.current;
     if (!pending && !destination) return;
     const pane = scrollPane.current;
-    if (!pane || (document.activeElement !== document.body && !pane.contains(document.activeElement))) {
+    const focus = document.activeElement;
+    if (!pane || (focus !== document.body && !pane.contains(focus))) {
       keyboardRow.current = null;
       keyboardFolder.current = null;
       return;
@@ -161,14 +175,21 @@ export function DirectoryContents({
       keyboardFolder.current = null;
       return;
     }
-    if (destination && document.activeElement !== document.body && document.activeElement !== destination.origin
-      && document.activeElement !== listRef.current) {
+    if (destination && focus !== document.body && focus !== destination.origin && focus !== listRef.current) {
       keyboardFolder.current = null;
       return;
     }
-    if (pending && (pending.key !== contentsKey || error || (total > 0 && document.activeElement !== listRef.current))) {
-      keyboardRow.current = null;
-      return;
+    if (pending) {
+      const onFailedRetry = error && focus === retryButton.current;
+      const moved = pending.retryPosition?.total === total && pending.retryPosition.top !== pane.scrollTop;
+      if (pending.key !== contentsKey || moved || (total > 0 && focus !== listRef.current && !onFailedRetry)) {
+        keyboardRow.current = null;
+        return;
+      }
+      if (error) {
+        retryButton.current?.focus({ preventScroll: true });
+        return;
+      }
     }
     if (pending?.refreshPage) {
       if (pending.refreshPage !== page) return;
@@ -294,6 +315,29 @@ export function DirectoryContents({
     if (!parent || loading) return;
     keyboardFolder.current = keyboard ? { folder: parent.id, row: directoryId, origin: document.activeElement } : null;
     onGoUp();
+  }
+
+  function retryDirectory() {
+    const pane = scrollPane.current;
+    const list = listRef.current;
+    const pending = keyboardRow.current;
+    keyboardFolder.current = null;
+    if (pane && list && total) {
+      const index = pending?.key === contentsKey && pending.index >= first && pending.index < first + viewport.capacity
+        ? pending.index : first;
+      keyboardRow.current = { key: contentsKey, index, preventScroll: true, retryPosition: { top: pane.scrollTop, total } };
+      list.focus({ preventScroll: true });
+    } else {
+      keyboardRow.current = null;
+      if (pane && returnEntryId) {
+        // The filtered window is still empty while the file's anchored read is retried.
+        returningEntry.current = { id: returnEntryId };
+        pane.focus({ preventScroll: true });
+      } else {
+        (searchInput.current ?? headingRef.current)?.focus({ preventScroll: true });
+      }
+    }
+    onRetry();
   }
 
   function moveRow(event: KeyboardEvent<HTMLElement>, node?: StorageNode, index?: number) {
@@ -466,7 +510,7 @@ export function DirectoryContents({
           <div className="atlas-directory-feedback">
             <div className="atlas-directory-status" role="alert">
               <span>{error}</span>
-              <button type="button" className="atlas-text-button" onClick={onRetry}>Retry</button>
+              <button ref={retryButton} type="button" className="atlas-text-button" onClick={retryDirectory}>Retry</button>
             </div>
           </div>
         )}

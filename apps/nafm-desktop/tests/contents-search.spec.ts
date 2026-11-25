@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { DirectorySort, StorageChildrenPage } from "../src/lib/types";
 
 function currentFolder(page: Page) {
   return page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
@@ -185,6 +186,101 @@ for (const route of ["Sites", "Atlas history"] as const) {
     await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollTop);
     await expect(file).toBeInViewport({ ratio: 0.99 });
     await expect(file).toBeFocused();
+  });
+}
+
+for (const firstRead of ["succeeds", "fails"] as const) {
+  test(`Back to Contents finds the inspected file after changing sort when the first read ${firstRead}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    const contents = await openPhotoLibrary(page, "large");
+    const filter = searchInput(contents);
+    const grid = contents.getByRole("grid");
+    const file = entry(contents, /^Harbor survey 2431\.jpg/);
+    const row = grid.getByRole("row").filter({ hasText: "Harbor survey 2431.jpg" });
+    const query = "  hArBoR SuRvEy  ";
+    await searchButton(contents).press("Enter");
+    await filter.fill(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    const height = await grid.evaluate((list) =>
+      Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (440 - 4) * height);
+    await expect(file).toBeInViewport({ ratio: 0.99 });
+    await expect(row).toHaveAttribute("aria-rowindex", "440");
+    const fileId = (await file.getAttribute("data-entry-id"))!;
+
+    await file.press("Enter");
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const heading = inspector.getByRole("heading", { name: "Harbor survey 2431.jpg", exact: true });
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    await expect(heading).toBeVisible();
+    const path = page.getByRole("navigation", { name: "Folder path" });
+    await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await sortByName(page, contents, "Ascending");
+    await searchButton(contents).press("Enter");
+    await filter.fill("Projects");
+    await expect(grid).toHaveAttribute("aria-rowcount", "1");
+    await expect(entry(contents, /^Projects/)).toBeVisible();
+
+    const failureMessage = "The filtered directory could not be read.";
+    const firstReply = await page.evaluateHandle(({ id, query, failure }) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (
+          command: string, args: { nodeId?: string; query?: string; sort?: DirectorySort; anchor?: string },
+        ) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const reads: { anchor: string | null; rank: number | null }[] = [];
+      const state = { pending: false, release, reads };
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_children" && args.nodeId === "site_folder:studio-archive:1"
+          && args.query === query && args.sort?.field === "name" && args.sort.direction === "asc") {
+          const page = response as StorageChildrenPage;
+          const index = page.children.findIndex((child) => child.id === id);
+          reads.push({ anchor: args.anchor ?? null, rank: index < 0 ? null : page.offset + index + 1 });
+          if (!state.pending) {
+            state.pending = true;
+            await gate;
+            if (failure) throw new Error(failure);
+          }
+        }
+        return response;
+      };
+      return state;
+    }, { id: fileId, query: query.trim(), failure: firstRead === "fails" ? failureMessage : null });
+
+    try {
+      await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(heading).toBeVisible();
+      await expect.poll(() => firstReply.evaluate((state) => state.pending)).toBe(true);
+      await back.press("Enter");
+      await expect(contents).toBeVisible();
+      await expect(filter).toHaveValue(query);
+      await expect(file).toHaveCount(0);
+    } finally {
+      await firstReply.evaluate((state) => state.release());
+    }
+
+    if (firstRead === "fails") {
+      const alert = contents.getByRole("alert");
+      await expect(alert).toContainText(failureMessage);
+      await alert.getByRole("button", { name: "Retry", exact: true }).press("Enter");
+      await expect(alert).toBeHidden();
+    }
+
+    await expect(filter).toHaveValue(query);
+    await expect(contents.getByRole("button", { name: "Sort contents", exact: true })).toHaveAttribute("title", "Name, ascending");
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    await expect(row).toHaveAttribute("aria-rowindex", "406");
+    await expect(file).toHaveAttribute("data-entry-id", fileId);
+    await expect(file).toBeInViewport({ ratio: 0.99 });
+    await expect(file).toBeFocused();
+    const expectedReads = Array.from({ length: firstRead === "fails" ? 2 : 1 }, () => ({ anchor: fileId, rank: 406 }));
+    expect(await firstReply.evaluate(({ reads }, count) => reads.slice(0, count), expectedReads.length)).toEqual(expectedReads);
   });
 }
 

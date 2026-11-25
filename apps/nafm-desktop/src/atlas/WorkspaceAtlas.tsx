@@ -184,6 +184,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const searchPaused = pausedSearchScope === searchScope || (state.contentsGroup && Boolean(savedSearch?.trim()));
   const searchText = searchPaused ? null : savedSearch;
   const searchQuery = searchText?.trim() ?? "";
+  function searchContentsKey(sort: DirectorySort, query: string) {
+    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query);
+  }
+  const searchKey = searchContentsKey(state.directorySort, searchQuery);
+  const returnFileId = visit?.source === "contents" && visit.fileId === selectedNode?.id && !state.selectedFileUnavailable
+    && (visit.view === "details" || visit.contentsKey === searchKey) ? visit.fileId : undefined;
   const search = useDirectorySearch({
     scope: searchScope,
     siteId: location?.site_id,
@@ -193,6 +199,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     sort: state.directorySort,
     contentRevision: state.contentRevision,
     inspectedFileId: inspectorView === "details" && selectedNode?.kind === "file" ? selectedNode.id : undefined,
+    returnFileId,
     onRefresh: onSearchRefresh,
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
@@ -261,10 +268,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor);
   }
-  function searchContentsKey(sort: DirectorySort, query: string) {
-    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query);
-  }
-  const contentsKey = search.enabled ? searchContentsKey(state.directorySort, searchQuery)
+  const contentsKey = search.enabled ? searchKey
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
   function changeSearch(text: string | null) {
     if (state.contentsGroup && text !== null) {

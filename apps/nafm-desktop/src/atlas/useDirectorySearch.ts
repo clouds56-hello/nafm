@@ -25,6 +25,7 @@ interface DirectorySearchOptions {
   sort: DirectorySort;
   contentRevision: number;
   inspectedFileId?: string;
+  returnFileId?: string;
   onRefresh?: (update: DirectoryRefresh) => boolean | void;
 }
 
@@ -39,7 +40,7 @@ function refreshAnchorIndex(page: StorageChildrenPage | null, fallback: number, 
 }
 
 export function useDirectorySearch({
-  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, inspectedFileId, onRefresh,
+  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, inspectedFileId, returnFileId, onRefresh,
 }: DirectorySearchOptions) {
   const enabled = Boolean(query && siteId && folderId);
   const key = directorySearchKey(scope, query, { field, direction });
@@ -54,15 +55,17 @@ export function useDirectorySearch({
   const changingTarget = delivered !== null && delivered.targetId !== targetId;
   const refreshing = delivered !== null && !changingTarget && delivered.revision !== contentRevision;
   const refreshIndex = refreshing ? refreshAnchorIndex(page, preferredIndex ?? range.offset, inspectedFileId) : undefined;
-  const anchor = page && refreshIndex !== undefined ? page.children[refreshIndex - page.offset]?.id : undefined;
+  // History can restore a file before this sort's filtered window has been read.
+  const openingAnchor = delivered ? undefined : returnFileId;
+  const anchor = openingAnchor ?? (page && refreshIndex !== undefined ? page.children[refreshIndex - page.offset]?.id : undefined);
   const error = failure?.key === key && failure.targetId === targetId && failure.revision === contentRevision && failure.range === range
     && failure.refreshIndex === refreshIndex ? failure.message : null;
   const pending = enabled && !error && (changingTarget || refreshing || delivered?.range !== range);
-  const latest = useRef({ key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, onRefresh });
+  const latest = useRef({ key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, openingAnchor, onRefresh });
 
   useLayoutEffect(() => {
-    latest.current = { key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, onRefresh };
-  }, [key, targetId, contentRevision, range, preferredIndex, inspectedFileId, onRefresh]);
+    latest.current = { key, targetId, revision: contentRevision, range, preferredIndex, inspectedFileId, openingAnchor, onRefresh };
+  }, [key, targetId, contentRevision, range, preferredIndex, inspectedFileId, openingAnchor, onRefresh]);
 
   const requestWindow = useCallback((next: DirectoryRequest) => {
     latest.current = { ...latest.current, ...next };
@@ -76,7 +79,7 @@ export function useDirectorySearch({
       const stillWanted = () => {
         const active = latest.current;
         return current && active.key === key && active.targetId === targetId
-          && active.revision === contentRevision && active.range === range
+          && active.revision === contentRevision && active.range === range && openingAnchor === active.openingAnchor
           && (refreshIndex === undefined
             || refreshAnchorIndex(page, active.preferredIndex ?? range.offset, active.inspectedFileId) === refreshIndex);
       };
@@ -101,6 +104,9 @@ export function useDirectorySearch({
           }) === false) return;
           nextRange = { offset: next.offset, limit: next.limit };
           requestWindow({ key, range: nextRange, preferredIndex: index });
+        } else if (openingAnchor && next.offset !== range.offset) {
+          nextRange = { offset: next.offset, limit: next.limit };
+          requestWindow({ key, range: nextRange });
         }
         setResult({ key, targetId, revision: contentRevision, range: nextRange, page: next });
         setFailure(null);
@@ -109,12 +115,12 @@ export function useDirectorySearch({
           key, targetId, revision: contentRevision, range, refreshIndex, message: error instanceof Error ? error.message : String(error),
         });
       }
-    }, !page && range === firstWindow ? 160 : 0);
+    }, !anchor && !page && range === firstWindow ? 160 : 0);
     return () => {
       current = false;
       window.clearTimeout(timer);
     };
-  }, [anchor, pending, siteId, targetId, folderId, key, contentRevision, query, field, direction, range, refreshIndex, page, requestWindow]);
+  }, [anchor, openingAnchor, pending, siteId, targetId, folderId, key, contentRevision, query, field, direction, range, refreshIndex, page, requestWindow]);
 
   const loadRange = useCallback((start: number, end: number, preferredIndex = start) => {
     if (!delivered || !page || end <= start || latest.current.key !== key) return;

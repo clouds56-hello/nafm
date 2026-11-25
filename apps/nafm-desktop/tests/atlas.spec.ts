@@ -405,6 +405,52 @@ test("Home returns focus to the first row during a pending End jump", async ({ p
   await expect(second).toBeInViewport();
 });
 
+test("retrying a failed End seek restores keyboard focus to the distant row", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  await arc(page, /^Photo Library,/).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+  const entries = page.getByRole("region", { name: "Directory entries", exact: true });
+  const grid = entries.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  const row = (index: number) => grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+  await expect(row(7)).toBeAttached();
+  await expect(entries).not.toHaveAttribute("aria-busy", "true");
+
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string; offset?: number }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const offsets: number[] = [];
+    bridge.invoke = async (command, args) => {
+      if (command === "get_storage_children" && args.nodeId === "site_folder:studio-archive:1"
+        && args.offset !== undefined && args.offset > 4000) {
+        offsets.push(args.offset);
+        if (offsets.length === 1) throw new Error("The directory read was interrupted.");
+      }
+      return invoke(command, args);
+    };
+    return offsets;
+  });
+
+  await row(1).press("End");
+  await expect(entries.getByRole("alert")).toContainText("The directory read was interrupted.");
+  const retry = entries.getByRole("button", { name: "Retry", exact: true });
+  await expect(retry).toBeFocused();
+  await expect(retry).toBeInViewport();
+  await page.keyboard.press("Enter");
+  await expect(retry).toBeHidden();
+  await expect(row(4096)).toBeFocused();
+  await expect(row(4096)).toBeInViewport({ ratio: 0.99 });
+  await page.keyboard.press("ArrowUp");
+  await expect(row(4095)).toBeFocused();
+  const offsets = await reads.jsonValue();
+  expect(offsets).toHaveLength(2);
+  expect(offsets[1]).toBe(offsets[0]);
+});
+
 test("Arrow Down resumes keyboard browsing at the first visible row after a scrollbar jump", async ({ page }) => {
   await arc(page, /^Photo Library,/).press("Enter");
   await expect(currentFolder(page)).toHaveText("Photo Library");
