@@ -20,6 +20,10 @@ export function kindLabel(node: StorageNode): string {
   }
 }
 
+export function sectorFolderPath(sector: Sector): string {
+  return sector.ancestors.map(labelFor).join(" / ");
+}
+
 export interface ArcPreview {
   id: string;
   input: "pointer" | "keyboard" | "touch";
@@ -44,17 +48,19 @@ function focusAction(event: MouseEvent<HTMLButtonElement>) {
   event.currentTarget.focus({ preventScroll: true });
 }
 
-export function PreviewSummary({ node, root, metric, score, awaitingInventory = false }: {
+export function PreviewSummary({ node, root, metric, score, folderPath, awaitingInventory = false }: {
   node: StorageNode;
   root: StorageNode;
   metric: HealthMetric | null;
   score: HealthPresentation | null;
+  folderPath?: string;
   awaitingInventory?: boolean;
 }) {
   return (
     <div className="atlas-sector-preview__body">
       <span className="atlas-sector-preview__kind">{kindLabel(node)}</span>
       <strong>{labelFor(node)}</strong>
+      {folderPath && <span className="atlas-sector-preview__folder">{folderPath}</span>}
       <span className="atlas-sector-preview__meta">
         {awaitingInventory ? "Awaiting inventory" : formatBytes(node.total_bytes)}
         {!awaitingInventory && root.total_bytes > 0 && ` · ${formatShare(node.total_bytes, root.total_bytes)} of ${labelFor(root)}`}
@@ -90,7 +96,7 @@ export function SectorPreview({ preview, sector, root, metric, targetCompletenes
         onClose();
       } : undefined}
     >
-      <PreviewSummary node={node} root={root} metric={metric} score={score} />
+      <PreviewSummary node={node} root={root} metric={metric} score={score} folderPath={sectorFolderPath(sector)} />
       {interactive && (
         <>
           <button type="button" className="atlas-sector-preview__open" onMouseDown={focusAction} onClick={onOpen}>{action}</button>

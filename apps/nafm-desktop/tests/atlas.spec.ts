@@ -74,6 +74,48 @@ test("keyboard exploration takes over a stationary pointer and returns to the sa
   await expect(projects).toBeFocused();
 });
 
+test("the Atlas tab stop remembers the visited arc after returning from the toolbar", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const plot = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+  const projects = arc(page, /^Projects,/);
+  const brand = arc(page, /^Brand campaign,/);
+  const backup = arc(page, /^Backup campaign,/);
+  await projects.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await brand.press("ArrowRight");
+  await expect(backup).toBeFocused();
+  await backup.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+
+  const previous = page.getByRole("navigation", { name: "Folder path" })
+    .getByRole("button", { name: "Previous location", exact: true });
+  await previous.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(previous).toBeFocused();
+  await expect(backup).toHaveAttribute("tabindex", "0");
+  await expect(brand).toHaveAttribute("tabindex", "-1");
+
+  await backup.press("Enter");
+  await plot.getByRole("button", { name: "Up to Projects", exact: true }).press("Enter");
+  await expect(backup).toBeFocused();
+  await plot.getByRole("button", { name: "Up to Studio archive", exact: true }).press("Enter");
+  await expect(projects).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(brand).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  await actions.press("Alt+ArrowLeft");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await expect(actions).toBeFocused();
+  await expect(brand).toHaveAttribute("tabindex", "0");
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+  await expect(page.getByRole("tabpanel", { name: "Contents", exact: true })).toBeVisible();
+});
+
 test.describe("touch exploration", () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 750 } });
 

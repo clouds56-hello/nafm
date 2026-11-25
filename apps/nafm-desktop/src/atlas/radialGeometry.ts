@@ -2,6 +2,7 @@ import type { StorageNode } from "../lib/types";
 
 export interface Sector {
   parentId: string;
+  ancestors: readonly StorageNode[];
   hitPath: string;
   node: StorageNode;
   color: string;
@@ -75,11 +76,12 @@ export function branchSectors(
   tier: number,
   from: number,
   to: number,
-  inherited?: Pick<Sector, "color" | "branch">,
+  inherited?: Pick<Sector, "color" | "branch" | "ancestors">,
 ): Sector[] {
   const ring = RINGS[tier];
   if (!ring || parent.children.length === 0) return [];
   const { visible, totalWeight } = rankedBranches(parent);
+  const ancestors = inherited ? [...inherited.ancestors, parent] : [];
   const span = to - from;
   const reserved = tier === 0 ? ring.minimum : 0;
   const separator = Math.min(ring.gap, span / (visible.length * 3));
@@ -99,6 +101,7 @@ export function branchSectors(
     const sector: Sector = {
       node,
       parentId: parent.id,
+      ancestors,
       hitPath: hitSector(ring.inner, ring.outer, start, end),
       color: inherited?.color ?? branchColor(index),
       branch: inherited?.branch ?? node.id,

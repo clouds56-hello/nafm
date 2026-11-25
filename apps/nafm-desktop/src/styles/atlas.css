@@ -116,11 +116,27 @@ button:disabled { cursor: default; }
   min-height: 0;
   min-width: 0;
   grid-row: 1;
+  grid-template-rows: minmax(0, 1fr);
   place-items: center;
   padding: 8px;
 }
 
-.atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
+.atlas-chart-well:has(> .radial-atlas-preview-slot) {
+  grid-template-rows: minmax(0, 1fr) auto;
+  row-gap: 8px;
+}
+
+.radial-atlas-stage {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  align-self: stretch;
+  place-items: center;
+}
+
+.radial-atlas-stage > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
   width: min(100%, 660px);
   aspect-ratio: 1;
 }
@@ -218,15 +234,15 @@ button:disabled { cursor: default; }
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .atlas-chart-well { container-type: size; }
-  .atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
+  .atlas-chart-well, .radial-atlas-stage { container-type: size; }
+  .radial-atlas-stage > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
     width: min(100%, max(280px, calc(100vh - 130px)), 820px);
     width: min(100%, 100cqh, 820px);
   }
 }
 
 @media (width < 880px) {
-  .atlas-chart-well > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
+  .radial-atlas-stage > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
     width: min(100%, clamp(550px, 100dvh - 145px, 820px));
   }
 }
@@ -257,7 +273,7 @@ button:disabled { cursor: default; }
 @media (max-width: 760px) {
   .atlas-main { padding: 8px; }
 
-  .atlas-chart-well > :is(.radial-atlas, .atlas-empty-orbit) {
+  .radial-atlas-stage > .radial-atlas, .atlas-chart-well > .atlas-empty-orbit {
     width: min(100%, clamp(200px, calc(100dvh - 82px), 560px));
   }
 }

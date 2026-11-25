@@ -16,6 +16,15 @@ function labelsOutsideSector(labels: Locator) {
   }));
 }
 
+function arcMidpoint(sector: Locator) {
+  return sector.locator(".radial-atlas__ring").evaluate((element) => {
+    const path = element as SVGPathElement;
+    const point = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM()!);
+    const hittable = document.elementFromPoint(point.x, point.y)?.closest(".radial-atlas__sector") === path.parentElement;
+    return { x: point.x, y: point.y, hittable };
+  });
+}
+
 test("ring labels fit their sectors when resized and open the item under the text", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/mock/");
@@ -43,6 +52,34 @@ test("ring labels fit their sectors when resized and open the item under the tex
   await page.mouse.click(point.x, point.y);
   await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]'))
     .toHaveText("Photo Library");
+});
+
+test("nested arcs identify the folders containing identical file copies", async ({ page }) => {
+  await page.goto("/mock/");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const projects = map.getByRole("button", { name: /^Projects,/ });
+  const copies = map.getByRole("button", { name: /^Trailer master\.mov,/ });
+  const preview = map.locator(".atlas-sector-preview");
+  await expect(copies).toHaveCount(2);
+  const original = copies.nth(0);
+  const backup = copies.nth(1);
+  await expect(original).toHaveAccessibleDescription("In Projects / Brand campaign");
+  await expect(backup).toHaveAccessibleDescription("In Projects / Backup campaign");
+
+  await projects.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect(original).toBeFocused();
+  await expect(preview.getByText("Projects / Brand campaign", { exact: true })).toBeVisible();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await expect(backup).toBeFocused();
+  await expect(preview.getByText("Projects / Backup campaign", { exact: true })).toBeVisible();
+  await page.keyboard.press("Enter");
+
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector.getByRole("heading", { name: "Trailer master.mov", exact: true })).toBeVisible();
+  await expect(inspector.getByText(/Backup campaign\/Trailer master\.mov/)).toBeVisible();
 });
 
 test.describe("compact Atlas readout", () => {
@@ -124,5 +161,92 @@ test.describe("compact Atlas readout", () => {
     await expect(up).toBeInViewport();
     await up.tap();
     await expect(title).toHaveText("Projects");
+  });
+});
+
+test.describe("touch Atlas previews", () => {
+  test.use({ hasTouch: true });
+
+  for (const viewport of [{ width: 390, height: 750 }, { width: 1060, height: 620 }]) {
+    test(`preview leaves other arcs tappable at ${viewport.width}×${viewport.height}`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/mock/");
+      const map = page.getByRole("region", { name: "Circular storage map" });
+      const figure = map.getByRole("figure");
+      const frame = map.locator(".atlas-chart-well");
+      const folder = page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
+      await expect(folder).toHaveText("Studio archive");
+
+      const sites = map.getByRole("complementary", { name: "Sites", exact: true });
+      const inspector = map.getByRole("complementary", { name: "Inspector", exact: true });
+      if (viewport.width < 880) {
+        await map.getByRole("button", { name: "Sites", exact: true }).tap();
+        await map.getByRole("button", { name: "Contents & details", exact: true }).tap();
+        await figure.scrollIntoViewIfNeeded();
+      }
+
+      const launchFilm = figure.getByRole("button", { name: /^Launch film\.mov,/ });
+      const initialRing = (await figure.boundingBox())!;
+      const initialFilm = await arcMidpoint(launchFilm);
+      const projects = await arcMidpoint(figure.getByRole("button", { name: /^Projects,/ }));
+      await page.touchscreen.tap(projects.x, projects.y);
+      const projectPreview = map.getByRole("group", { name: "Preview of Projects", exact: true });
+      await expect(projectPreview.getByRole("button", { name: "Open folder", exact: true })).toBeInViewport({ ratio: 0.99 });
+      await expect(projectPreview.getByRole("button", { name: "Dismiss preview", exact: true })).toBeInViewport({ ratio: 0.99 });
+
+      const ring = (await figure.boundingBox())!;
+      const card = (await projectPreview.boundingBox())!;
+      const bounds = (await frame.boundingBox())!;
+      expect(ring.y).toBeGreaterThanOrEqual(bounds.y);
+      expect(card.y).toBeGreaterThanOrEqual(ring.y + ring.height);
+      expect(card.y + card.height).toBeLessThanOrEqual(bounds.y + bounds.height);
+      const film = await arcMidpoint(launchFilm);
+      expect(film.hittable).toBe(true);
+      if (viewport.width < 880) {
+        expect(ring.width).toBeCloseTo(initialRing.width, 1);
+        expect(film.x).toBeCloseTo(initialFilm.x, 1);
+        expect(film.y).toBeCloseTo(initialFilm.y, 1);
+      }
+
+      await page.touchscreen.tap(film.x, film.y);
+      await expect(projectPreview).toBeHidden();
+      const filmPreview = map.getByRole("group", { name: "Preview of Launch film.mov", exact: true });
+      await expect(filmPreview).toBeVisible();
+      await expect(folder).toHaveText("Studio archive");
+      await filmPreview.getByRole("button", { name: "View details", exact: true }).tap();
+      await expect(inspector.getByRole("heading", { name: "Launch film.mov", exact: true })).toBeVisible();
+      if (viewport.width < 880) await expect(sites).toBeVisible();
+    });
+  }
+
+  test("dismissing a touch preview brings the focused arc back into view", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 320 });
+    await page.goto("/mock/");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const arc = map.getByRole("button", { name: /^Distant rain\.wav,/ });
+    const preview = map.getByRole("group", { name: "Preview of Distant rain.wav", exact: true });
+    const dismiss = preview.getByRole("button", { name: "Dismiss preview", exact: true });
+    await map.getByRole("button", { name: "Sites", exact: true }).tap();
+    await expect(map.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+    await map.getByRole("button", { name: "Contents & details", exact: true }).tap();
+    await expect(map.getByRole("tab", { name: "Contents", exact: true })).toBeFocused();
+    await expect(async () => {
+      await arc.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+      expect((await arcMidpoint(arc)).hittable).toBe(true);
+    }).toPass({ timeout: 5_000 });
+
+    for (const action of ["Dismiss", "Escape"] as const) {
+      const point = await arcMidpoint(arc);
+      expect(point.hittable).toBe(true);
+      await page.touchscreen.tap(point.x, point.y);
+      await expect(dismiss).toBeInViewport({ ratio: 0.99 });
+      await expect.poll(async () => (await arcMidpoint(arc)).hittable).toBe(false);
+
+      if (action === "Dismiss") await dismiss.tap();
+      else await page.keyboard.press("Escape");
+      await expect(preview).toBeHidden();
+      await expect(arc).toBeFocused();
+      await expect.poll(async () => (await arcMidpoint(arc)).hittable).toBe(true);
+    }
   });
 });
