@@ -26,6 +26,7 @@ interface DirectoryContentsProps {
   targetCompleteness: number;
   scrollPane: RefObject<HTMLDivElement | null>;
   scrollPositions: Map<string, number | "end">;
+  cursorPositions: Map<string, string>;
   contentsKey: string;
   anchorIndex: number;
   reveal?: { index: number; onApplied: () => void };
@@ -56,7 +57,7 @@ function visibleEntry(list: HTMLUListElement | null, first: number, capacity: nu
 
 export function DirectoryContents({
   location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
+  scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
@@ -68,8 +69,8 @@ export function DirectoryContents({
   const filtering = Boolean(searchText?.trim());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const retryButton = useRef<HTMLButtonElement>(null);
-  const [cursors, setCursors] = useState(() => new Map<string, string>());
-  const cursor = cursors.get(contentsKey);
+  const [focusedCursor, setFocusedCursor] = useState<{ key: string; id: string } | null>(null);
+  const cursor = focusedCursor?.key === contentsKey ? focusedCursor.id : cursorPositions.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
   const keyboardRow = useRef<{
     key: string; index: number; refreshPage?: StorageChildrenPage; preventScroll?: boolean;
@@ -480,7 +481,9 @@ export function DirectoryContents({
                 <li key={node.id} style={style} role="row" data-virtual-row={index}
                   aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
                   <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => {
-                    setCursors((saved) => saved.get(contentsKey) === node.id ? saved : new Map(saved).set(contentsKey, node.id));
+                    if (cursor === node.id) return;
+                    cursorPositions.set(contentsKey, node.id);
+                    setFocusedCursor({ key: contentsKey, id: node.id });
                   }}>
                     <button
                       type="button"

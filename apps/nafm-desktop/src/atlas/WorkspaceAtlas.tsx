@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { ContentActions, type ComparisonKind } from "./analysis/ContentActions";
 import { FileCopiesDialog } from "./analysis/FileCopiesDialog";
 import { ReviewDrawer, type ReviewPosition } from "./analysis/ReviewDrawer";
@@ -17,7 +17,7 @@ import { SourceLibrary } from "./SourceLibrary";
 import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
-import { useDashboard, type AnalysisInspection, type AtlasInspection } from "../hooks/useDashboard";
+import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
@@ -40,11 +40,31 @@ interface ContentsVisit {
 
 type InspectorPane = InspectorView | ContentsVisit;
 
+export interface AtlasWorkspaceSession {
+  location?: AtlasWorkspaceLocation;
+  contentsVisit?: ContentsVisit;
+  revealedContentsVisit?: RevealedContentsVisit;
+  sitesOpen: boolean;
+  inspectorOpen: boolean;
+  inspectorBySite: Map<string, InspectorView>;
+  lastOpened: "sites" | "inspector";
+  folderSearches: Map<string, string>;
+  pausedSearchScope: string | null;
+  scrollPositions: Map<string, number | "end">;
+  cursorPositions: Map<string, string>;
+  mapMode: MapMode;
+}
+
 interface FinderSession {
   id: symbol;
   workspace: string;
   openedFrom: "atlas" | "details" | null;
   latestPosition: FinderPosition | null;
+}
+
+interface RevealedContentsVisit {
+  id: string;
+  searchPaused: boolean;
 }
 
 interface ReviewInspection {
@@ -79,6 +99,10 @@ function directoryKey(
   return JSON.stringify([workspace, site, folder, sort.field, sort.direction, anchor, query]);
 }
 
+function contentsVisitKey(key: string, visit?: RevealedContentsVisit) {
+  return visit ? `${key}:${visit.id}` : key;
+}
+
 function fileParent(root: StorageNode, fileId: string): StorageNode | null {
   for (const child of root.children) {
     if (child.id === fileId) return root;
@@ -109,19 +133,24 @@ interface WorkspaceAtlasProps {
   browsingScope: string;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) => void;
   toolbarExtension?: AtlasToolbarExtension;
+  sessions: Map<string, AtlasWorkspaceSession>;
 }
 
-export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
+export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSite, toolbarExtension, sessions }: WorkspaceAtlasProps) {
+  const workspaceName = workspace.management?.active_workspace.name ?? null;
+  const [saved] = useState(() => workspaceName ? sessions.get(workspaceName) : undefined);
+  const savedInspection = saved?.location?.file?.inspection;
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [sitesOpen, setSitesOpen] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorBySite, setInspectorBySite] = useState(() => new Map<string, InspectorView>());
-  const lastOpened = useRef<"sites" | "inspector">("inspector");
+  const [sitesOpen, setSitesOpen] = useState(saved?.sitesOpen ?? false);
+  const [inspectorOpen, setInspectorOpen] = useState(saved?.inspectorOpen ?? false);
+  const [inspectorBySite, setInspectorBySite] = useState(() => saved?.inspectorBySite ?? new Map<string, InspectorView>());
+  const lastOpened = useRef<"sites" | "inspector">(saved?.lastOpened ?? "inspector");
   const mapRegion = useRef<HTMLElement>(null);
   const contentsPane = useRef<HTMLDivElement>(null);
   const directoryRefresh = useRef<DirectoryRefreshTarget | null>(null);
   const onSearchRefresh = useCallback((update: DirectoryRefresh) => directoryRefresh.current?.receive(update), []);
-  const contentsScroll = useRef(new Map<string, number | "end">());
+  const contentsScroll = useRef(saved?.scrollPositions ?? new Map<string, number | "end">());
+  const contentsCursor = useRef(saved?.cursorPositions ?? new Map<string, string>());
   const focusFirstSite = useRef(false);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
   const openedFile = useRef<AtlasInspection | null>(null);
@@ -130,20 +159,28 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [revealedRow, setRevealedRow] = useState<{ key: string; id: string; origin?: Element | null } | null>(null);
   const [analysisFocusRequested, setAnalysisFocusRequested] = useState(false);
   const finishAnalysisFocus = useCallback(() => setAnalysisFocusRequested(false), []);
-  const [folderSearches, setFolderSearches] = useState(() => new Map<string, string>());
-  const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(null);
+  const [folderSearches, setFolderSearches] = useState(() => saved?.folderSearches ?? new Map<string, string>());
+  const [pausedSearchScope, setPausedSearchScope] = useState<string | null>(saved?.pausedSearchScope ?? null);
+  const [revealedContentsVisits, setRevealedContentsVisits] = useState(() => new Map<AtlasInspection, RevealedContentsVisit>(
+    savedInspection && saved?.revealedContentsVisit ? [[savedInspection, saved.revealedContentsVisit]] : [],
+  ));
+  const contentsId = useId();
+  const nextContentsVisitId = useRef(0);
   const [contentsReveal, setContentsReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromInspectionDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
-  const [inspectionViews, setInspectionViews] = useState(() => new Map<AtlasInspection, InspectorPane>());
+  const [inspectionViews, setInspectionViews] = useState(() => {
+    const view = saved?.contentsVisit ?? (saved?.revealedContentsVisit ? "contents" : null);
+    return new Map<AtlasInspection, InspectorPane>(savedInspection && view ? [[savedInspection, view]] : []);
+  });
   const [reviewSession, setReviewSession] = useState(() => Symbol());
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [comparisonVisits, setComparisonVisits] = useState(() => new Map<AnalysisInspection, ComparisonSession>());
-  const [mapMode, setMapMode] = useState<MapMode>("size");
-  const state = useDashboard(workspace.management?.active_workspace.name ?? null, workspace.siteListRevision, browsingScope, directoryRefresh);
+  const [mapMode, setMapMode] = useState<MapMode>(saved?.mapMode ?? "size");
+  const state = useDashboard(workspaceName, workspace.siteListRevision, browsingScope, directoryRefresh, saved?.location);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
@@ -191,11 +228,13 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const folder = location?.root;
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
   const savedSearch = folderSearches.get(searchScope) ?? null;
-  const searchPaused = pausedSearchScope === searchScope || (state.contentsGroup && Boolean(savedSearch?.trim()));
+  const revealedContentsVisit = inspection ? revealedContentsVisits.get(inspection) : undefined;
+  const searchPaused = Boolean(savedSearch?.trim())
+    && (state.contentsGroup || (revealedContentsVisit?.searchPaused ?? (pausedSearchScope === searchScope)));
   const searchText = searchPaused ? null : savedSearch;
   const searchQuery = searchText?.trim() ?? "";
   function searchContentsKey(sort: DirectorySort, query: string) {
-    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query);
+    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query), revealedContentsVisit);
   }
   const searchKey = searchContentsKey(state.directorySort, searchQuery);
   const returnFileId = visit?.source === "contents" && visit.fileId === selectedNode?.id && !state.selectedFileUnavailable
@@ -215,8 +254,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const directoryPage = search.enabled ? search.page : state.childrenPage;
 
   useEffect(() => {
-    if (pausedSearchScope && pausedSearchScope !== searchScope) setPausedSearchScope(null);
-  }, [pausedSearchScope, searchScope]);
+    if (folder && pausedSearchScope && pausedSearchScope !== searchScope) setPausedSearchScope(null);
+  }, [folder, pausedSearchScope, searchScope]);
 
   function saveFolderSearch(scope: string, text: string | null) {
     setFolderSearches((saved) => {
@@ -291,7 +330,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     state.setReviewOpen(false);
   }
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
-    return directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor);
+    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor), revealedContentsVisit);
   }
   const contentsKey = search.enabled ? searchKey
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
@@ -305,7 +344,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     }
   }
   async function restoreSearch() {
-    if (await state.leaveContentsGroup()) setPausedSearchScope(null);
+    if (!await state.leaveContentsGroup()) return;
+    if (inspection && revealedContentsVisit?.searchPaused) {
+      setRevealedContentsVisits((saved) => new Map(saved).set(inspection, { ...revealedContentsVisit, searchPaused: false }));
+    } else {
+      setPausedSearchScope(null);
+    }
   }
   useLayoutEffect(() => () => pendingReveal.current?.abort(), [siteId, selected?.id, state.selectedFileUnavailable]);
   useEffect(() => {
@@ -317,6 +361,35 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
   const currentVisit = visit?.fileId === selected?.id && (visit?.view === "details" || visit?.contentsKey === contentsKey)
     ? visit : null;
+  useLayoutEffect(() => {
+    if (!workspaceName || dashboard?.workspace_name !== workspaceName || (!location && dashboard.sites.length)) return;
+    const canResumeFile = selected?.kind === "file" && !state.selectedFileUnavailable;
+    const contentsVisit = canResumeFile && currentVisit?.source === "contents" ? currentVisit : undefined;
+    const revealedVisit = canResumeFile && (inspectorView === "contents" || contentsVisit) ? revealedContentsVisit : undefined;
+    const file = (contentsVisit || revealedVisit) && inspection && selected ? { id: selected.id, inspection } : undefined;
+    sessions.set(workspaceName, {
+      location: location ? {
+        site_id: location.site_id, node_id: location.root.id, target_site_id: target?.id ?? null,
+        anchor_offset: state.contentsAnchorOffset, atlas_group: state.contentsGroup, file,
+      } : undefined,
+      contentsVisit,
+      revealedContentsVisit: revealedVisit,
+      sitesOpen,
+      inspectorOpen,
+      inspectorBySite: file && siteId ? new Map(inspectorBySite).set(siteId, "contents") : inspectorBySite,
+      lastOpened: lastOpened.current,
+      folderSearches,
+      pausedSearchScope,
+      scrollPositions: contentsScroll.current,
+      cursorPositions: contentsCursor.current,
+      mapMode,
+    });
+  }, [currentVisit, dashboard, folderSearches, inspection, inspectorBySite, inspectorOpen, inspectorView, location, mapMode,
+    pausedSearchScope, revealedContentsVisit, selected, sessions, siteId, sitesOpen, state.contentsAnchorOffset, state.contentsGroup, state.selectedFileUnavailable, target, workspaceName]);
+  const { setHealthMetric } = state;
+  useLayoutEffect(() => {
+    setHealthMetric(mapMode === "coverage_health" ? "coverage_health" : "space_health");
+  }, [mapMode, setHealthMetric]);
   useEffect(() => {
     if (inspection && visit?.view === "contents" && !currentVisit) {
       setInspectionViews((saved) => saved.get(inspection) === visit ? new Map(saved).set(inspection, "contents") : saved);
@@ -547,11 +620,20 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       if (match) {
         search.prime({ scope, targetId: destination.target_site_id ?? undefined, query: match.query, sort: destination.sort }, match.page);
       }
-      setPausedSearchScope(!match && folderSearches.get(scope)?.trim() ? scope : null);
-      const key = directoryKey(
+      const pauseSearch = !match && Boolean(folderSearches.get(scope)?.trim());
+      // Same-folder history entries retain their own viewport and paused-search state.
+      const nextVisit = inspection && inspection.kind !== "file"
+        ? { id: revealedContentsVisit?.id ?? `${contentsId}-${++nextContentsVisitId.current}`, searchPaused: pauseSearch }
+        : undefined;
+      if (inspection && nextVisit) {
+        setRevealedContentsVisits((saved) => new Map(saved).set(inspection, nextVisit));
+      } else {
+        setPausedSearchScope(pauseSearch ? scope : null);
+      }
+      const key = contentsVisitKey(directoryKey(
         dashboard?.workspace_name, destination.site_id, destination.node_id,
         destination.sort, match ? 0 : destination.anchor_offset, match?.query,
-      );
+      ), nextVisit);
       // A previous visit to this list may have scrolled away from the file.
       contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
       inspectorOrigin.current = null;
@@ -575,7 +657,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   function changeMode(mode: MapMode) {
     setMapMode(mode);
-    state.setHealthMetric(mode === "coverage_health" ? "coverage_health" : "space_health");
   }
 
   function activateNode(node: StorageNode, origin?: SVGGElement) {
@@ -609,6 +690,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       return;
     }
     const nextInspection = { kind: "file" } as const;
+    if (revealedContentsVisit && (!origin || inspectorView === "contents" || currentVisit)) {
+      setRevealedContentsVisits((saved) => new Map(saved).set(nextInspection, revealedContentsVisit));
+    }
     openedFile.current = nextInspection;
     state.selectNode(node, { inspection: nextInspection });
     const view = "details";
@@ -875,6 +959,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       targetCompleteness={targetCompleteness}
                       scrollPane={contentsPane}
                       scrollPositions={contentsScroll.current}
+                      cursorPositions={contentsCursor.current}
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       reveal={contentsReveal?.key === contentsKey ? contentsReveal : undefined}

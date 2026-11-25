@@ -96,6 +96,15 @@ export type AtlasInspection =
   | AnalysisInspection
   | { kind: "file" };
 
+export interface AtlasWorkspaceLocation {
+  site_id: string;
+  node_id: string;
+  target_site_id: string | null;
+  anchor_offset: number;
+  atlas_group: boolean;
+  file?: { id: string; inspection: AtlasInspection };
+}
+
 interface AtlasSelection {
   node: StorageNode;
   inspection: AtlasInspection | null;
@@ -243,6 +252,7 @@ export function useDashboard(
   siteListRevision: number,
   browsingScope: string,
   directoryRefresh: RefObject<DirectoryRefreshTarget | null>,
+  resumeLocation?: AtlasWorkspaceLocation,
 ) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
@@ -311,6 +321,7 @@ export function useDashboard(
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
   const previousSiteListRevision = useRef(siteListRevision);
+  const startupLocation = useRef(resumeLocation);
 
   const updateCompletionBySite = useCallback((
     update: (current: Map<string, ScanCompletionView>) => Map<string, ScanCompletionView>,
@@ -535,6 +546,7 @@ export function useDashboard(
         lastLocationBySite.current.set(previousEntry.site_id, previousEntry);
       }
       locationRef.current = nextLocation;
+      startupLocation.current = undefined;
       childrenPageRef.current = page;
       selectedSiteRef.current = entry.site_id;
       targetSiteRef.current = entry.target_site_id;
@@ -636,10 +648,21 @@ export function useDashboard(
     const current = currentNavigationEntry();
     const preserve = current?.site_id === siteId;
     const workspace = workspaceNameRef.current;
+    const saved = foreground && !current && startupLocation.current?.site_id === siteId ? startupLocation.current : null;
+    const sort = readSiteDirectorySort(workspace, siteId);
+    const remembered = rememberedSiteEntry(browsingScope, foreground ? workspace : null, siteId, targetSiteId, sort);
     const entry = preserve
       ? { ...current, target_site_id: targetSiteId }
-      : rememberedSiteEntry(browsingScope, foreground ? workspace : null, siteId, targetSiteId,
-        readSiteDirectorySort(workspace, siteId));
+      : saved ? {
+        ...remembered,
+        node_id: saved.node_id,
+        sort: saved.atlas_group ? DEFAULT_DIRECTORY_SORT : sort,
+        offset: saved.anchor_offset,
+        anchor_offset: saved.anchor_offset,
+        atlas_group: saved.atlas_group ? true as const : undefined,
+        selected_node_id: saved.file?.id ?? saved.node_id,
+        inspection: saved.file?.inspection,
+      } : remembered;
     const positionForFolder = (target: DirectoryRefreshTarget | null) => {
       const position = target?.getUnfilteredPosition();
       return position?.siteId === entry.site_id && position.targetSiteId === entry.target_site_id
@@ -665,7 +688,8 @@ export function useDashboard(
       },
     } : undefined;
     const selected = preserve ? selectionRef.current?.node : null;
-    const inspectionAnchor = selected?.kind === "file" ? inspectFileAnchor(selected.id) : undefined;
+    const inspectedFileId = saved?.file?.id ?? (selected?.kind === "file" ? selected.id : undefined);
+    const inspectionAnchor = inspectedFileId ? inspectFileAnchor(inspectedFileId) : undefined;
     const result = await loadFolderLocation(entry, preserve ? "preserve" : "reset", { silent: !foreground, anchor: anchor ?? inspectionAnchor });
     return result === "loaded";
   }, [browsingScope, currentNavigationEntry, directoryRefresh, loadFolderLocation]);
@@ -746,9 +770,10 @@ export function useDashboard(
       acceptDashboard(next);
       const requestedSite = selectedSiteRef.current;
       const savedSite = readAtlasBrowsing(browsingScope, next.workspace_name).active_site_id;
-      const nextSite = [requestedSite, savedSite].find((id) => id !== null && currentSiteIdsRef.current.has(id))
+      const resume = startupLocation.current;
+      const nextSite = [requestedSite, resume?.site_id ?? null, savedSite].find((id) => id !== null && currentSiteIdsRef.current.has(id))
         ?? next.sites[0]?.id ?? null;
-      const nextTarget = validTarget(next.sites, nextSite, targetSiteRef.current);
+      const nextTarget = validTarget(next.sites, nextSite, targetSiteRef.current ?? (resume?.site_id === nextSite ? resume.target_site_id : null));
       // A background change to the site list must not replace a newer location request.
       if (nextSite && requestedSite === nextSite
         && (childrenLoadingRef.current || locationGeneration !== locationRequestRef.current)) return;

@@ -683,6 +683,78 @@ test.describe("compact workspace finder", () => {
     await expect(grid.getByRole("button", { name: /^Trailer master\.mov/ })).toBeVisible();
   });
 
+  for (const { name, url, filterText, originFile, count, pausesSearch } of [
+    { name: "matches", url: "/mock/?scenario=large", filterText: "  pRoOf  ", originFile: /^Proof 095\.jpg/, count: "96", pausesSearch: false },
+    { name: "is excluded", url: "/mock/", filterText: "  pRoOf 01  ", originFile: /^Proof 019\.jpg/, count: "10", pausesSearch: true },
+  ]) {
+    test(`same-folder Contents restores each Finder visit when its result ${name}`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 620 });
+      await page.goto(url);
+      const map = page.getByRole("region", { name: "Circular storage map" });
+      await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+      const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+      const grid = contents.getByRole("grid");
+      const origin = grid.getByRole("button", { name: originFile });
+      const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+      const pausedSearch = contents.getByRole("status").filter({ hasText: "Search paused" });
+      await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+      await filter.fill(filterText);
+      await expect(grid).toHaveAttribute("aria-rowcount", count);
+      await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+      await expect(origin).toBeInViewport();
+      await origin.focus();
+      const originalScroll = await contents.evaluate((pane) => pane.scrollTop);
+      expect(originalScroll).toBeGreaterThan(0);
+
+      await page.keyboard.press("ControlOrMeta+f");
+      const dialog = finder(page);
+      await query(dialog).fill("Proof 001");
+      const found = result(dialog, /^Proof 001\.jpg/);
+      await found.press("Enter");
+      await expect(dialog).toBeHidden();
+      await expect(details(page)).toBeFocused();
+      await details(page).getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+      const shown = grid.getByRole("button", { name: /^Proof 001\.jpg/ });
+      await expect(shown).toBeFocused();
+      const shownScroll = await contents.evaluate((pane) => pane.scrollTop);
+      if (pausesSearch) await expect(pausedSearch).toBeVisible();
+      else await expect(filter).toHaveValue(filterText);
+
+      await page.keyboard.press("Alt+ArrowLeft");
+      await expect(filter).toHaveValue(filterText);
+      await expect(pausedSearch).toBeHidden();
+      await expect(origin).toBeFocused();
+      await expect(origin).toBeInViewport();
+      await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(originalScroll);
+
+      await page.keyboard.press("Alt+ArrowRight");
+      await expect(shown).toBeFocused();
+      await expect(shown).toBeInViewport();
+      await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(shownScroll);
+      if (pausesSearch) await expect(pausedSearch).toBeVisible();
+      else await expect(filter).toHaveValue(filterText);
+
+      await page.getByRole("tab", { name: "Details", exact: true }).press("Enter");
+      await backToResults(page).press("Enter");
+      await expect(query(dialog)).toHaveValue("Proof 001");
+      await expect(found).toBeFocused();
+
+      if (pausesSearch) {
+        await found.press("Enter");
+        await expect(dialog).toBeHidden();
+        await details(page).getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+        await expect(shown).toBeFocused();
+        await shown.press("Enter");
+        await page.getByRole("button", { name: "Back to Contents", exact: true }).press("Enter");
+        await expect(pausedSearch).toBeVisible();
+        await expect(shown).toBeFocused();
+      }
+    });
+  }
+
   test("can open and dismiss Find files from Workspace actions without losing focus", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");

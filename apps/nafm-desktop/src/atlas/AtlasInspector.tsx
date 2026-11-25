@@ -58,13 +58,13 @@ export function AtlasInspector({
   const detailsTab = useRef<HTMLButtonElement>(null);
   const lastView = useRef<{ view: InspectorView; target: string | null } | null>(null);
   const backButton = useRef<HTMLButtonElement>(null);
+  const screen = fileOpen ? "file" : view;
   const previousView = useRef<{ screen: InspectorView | "file" | null; siteId: string; file: string | null; inspection: AtlasInspection | null }>({
-    screen: null, siteId, file: null, inspection: null,
+    screen, siteId, file: screen === "file" ? detailsKey : null, inspection,
   });
   const enterList = useRef(false);
   const detailsPane = useRef<HTMLDivElement>(null);
   const detailsScroll = useRef({ target: detailsKey, top: 0 });
-  const screen = fileOpen ? "file" : view;
 
   useLayoutEffect(() => {
     if (view) lastView.current = { view: screen === "file" ? "contents" : view, target: detailsKey };

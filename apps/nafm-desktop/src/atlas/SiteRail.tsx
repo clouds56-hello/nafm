@@ -71,7 +71,7 @@ export function SiteRail({
   const trigger = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
-  const wasOpen = useRef(false);
+  const wasOpen = useRef(open);
 
   useLayoutEffect(() => {
     if (open && !wasOpen.current) {

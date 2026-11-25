@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { StorageViewSnapshot } from "../src/lib/types";
 
 const studioWorkspace = "Studio workspace";
 const fieldWorkspace = "Field notes";
@@ -100,6 +101,171 @@ test("switching workspaces restores the independent folder in each workspace", a
   await expect(workspace).toHaveValue(fieldWorkspace);
   await expect(currentFolder(page)).toHaveText("Drone imagery");
   await expectFreshHistory(page);
+});
+
+async function openFilteredLibrary(page: Page) {
+  await page.goto("/mock/?scenario=large");
+  await openFolder(page, "Photo Library");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  await sort.press("Enter");
+  await page.getByRole("radio", { name: "Name", exact: true }).click();
+  await page.getByRole("radio", { name: "Ascending", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(sort).toHaveAttribute("title", "Name, ascending");
+  const query = "  hArBoR SuRvEy  ";
+  const search = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  await search.fill(query);
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  const index = 440;
+  const row = grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+  const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (index - 4) * height);
+  await expect(row).toBeInViewport({ ratio: 0.99 });
+  await row.focus();
+  const entryId = (await row.getAttribute("data-entry-id"))!;
+  const name = (await row.locator(".atlas-directory-identity > span").first().textContent())!;
+  const scroll = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  return { inspector, contents, sort, query, search, row, entryId, name, scroll };
+}
+
+async function switchWorkspace(page: Page, name: string, compact = false) {
+  const picker = page.getByRole("combobox", { name: "Workspace", exact: true });
+  if (compact) await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+  await picker.focus();
+  await picker.selectOption(name);
+}
+
+for (const layout of ["desktop", "compact"] as const) {
+  test(`${layout} workspace return keeps the Contents position and file Details`, async ({ page }) => {
+    const compact = layout === "compact";
+    await page.setViewportSize(compact ? { width: 390, height: 740 } : { width: 1280, height: 820 });
+    const { inspector, contents, sort, query, search, row, entryId, name, scroll } = await openFilteredLibrary(page);
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+    const switcher = compact ? actions : page.getByRole("combobox", { name: "Workspace", exact: true });
+
+    async function roundTrip() {
+      await switchWorkspace(page, fieldWorkspace, compact);
+      await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
+      await expect(sites(page)).toBeHidden();
+      await expect(inspector).toBeHidden();
+      await switchWorkspace(page, studioWorkspace, compact);
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await expect(sites(page)).toBeVisible();
+      await expect(switcher).toBeFocused();
+      await expect(switcher).toBeInViewport({ ratio: 0.99 });
+    }
+
+    async function expectContentsPosition() {
+      await expect(search).toHaveValue(query);
+      await expect(sort).toHaveAttribute("title", "Name, ascending");
+      await expect(row).toHaveAttribute("data-entry-id", entryId);
+      await expect(row).toHaveAttribute("tabindex", "0");
+      await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+    }
+
+    if (!compact) {
+      await roundTrip();
+      await expectContentsPosition();
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+      await expectFreshHistory(page);
+    }
+
+    await row.press("Enter");
+    const heading = inspector.getByRole("heading", { name, exact: true });
+    await expect(heading).toBeVisible();
+    const inspections = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: { child_id: string; inspect_file?: boolean } }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const files: string[] = [];
+      bridge.invoke = (command, args) => {
+        if (command === "get_storage_view_snapshot" && args.anchor?.inspect_file) files.push(args.anchor.child_id);
+        return invoke(command, args);
+      };
+      return files;
+    });
+
+    await roundTrip();
+    await expect(heading).toBeVisible();
+    await expect(back).toBeVisible();
+    expect(await inspections.jsonValue()).toEqual([entryId]);
+    await back.press("Enter");
+    await expectContentsPosition();
+    await expect(row).toBeFocused();
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await expect(page.getByRole("button", { name: "Previous location", exact: true })).toBeDisabled();
+  });
+}
+
+test("returning to a workspace opens Contents when its inspected file is no longer indexed", async ({ page }) => {
+  const { inspector, search, row, entryId, name, query, sort } = await openFilteredLibrary(page);
+  await row.press("Enter");
+  const heading = inspector.getByRole("heading", { name, exact: true });
+  await expect(heading).toBeVisible();
+  await switchWorkspace(page, fieldWorkspace);
+  await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
+  await page.evaluate((removedId) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor?: { child_id: string; inspect_file?: boolean } }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command !== "get_storage_view_snapshot" || args.anchor?.child_id !== removedId || !args.anchor.inspect_file) return response;
+      const snapshot = response as StorageViewSnapshot;
+      return {
+        ...snapshot, inspected_file: null,
+        page: { ...snapshot.page, children: snapshot.page.children.filter(({ id }) => id !== removedId) },
+      };
+    };
+  }, entryId);
+  await switchWorkspace(page, studioWorkspace);
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(search).toHaveValue(query);
+  await expect(sort).toHaveAttribute("title", "Name, ascending");
+  await expect(heading).toBeHidden();
+  await expect(inspector.getByRole("button", { name: "Back to Contents", exact: true })).toBeHidden();
+  await expectFreshHistory(page);
+});
+
+test("a workspace return keeps the paused search and viewport of a Finder reveal", async ({ page }) => {
+  const { inspector, contents, search, query } = await openFilteredLibrary(page);
+  await page.getByRole("button", { name: "Find files", exact: true }).press("Enter");
+  const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+  await finder.getByRole("searchbox", { name: "File name", exact: true }).fill("Proof 096");
+  await finder.getByRole("button", { name: /^Proof 096\.jpg/ }).press("Enter");
+  await expect(finder).toBeHidden();
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+  const proof = contents.getByRole("grid").getByRole("button", { name: /^Proof 096\.jpg/ });
+  await expect(proof).toBeFocused();
+  await expect(proof).toBeInViewport({ ratio: 0.99 });
+  const scroll = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  const restore = contents.getByRole("button", { name: "Restore search", exact: true });
+  await expect(restore).toBeVisible();
+
+  await switchWorkspace(page, fieldWorkspace);
+  await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
+  await switchWorkspace(page, studioWorkspace);
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(restore).toBeVisible();
+  await expect(search).toBeHidden();
+  await expect(proof).toHaveAttribute("tabindex", "0");
+  await expect(proof).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+  await expectFreshHistory(page);
+  await restore.press("Enter");
+  await expect(search).toHaveValue(query);
+  await expect(search).toBeFocused();
 });
 
 test("a failed quick workspace switch keeps Atlas open and retries the intended workspace", async ({ page }) => {

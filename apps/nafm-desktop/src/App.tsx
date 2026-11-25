@@ -1,6 +1,6 @@
-import { useState, type MouseEvent } from "react";
+import { useRef, useState, type MouseEvent } from "react";
 import type { AtlasToolbarExtension } from "./atlas/AtlasToolbar";
-import { WorkspaceAtlas } from "./atlas/WorkspaceAtlas";
+import { WorkspaceAtlas, type AtlasWorkspaceSession } from "./atlas/WorkspaceAtlas";
 import { useWorkspace } from "./hooks/useWorkspace";
 import { AddSiteDialog } from "./management/AddSiteDialog";
 import { ManagementCenter } from "./management/ManagementCenter";
@@ -15,6 +15,7 @@ export interface AppProps {
 
 export default function App({ toolbarExtension, browsingScope = "desktop" }: AppProps) {
   const workspace = useWorkspace();
+  const atlasSessions = useRef(new Map<string, AtlasWorkspaceSession>());
   const [addingSite, setAddingSite] = useState<AddSiteRequest | null>(null);
   const [siteAddition, setSiteAddition] = useState<SiteAddition>();
   const addition = siteAddition?.workspaceRevision === workspace.workspaceRevision ? siteAddition : undefined;
@@ -40,6 +41,7 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
           onAddSite={openAddSite}
           toolbarExtension={toolbarExtension}
           browsingScope={browsingScope}
+          sessions={atlasSessions.current}
         />
       </div>
       {workspace.pendingWorkspaceName && (
