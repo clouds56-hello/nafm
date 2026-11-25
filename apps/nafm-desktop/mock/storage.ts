@@ -224,7 +224,11 @@ function makeChildren(model: ReturnType<typeof projectSite>, args: CommandArgs, 
   const { node } = nodePath(model.root, args);
   const { offset, limit } = paging(args);
   const children = orderedChildren(node, directorySort(args.sort), query);
-  const start = query ? offset : pageOffset(children.length, offset, limit);
+  const anchor = args.anchor;
+  const index = anchor == null ? -1 : children.findIndex((child) => child.id === anchor);
+  const lastPage = Math.floor(Math.max(0, children.length - 1) / limit) * limit;
+  const start = anchor == null ? query ? offset : pageOffset(children.length, offset, limit)
+    : index >= 0 ? Math.floor(index / limit) * limit : Math.min(offset, lastPage);
   return projectChildrenPage(model, node, children, start, limit);
 }
 
@@ -328,8 +332,9 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   }
 
   function children(args: CommandArgs) {
-    const { query } = args;
+    const { query, anchor } = args;
     if (query != null && typeof query !== "string") throw new Error("Invalid directory search.");
+    if (anchor != null && typeof anchor !== "string") throw new Error("Invalid directory anchor.");
     return makeChildren(model(args), args, query?.trim().toLowerCase());
   }
 

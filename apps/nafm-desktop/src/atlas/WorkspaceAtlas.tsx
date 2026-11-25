@@ -18,7 +18,7 @@ import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { useDashboard } from "../hooks/useDashboard";
-import { useDirectorySearch } from "./useDirectorySearch";
+import { useDirectorySearch, type DirectorySearchRefresh } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
 import { healthColor } from "../lib/format";
@@ -109,6 +109,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const lastOpened = useRef<"sites" | "inspector">("inspector");
   const mapRegion = useRef<HTMLElement>(null);
   const contentsPane = useRef<HTMLDivElement>(null);
+  const directorySearchRefresh = useRef<((update: DirectorySearchRefresh) => boolean | void) | null>(null);
+  const onSearchRefresh = useCallback((update: DirectorySearchRefresh) => directorySearchRefresh.current?.(update), []);
   const contentsScroll = useRef(new Map<string, number | "end">());
   const focusFirstSite = useRef(false);
   const inspectorOrigin = useRef<SVGGElement | null>(null);
@@ -177,6 +179,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     query: searchQuery,
     sort: state.directorySort,
     contentRevision: state.contentRevision,
+    onRefresh: onSearchRefresh,
   });
   const directoryPage = search.enabled ? search.page : state.childrenPage;
 
@@ -745,6 +748,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                       contentsKey={contentsKey}
                       anchorIndex={search.enabled ? 0 : state.contentsAnchorOffset}
                       reveal={ancestorAnchor?.key === contentsKey ? ancestorAnchor : undefined}
+                      refreshHandler={search.enabled ? directorySearchRefresh : undefined}
                       returnEntryId={currentVisit?.source === "contents"
                         ? currentVisit.fileId : revealedRow?.key === contentsKey ? revealedRow.id : null}
                       resumeVisibleRow={currentVisit?.source === "atlas"}

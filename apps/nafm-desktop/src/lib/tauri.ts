@@ -236,6 +236,7 @@ export function getStorageChildren(
   limit: number,
   sort?: DirectorySort,
   query?: string,
+  anchor?: string,
 ): Promise<StorageChildrenPage> {
   return invoke<StorageChildrenPage>("get_storage_children", {
     siteId,
@@ -245,6 +246,7 @@ export function getStorageChildren(
     limit,
     sort,
     query,
+    anchor,
   });
 }
 

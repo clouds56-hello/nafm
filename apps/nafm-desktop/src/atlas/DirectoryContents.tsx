@@ -5,6 +5,7 @@ import { CloseIcon, SearchIcon } from "../management/Icons";
 import { DirectorySortControl } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
+import type { DirectorySearchRefresh } from "./useDirectorySearch";
 import { useDirectoryViewport } from "./useDirectoryViewport";
 import "./directory.css";
 
@@ -25,6 +26,7 @@ interface DirectoryContentsProps {
   contentsKey: string;
   anchorIndex: number;
   reveal?: { index: number; onApplied: () => void };
+  refreshHandler?: RefObject<((update: DirectorySearchRefresh) => boolean | void) | null>;
   returnEntryId: string | null;
   resumeVisibleRow: boolean;
   historyFocusOrigin: HTMLElement | null;
@@ -37,7 +39,7 @@ interface DirectoryContentsProps {
   onSelect: (node: StorageNode) => void;
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   onGoUp: () => void;
-  onLoadRange: (start: number, end: number) => void;
+  onLoadRange: (start: number, end: number, preferredIndex?: number) => void;
   onRetry: () => void;
 }
 
@@ -50,7 +52,7 @@ function visibleEntry(list: HTMLUListElement | null, first: number, capacity: nu
 
 export function DirectoryContents({
   location, page, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
-  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, returnEntryId, resumeVisibleRow, historyFocusOrigin, onHistoryFocusHandled,
+  scrollPane, scrollPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, resumeVisibleRow, historyFocusOrigin, onHistoryFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
@@ -63,12 +65,17 @@ export function DirectoryContents({
   const [cursors, setCursors] = useState(() => new Map<string, string>());
   const cursor = cursors.get(contentsKey);
   const keyboardFolder = useRef<{ folder: string; origin: Element | null; row?: string } | null>(null);
-  const keyboardRow = useRef<{ key: string; index: number } | null>(null);
+  const keyboardRow = useRef<{ key: string; index: number; preventScroll?: boolean } | null>(null);
   const returningEntry = useRef<{ id: string | null } | null>(null);
+  const [refreshReveal, setRefreshReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
+  const [missingRefreshKey, setMissingRefreshKey] = useState<string | null>(null);
   const directoryId = location?.root.id;
   const total = page?.total_children ?? 0;
   const offset = page?.offset ?? 0;
-  const viewport = useDirectoryViewport({ contentsKey, anchorIndex, reveal, total, active, scrollPane, scrollPositions });
+  const viewport = useDirectoryViewport({
+    contentsKey, anchorIndex, total, active, scrollPane, scrollPositions,
+    reveal: reveal ?? (refreshReveal?.key === contentsKey ? refreshReveal : undefined),
+  });
   const { listRef, first, start, end, ready } = viewport;
   const rowPreview = useDirectoryPreview({
     root: location?.root, entries: page?.children, metric, targetCompleteness, awaitingInventory, active, contentsKey, scrollPane,
@@ -82,13 +89,28 @@ export function DirectoryContents({
 
   useEffect(() => {
     if (!active || !ready || loading || !page || end <= start) return;
+    const request = () => {
+      const list = listRef.current;
+      const focus = document.activeElement;
+      const row = focus?.closest<HTMLElement>("[data-virtual-row]");
+      const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : first;
+      const pending = keyboardRow.current;
+      const preferred = focus === list && pending?.key === contentsKey ? pending.index : focusedIndex;
+      onLoadRange(start, end, preferred >= start && preferred < end ? preferred : first);
+    };
     if (end <= offset || start >= offset + page.children.length) {
       // Let a thumb drag cross distant ranges without reading every folder slice along its path.
-      const timer = window.setTimeout(() => onLoadRange(start, end), 60);
+      const timer = window.setTimeout(request, 60);
       return () => window.clearTimeout(timer);
     }
-    onLoadRange(start, end);
-  }, [active, ready, loading, start, end, page, offset, onLoadRange]);
+    request();
+  }, [active, ready, loading, first, start, end, page, offset, cursor, contentsKey, listRef, onLoadRange]);
+
+  useLayoutEffect(() => {
+    if (!refreshHandler || !active || !filtering) return;
+    refreshHandler.current = receiveRefresh;
+    return () => { if (refreshHandler.current === receiveRefresh) refreshHandler.current = null; };
+  });
 
   useEffect(() => {
     returningEntry.current = active && (returnEntryId || resumeVisibleRow) ? { id: returnEntryId } : null;
@@ -147,7 +169,7 @@ export function DirectoryContents({
     if (row || !total || error) {
       keyboardRow.current = null;
       keyboardFolder.current = null;
-      (row ?? headingRef.current)?.focus();
+      (row ?? headingRef.current)?.focus(pending?.preventScroll ? { preventScroll: true } : undefined);
     }
   }, [active, contentsKey, directoryId, error, first, listRef, loading, page, ready, scrollPane, start, end, total]);
 
@@ -176,6 +198,41 @@ export function DirectoryContents({
     ?? loaded.find((node) => node.id === selection?.id)?.id
     ?? visible.find((row) => row.index >= first && row.node)?.node?.id ?? loaded[0]?.id;
 
+  function receiveRefresh({ previousIndex, index, previousTotal, total, missingEntry }: DirectorySearchRefresh) {
+    if (reveal || loading || keyboardFolder.current) return;
+    const list = listRef.current;
+    const focus = document.activeElement;
+    const row = focus?.closest<HTMLElement>("[data-virtual-row]");
+    const focusedIndex = row && list?.contains(row) ? Number(row.dataset.virtualRow) : null;
+    const pending = focus === list && keyboardRow.current?.key === contentsKey ? keyboardRow.current : null;
+    const newerIndex = pending?.index ?? focusedIndex;
+    if (newerIndex !== null && newerIndex !== previousIndex) {
+      const insideWindow = newerIndex >= start && newerIndex < end;
+      onLoadRange(insideWindow ? start : newerIndex, insideWindow ? end : newerIndex + 1, newerIndex);
+      return false;
+    }
+    const ownsFocusedRow = focusedIndex === previousIndex;
+    setMissingRefreshKey(missingEntry && ownsFocusedRow ? contentsKey : null);
+    if (!total) {
+      keyboardRow.current = null;
+      if (ownsFocusedRow || focus === list) searchInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (ownsFocusedRow && (index !== previousIndex || missingEntry)) {
+      list?.focus({ preventScroll: true });
+      keyboardRow.current = { key: contentsKey, index, preventScroll: true };
+    } else if (pending) {
+      keyboardRow.current = { key: contentsKey, index, preventScroll: true };
+    }
+    if (index !== previousIndex || total !== previousTotal) {
+      const saved = scrollPositions.get(contentsKey) ?? first;
+      const keepEnd = saved === "end" && total - index <= previousTotal - previousIndex;
+      const next = keepEnd ? "end" : Math.max(0, (saved === "end" ? first : saved) + index - previousIndex);
+      scrollPositions.set(contentsKey, next);
+      setRefreshReveal({ key: contentsKey, index, onApplied: () => setRefreshReveal(null) });
+    }
+  }
+
   function activate(node: StorageNode, keyboard: boolean) {
     keyboardFolder.current = keyboard && node.kind !== "file" && node.kind !== "smaller_items"
       ? { folder: node.id, origin: document.activeElement } : null;
@@ -184,6 +241,7 @@ export function DirectoryContents({
 
   function closeSearch() {
     searchFocus.current = "trigger";
+    setMissingRefreshKey(null);
     onSearchChange(null);
   }
 
@@ -261,7 +319,9 @@ export function DirectoryContents({
         <div className="atlas-directory-heading">
           <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
           {filtering && !loading && !error && (
-            <span className="atlas-directory-total" role="status">{formatCount(total)} {total === 1 ? "match" : "matches"}</span>
+            <span className="atlas-directory-total" role="status">
+              {missingRefreshKey === contentsKey ? "Previous match unavailable" : `${formatCount(total)} ${total === 1 ? "match" : "matches"}`}
+            </span>
           )}
           {!filtering && total > 0 && <span className="atlas-directory-total">{formatCount(total)} {total === 1 ? "entry" : "entries"}</span>}
         </div>
@@ -293,7 +353,10 @@ export function DirectoryContents({
             <input
               type="search" ref={searchInput} aria-label="Find in folder" placeholder="Find by name"
               autoComplete="off" spellCheck={false} value={searchText}
-              onChange={(event) => onSearchChange(event.currentTarget.value)}
+              onChange={(event) => {
+                setMissingRefreshKey(null);
+                onSearchChange(event.currentTarget.value);
+              }}
               onKeyDown={(event) => {
                 if (event.key !== "ArrowDown" || event.altKey || event.ctrlKey || event.metaKey || loading || error) return;
                 const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${first + 1}"] [data-entry-id]`);

@@ -317,11 +317,12 @@ pub async fn get_storage_children(
   limit: u64,
   sort: Option<DirectorySort>,
   query: Option<String>,
+  anchor: Option<String>,
 ) -> Result<StorageChildrenPage, String> {
   state
     .repository()
     .await
-    .storage_children_filtered(
+    .storage_children_filtered_with_anchor(
       &site_id,
       target_site_id.as_deref(),
       &node_id,
@@ -329,6 +330,7 @@ pub async fn get_storage_children(
       limit,
       sort.unwrap_or_default(),
       query.as_deref(),
+      anchor.as_deref(),
     )
     .await
     .map_err(|error| error.to_string())

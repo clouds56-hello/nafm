@@ -2634,6 +2634,112 @@ async fn directory_search_counts_and_pages_matches_beyond_the_bounded_map() {
 }
 
 #[tokio::test]
+async fn storage_children_anchor_uses_the_current_immediate_entry_rank() {
+  let fixture = Fixture::new().await;
+  let media = fixture.mkdir("anchor-directory");
+  let nested = media.join("nested");
+  fs::create_dir(&nested).unwrap();
+  fs::write(nested.join("Nested report.txt"), b"nested").unwrap();
+  for name in [
+    "00 notes.txt",
+    "01 notes.txt",
+    "A report.txt",
+    "M report.txt",
+    "Z report.txt",
+  ] {
+    fs::write(media.join(name), b"original").unwrap();
+  }
+  let site = fixture.repo.create_site("anchor-source").await.unwrap();
+  fixture.add_site_folder(&site.id, &media, HiddenPolicy::Include).await;
+  fixture.repo.scan_site(&site.id).await.unwrap();
+
+  let tree = fixture.repo.storage_tree(&site.id, 4, 20).await.unwrap();
+  let parent = &tree.root.children[0];
+  let anchor = &child_named(parent, "M report.txt").id;
+  let excluded = &child_named(parent, "00 notes.txt").id;
+  let nested_id = &child_named(child_named(parent, "nested"), "Nested report.txt").id;
+  let sort = DirectorySort {
+    field: DirectorySortField::Name,
+    direction: SortDirection::Asc,
+  };
+  let initial = fixture
+    .repo
+    .storage_children_filtered_with_anchor(&site.id, None, &parent.id, 2, 2, sort, Some("report"), Some(anchor))
+    .await
+    .unwrap();
+  assert_eq!((initial.offset, initial.total_children), (0, 3));
+  assert_eq!(initial.children[1].id, *anchor);
+
+  for name in ["B report.txt", "C report.txt"] {
+    fs::write(media.join(name), b"added").unwrap();
+  }
+  fixture.repo.scan_site(&site.id).await.unwrap();
+  let moved = fixture
+    .repo
+    .storage_children_filtered_with_anchor(&site.id, None, &parent.id, 0, 2, sort, Some("  RePoRt  "), Some(anchor))
+    .await
+    .unwrap();
+  assert_eq!((moved.offset, moved.total_children), (2, 5));
+  assert_eq!(moved.children[0].name, "C report.txt");
+  assert_eq!(moved.children[1].id, *anchor);
+
+  let reversed = fixture
+    .repo
+    .storage_children_filtered_with_anchor(
+      &site.id,
+      None,
+      &parent.id,
+      moved.offset,
+      2,
+      DirectorySort {
+        direction: SortDirection::Desc,
+        ..sort
+      },
+      Some("report"),
+      Some(anchor),
+    )
+    .await
+    .unwrap();
+  assert_eq!(reversed.offset, 0);
+  assert_eq!(reversed.children[1].id, *anchor);
+
+  for invalid_anchor in ["missing-entry", excluded.as_str(), nested_id.as_str()] {
+    let fallback = fixture
+      .repo
+      .storage_children_filtered_with_anchor(
+        &site.id,
+        None,
+        &parent.id,
+        u64::MAX,
+        2,
+        sort,
+        Some("report"),
+        Some(invalid_anchor),
+      )
+      .await
+      .unwrap();
+    assert_eq!((fallback.offset, fallback.total_children), (4, 5));
+    assert_eq!(fallback.children[0].name, "Z report.txt");
+  }
+
+  let empty = fixture
+    .repo
+    .storage_children_filtered_with_anchor(&site.id, None, &parent.id, 2, 2, sort, Some("unknown"), Some(anchor))
+    .await
+    .unwrap();
+  assert_eq!((empty.offset, empty.total_children), (0, 0));
+  assert!(empty.children.is_empty());
+
+  let unanchored = fixture
+    .repo
+    .storage_children_filtered(&site.id, None, &parent.id, u64::MAX, 2, sort, Some("report"))
+    .await
+    .unwrap();
+  assert_eq!((unanchored.offset, unanchored.total_children), (u64::MAX, 5));
+  assert!(unanchored.children.is_empty());
+}
+
+#[tokio::test]
 async fn storage_view_snapshot_matches_deep_views_and_clamps_the_page_inside_the_snapshot() {
   let fixture = Fixture::new().await;
   let media = fixture.mkdir("snapshot-media");

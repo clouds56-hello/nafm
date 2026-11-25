@@ -352,6 +352,71 @@ test("Contents Up preserves the parent's search and seeks the folder in the new 
   await expect(grid.locator('[aria-rowindex="668"]')).toContainText("Reference images");
 });
 
+test("an index refresh keeps focus and scroll in filtered Contents", async ({ page }) => {
+  const contents = await openPhotoLibrary(page, "large");
+  const refresh = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let publish!: () => void;
+    const publishing = new Promise<void>((resolve) => { publish = resolve; });
+    const state = { publish, published: false, reply_offsets: [] as number[] };
+    bridge.invoke = async (command, args) => {
+      if (command === "plugin:event|emit" && args.event === "task://scan/events") {
+        const event = args.payload as { site_id: string | null; kind: string; phase: string | null };
+        if (event.site_id === "field-drive" && event.kind === "progress"
+          && (event.phase === "hashing" || event.phase === "finalizing")) {
+          await publishing;
+          state.published = true;
+        }
+      }
+      if (!state.published || command !== "get_storage_children" || String(args.query).toLowerCase() !== "harbor survey") {
+        return invoke(command, args);
+      }
+      const response = await invoke(command, args);
+      state.reply_offsets.push((response as { offset: number }).offset);
+      return response;
+    };
+    return state;
+  });
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const results = contents.getByRole("region", { name: "Directory entries" });
+  const grid = contents.getByRole("grid");
+  const search = searchInput(contents);
+  const searchText = "  hArBoR SuRvEy  ";
+  await searchButton(contents).press("Enter");
+  await search.fill(searchText);
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  const last = grid.locator('[aria-rowindex="666"] [data-entry-id]');
+  await expect(last).toBeInViewport({ ratio: 0.99 });
+  const fileId = await last.getAttribute("data-entry-id");
+
+  await sites.getByRole("button", { name: "Scan Field drive", exact: true }).click();
+  try {
+    await last.focus();
+    await expect(last).toBeFocused();
+    const savedScroll = await contents.evaluate((pane) => pane.scrollTop);
+    expect(savedScroll).toBeGreaterThan(0);
+    await refresh.evaluate((state) => state.publish());
+    await expect.poll(() => refresh.evaluate((state) => state.published && state.reply_offsets.length > 0)).toBe(true);
+    await expect(results).not.toHaveAttribute("aria-busy", "true");
+    await expect(last).toHaveAttribute("data-entry-id", fileId!);
+    await expect(last).toBeFocused();
+    await expect(last).toBeInViewport({ ratio: 0.99 });
+    await expect(search).toHaveValue(searchText);
+    expect(await contents.evaluate((pane) => pane.scrollTop)).toBe(savedScroll);
+    const offsets = await refresh.evaluate((state) => state.reply_offsets);
+    expect(offsets.every((offset) => offset >= 600)).toBe(true);
+    await page.keyboard.press("ArrowUp");
+    await expect(grid.locator('[aria-rowindex="665"] [data-entry-id]')).toBeFocused();
+  } finally {
+    await refresh.evaluate((state) => state.publish());
+  }
+});
+
 test("a late folder search cannot replace the results of a newer query", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
   const delayed = await page.evaluateHandle(() => {

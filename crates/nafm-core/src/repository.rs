@@ -978,11 +978,39 @@ impl Repository {
     sort: DirectorySort,
     query: Option<&str>,
   ) -> Result<StorageChildrenPage> {
+    self
+      .storage_children_filtered_with_anchor(
+        site_selector,
+        target_site_selector,
+        node_id,
+        offset,
+        limit,
+        sort,
+        query,
+        None,
+      )
+      .await
+  }
+
+  /// Page immediate directory entries, starting at the window containing a matching anchor when provided.
+  #[allow(clippy::too_many_arguments)]
+  pub async fn storage_children_filtered_with_anchor(
+    &self,
+    site_selector: &str,
+    target_site_selector: Option<&str>,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+    sort: DirectorySort,
+    query: Option<&str>,
+    anchor: Option<&str>,
+  ) -> Result<StorageChildrenPage> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     let target_site_selector = target_site_selector.map(str::to_owned);
     let node_id = node_id.to_owned();
     let query = query.and_then(normalize_directory_query);
+    let anchor = anchor.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
@@ -991,7 +1019,17 @@ impl Repository {
           .as_deref()
           .map(|id| require_site(&conn, id))
           .transpose()?;
-        storage_children_page(&conn, site, target, &node_id, offset, limit, sort, query.as_deref())
+        storage_children_page(
+          &conn,
+          site,
+          target,
+          &node_id,
+          offset,
+          limit,
+          sort,
+          query.as_deref(),
+          anchor.as_deref(),
+        )
       })
     })
     .await?
@@ -4826,6 +4864,7 @@ fn storage_children_page(
   limit: u64,
   sort: DirectorySort,
   query: Option<&str>,
+  anchor: Option<&str>,
 ) -> Result<StorageChildrenPage> {
   let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
@@ -4857,6 +4896,13 @@ fn storage_children_page(
   let parent_builder =
     find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
   let entries = ordered_directory_entries(parent_builder, sort, query);
+  let offset = match anchor {
+    Some(anchor) => match directory_entry_index(&entries, anchor) {
+      Some(index) => directory_page_start(index as u64, limit),
+      None => offset.min(directory_page_start((entries.len() as u64).saturating_sub(1), limit)),
+    },
+    None => offset,
+  };
   Ok(directory_page(
     site,
     coverage_target,

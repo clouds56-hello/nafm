@@ -1,9 +1,23 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getStorageChildren } from "../lib/tauri";
 import type { DirectorySort, StorageChildrenPage } from "../lib/types";
 
 const firstWindow = { offset: 0, limit: 64 };
 type SearchRange = typeof firstWindow;
+
+interface DirectoryRequest {
+  key: string;
+  range: SearchRange;
+  preferredIndex?: number;
+}
+
+export interface DirectorySearchRefresh {
+  previousIndex: number;
+  index: number;
+  previousTotal: number;
+  total: number;
+  missingEntry: boolean;
+}
 
 interface DirectorySearchOptions {
   scope: string;
@@ -13,67 +27,112 @@ interface DirectorySearchOptions {
   query: string;
   sort: DirectorySort;
   contentRevision: number;
+  onRefresh?: (update: DirectorySearchRefresh) => boolean | void;
 }
 
-function directorySearchKey(scope: string, targetId: string | undefined, query: string, sort: DirectorySort, revision: number) {
-  return JSON.stringify([scope, targetId, query, sort.field, sort.direction, revision]);
+function directorySearchKey(scope: string, targetId: string | undefined, query: string, sort: DirectorySort) {
+  return JSON.stringify([scope, targetId, query, sort.field, sort.direction]);
 }
 
 export function useDirectorySearch({
-  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision,
+  scope, siteId, targetId, folderId, query, sort: { field, direction }, contentRevision, onRefresh,
 }: DirectorySearchOptions) {
   const enabled = Boolean(query && siteId && folderId);
-  const key = directorySearchKey(scope, targetId, query, { field, direction }, contentRevision);
-  const [requested, setRequested] = useState<{ key: string; range: SearchRange } | null>(null);
-  const [result, setResult] = useState<{ key: string; range: SearchRange; page: StorageChildrenPage } | null>(null);
-  const [failure, setFailure] = useState<{ key: string; range: SearchRange; message: string } | null>(null);
-  const range = requested?.key === key ? requested.range : firstWindow;
+  const key = directorySearchKey(scope, targetId, query, { field, direction });
+  const [requested, setRequested] = useState<DirectoryRequest | null>(null);
+  const [result, setResult] = useState<(DirectoryRequest & { revision: number; page: StorageChildrenPage }) | null>(null);
+  const [failure, setFailure] = useState<(DirectoryRequest & { revision: number; refreshIndex?: number; message: string }) | null>(null);
+  const request = requested?.key === key ? requested : null;
   const delivered = result?.key === key ? result : null;
   const page = delivered?.page ?? null;
-  const error = failure?.key === key && failure.range === range ? failure.message : null;
-  const pending = enabled && !error && delivered?.range !== range;
+  const range = request?.range ?? delivered?.range ?? firstWindow;
+  const preferredIndex = request?.preferredIndex;
+  const refreshing = delivered !== null && delivered.revision !== contentRevision;
+  const refreshIndex = refreshing ? preferredIndex ?? range.offset : undefined;
+  const anchor = page && refreshIndex !== undefined ? page.children[refreshIndex - page.offset]?.id : undefined;
+  const error = failure?.key === key && failure.revision === contentRevision && failure.range === range
+    && failure.refreshIndex === refreshIndex ? failure.message : null;
+  const pending = enabled && !error && (refreshing || delivered?.range !== range);
+  const latest = useRef({ key, revision: contentRevision, range, preferredIndex, onRefresh });
+
+  useLayoutEffect(() => {
+    latest.current = { key, revision: contentRevision, range, preferredIndex, onRefresh };
+  }, [key, contentRevision, range, preferredIndex, onRefresh]);
+
+  const requestWindow = useCallback((next: DirectoryRequest) => {
+    latest.current = { ...latest.current, ...next };
+    setRequested(next);
+  }, []);
 
   useEffect(() => {
-    if (!enabled || !siteId || !folderId || delivered?.range === range) return;
+    if (!pending || !siteId || !folderId) return;
     let current = true;
     const timer = window.setTimeout(async () => {
+      const stillWanted = () => {
+        const active = latest.current;
+        return current && active.key === key && active.revision === contentRevision && active.range === range
+          && (refreshIndex === undefined || (active.preferredIndex ?? range.offset) === refreshIndex);
+      };
+      if (!stillWanted()) return;
       try {
-        const next = await getStorageChildren(siteId, targetId ?? null, folderId, range.offset, range.limit, { field, direction }, query);
-        if (!current) return;
+        const read = (offset: number, id?: string) =>
+          getStorageChildren(siteId, targetId ?? null, folderId, offset, range.limit, { field, direction }, query, id);
+        let next = await read(range.offset, anchor);
+        if (!stillWanted()) return;
+        if (refreshIndex !== undefined && next.total_children > 0 && next.offset >= next.total_children) {
+          next = await read(Math.max(0, next.total_children - range.limit));
+          if (!stillWanted()) return;
+        }
         if (!next.children.length && next.offset < next.total_children) throw new Error("Matches could not be read.");
-        setResult({ key, range, page: next });
+        let nextRange = range;
+        if (refreshIndex !== undefined && page) {
+          const match = anchor ? next.children.findIndex((node) => node.id === anchor) : -1;
+          const index = match >= 0 ? next.offset + match : Math.min(refreshIndex, Math.max(0, next.total_children - 1));
+          if (latest.current.onRefresh?.({
+            previousIndex: refreshIndex, index, previousTotal: page.total_children, total: next.total_children,
+            missingEntry: Boolean(anchor && match < 0),
+          }) === false) return;
+          nextRange = { offset: next.offset, limit: next.limit };
+          requestWindow({ key, range: nextRange, preferredIndex: index });
+        }
+        setResult({ key, revision: contentRevision, range: nextRange, page: next });
         setFailure(null);
       } catch (error) {
-        if (current) setFailure({ key, range, message: error instanceof Error ? error.message : String(error) });
+        if (stillWanted()) setFailure({
+          key, revision: contentRevision, range, refreshIndex, message: error instanceof Error ? error.message : String(error),
+        });
       }
-    }, range === firstWindow ? 160 : 0);
+    }, !page && range === firstWindow ? 160 : 0);
     return () => {
       current = false;
       window.clearTimeout(timer);
     };
-  }, [enabled, siteId, targetId, folderId, key, query, field, direction, range, delivered]);
+  }, [anchor, pending, siteId, targetId, folderId, key, contentRevision, query, field, direction, range, refreshIndex, page, requestWindow]);
 
-  const loadRange = useCallback((start: number, end: number) => {
-    if (!delivered || !page || end <= start) return;
-    if (start >= page.offset && end <= page.offset + page.children.length) {
-      if (range !== delivered.range) setRequested({ key, range: delivered.range });
-      return;
+  const loadRange = useCallback((start: number, end: number, preferredIndex = start) => {
+    if (!delivered || !page || end <= start || latest.current.key !== key) return;
+    let nextRange = range;
+    if (start >= page.offset && end <= page.offset + page.children.length) nextRange = delivered.range;
+    else if (range === delivered.range || start < range.offset || end > range.offset + range.limit) {
+      const limit = Math.min(page.total_children, Math.max(firstWindow.limit, end - start));
+      const offset = Math.max(0, Math.min(page.total_children - limit, start - Math.floor((limit - (end - start)) / 2)));
+      nextRange = { offset, limit };
     }
-    if (range !== delivered.range && start >= range.offset && end <= range.offset + range.limit) return;
-    const limit = Math.min(page.total_children, Math.max(firstWindow.limit, end - start));
-    const offset = Math.max(0, Math.min(page.total_children - limit, start - Math.floor((limit - (end - start)) / 2)));
-    setRequested({ key, range: { offset, limit } });
-  }, [delivered, key, page, range]);
+    const active = latest.current;
+    if (nextRange !== active.range || preferredIndex !== active.preferredIndex) {
+      requestWindow({ key, range: nextRange, preferredIndex });
+    }
+  }, [delivered, key, page, range, requestWindow]);
 
   const prime = useCallback((
     destination: Pick<DirectorySearchOptions, "scope" | "targetId" | "query" | "sort">, page: StorageChildrenPage,
   ) => {
-    const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort, contentRevision);
+    const key = directorySearchKey(destination.scope, destination.targetId, destination.query, destination.sort);
     const range = { offset: page.offset, limit: page.limit };
-    setRequested({ key, range });
-    setResult({ key, range, page });
+    requestWindow({ key, range });
+    setResult({ key, revision: contentRevision, range, page });
     setFailure(null);
-  }, [contentRevision]);
+  }, [contentRevision, requestWindow]);
 
   return {
     enabled,
@@ -82,7 +141,7 @@ export function useDirectorySearch({
     loading: pending && !page,
     loadingMore: pending && Boolean(page),
     loadRange,
-    retry: () => setRequested({ key, range: { ...range } }),
+    retry: () => requestWindow({ key, range: { ...range }, preferredIndex }),
     prime,
   };
 }
