@@ -1,13 +1,13 @@
 import { useCallback, useState } from "react";
 import { fileName, formatBytes, formatCount, formatHealth } from "../../lib/format";
 import { findSimilarFolders } from "../../lib/tauri";
-import type { FolderContentSummary, FolderSimilarityMatch, StorageNode } from "../../lib/types";
+import type { FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage, StorageNode } from "../../lib/types";
 import { CheckIcon } from "../../management/Icons";
-import { AnalysisLocation, AnalysisNavigationFooter } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
-import { useAnalysisPage } from "./useAnalysisPage";
+import { useAnalysisPage, type AnalysisPosition } from "./useAnalysisPage";
 import "./folder-comparison.css";
 
 const MATCH_PAGE_SIZE = 10;
@@ -17,8 +17,11 @@ interface SimilarFoldersDialogProps {
   siteId: string;
   siteName: string;
   node: StorageNode;
+  contentRevision: number;
+  position: AnalysisPosition<FolderSimilarityPage> | null;
   onJump: (match: FolderSimilarityMatch, signal: AbortSignal) => Promise<string | null>;
   onClose: () => void;
+  onShown: (match: FolderSimilarityMatch, position: AnalysisPosition<FolderSimilarityPage>) => void;
 }
 
 function folderKey({ folder }: FolderSimilarityMatch) {
@@ -73,16 +76,24 @@ function ContentBreakdown({ match }: { match: FolderSimilarityMatch }) {
   );
 }
 
-export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, onJump, onClose }: SimilarFoldersDialogProps) {
+export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, contentRevision, position, onJump, onClose, onShown }: SimilarFoldersDialogProps) {
   const nodeId = node.id;
   const load = useCallback((offset: number) => findSimilarFolders({
     workspace_name: workspaceName, site_id: siteId, node_id: nodeId, offset, limit: MATCH_PAGE_SIZE,
   }), [workspaceName, siteId, nodeId]);
-  const { page, loading, error, goTo, retry } = useAnalysisPage(load);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const navigation = useAnalysisNavigation(onJump, onClose);
+  const { page, loading, error, goTo, retry } = useAnalysisPage(load, position?.page.offset,
+    position?.revision === contentRevision ? position.page : undefined);
+  const [selectedKey, setSelectedKey] = useState<string | null>(position?.selected_id ?? null);
+  const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, Boolean(page && !loading && !error));
+  const navigation = useAnalysisNavigation(onJump, onClose, (match) => {
+    if (page) onShown(match, { page, selected_id: folderKey(match), scroll_top: readScroll(), revision: contentRevision });
+  });
   const busy = loading || navigation.opening;
-  const selected = page?.matches.find((match) => folderKey(match) === selectedKey) ?? page?.matches[0];
+  const selectedMatch = page?.matches.find((match) => folderKey(match) === selectedKey);
+  const selected = selectedMatch ?? page?.matches[0];
+  const matchChanged = position && page && position.revision !== contentRevision && !loading && !error
+    && (page.offset === position.page.offset || page.total_matches <= position.page.offset)
+    && selectedKey === position.selected_id && !selectedMatch;
   const source = page?.source;
 
   function browse(offset: number) {
@@ -103,11 +114,11 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, on
       footer={selected && (
         <AnalysisNavigationFooter
           error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
-          pendingLabel="Opening folder…" onShow={() => void navigation.show(selected)}
+          pendingLabel="Opening folder…" buttonRef={showButton} onShow={() => void navigation.show(selected)}
         />
       )}
     >
-      <section className="atlas-analysis-results" aria-busy={loading}>
+      <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
         {page && selected && (
           <label className="atlas-folder-match-select">
             Compare with
@@ -148,6 +159,7 @@ export function SimilarFoldersDialog({ workspaceName, siteId, siteName, node, on
         </div>
         {loading && !page && <p role="status">Comparing indexed contents…</p>}
         {error && <AnalysisError error={error} retry={retry} />}
+        {matchChanged && <p role="status">The comparison results changed.</p>}
         {page && (
           <>
             <VerificationNote pending={page.workspace_pending_hash_count} incomplete={page.workspace_incomplete_site_count} />

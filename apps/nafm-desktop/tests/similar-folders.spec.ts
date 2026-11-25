@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { FolderSimilarityPage, FolderSimilarityRequest } from "../src/lib/types";
 
 const sourcePath = "/demo/Studio Archive/Projects/Brand campaign";
 const backupPath = "/demo/Studio Archive/Projects/Backup campaign";
 const mirrorPath = "smb://media.example.test/Studio/Campaign mirror";
 const openError = "The matching folder is temporarily unavailable.";
+const defaultSource = { url: "/mock/", folders: ["Projects", "Brand campaign"], path: sourcePath };
 
 function folderPath(page: Page) {
   return page.getByRole("navigation", { name: "Folder path" });
@@ -25,9 +27,7 @@ function folderDetails(page: Page) {
   return inspector(page).getByRole("region", { name: "Storage details" });
 }
 
-async function openComparison(page: Page, source = {
-  url: "/mock/", folders: ["Projects", "Brand campaign"], path: sourcePath,
-}) {
+async function inspectSource(page: Page, source = defaultSource) {
   await page.goto(source.url);
   await expect(currentFolder(page)).toHaveText("Studio archive");
   const map = page.getByRole("region", { name: "Circular storage map" });
@@ -38,6 +38,10 @@ async function openComparison(page: Page, source = {
   await page.getByRole("button", { name: "Contents & details" }).click();
   await inspector(page).getByRole("tab", { name: "Details", exact: true }).click();
   await expect(folderDetails(page)).toContainText(source.path);
+}
+
+async function openComparison(page: Page, source = defaultSource) {
+  await inspectSource(page, source);
   await similarFoldersButton(page).press("Enter");
   const dialog = page.getByRole("dialog", { name: "Similar folders", exact: true });
   await expect(dialog).toBeVisible();
@@ -97,8 +101,8 @@ test("partial verification marks 100% coverage as approximate without a full-cov
   await expect(dialog.getByRole("status").filter({ hasText: "verified portions" })).toBeVisible();
 });
 
-test("the compact comparison can switch matches from above the folder cards", async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 640 });
+test("the compact comparison restores the chosen folder and scroll position after inspection", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 580 });
   const dialog = await openComparison(page);
   const picker = dialog.getByRole("combobox", { name: "Compare with", exact: true });
   await expect(picker).toBeInViewport();
@@ -109,6 +113,80 @@ test("the compact comparison can switch matches from above the folder cards", as
   await expect(dialog.getByRole("region", { name: "Matching folder", exact: true })).toContainText(backupPath);
   await expect(dialog.getByRole("region", { name: "Selected folder", exact: true })).toContainText("62%");
   await expect(picker).toBeInViewport();
+
+  const comparisonReads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    const reads: string[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = (command, args) => {
+      if (command === "find_similar_folders") reads.push(command);
+      return invoke(command, args);
+    };
+    return reads;
+  });
+  const body = dialog.locator(".atlas-analysis-body");
+  await body.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const scrollTop = await body.evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(folderDetails(page)).toContainText(backupPath);
+
+  const back = folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true });
+  await back.press("Enter");
+  await expect(dialog.getByRole("region", { name: "Selected folder", exact: true })).toContainText(sourcePath);
+  await expect(dialog.getByRole("region", { name: "Matching folder", exact: true })).toContainText(backupPath);
+  await expect(picker.locator("option:checked")).toContainText("Backup campaign");
+  await expect(show).toBeFocused();
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(back).toBeHidden();
+  await expect(folderDetails(page)).toBeFocused();
+  expect(await comparisonReads.jsonValue()).toEqual([]);
+});
+
+test("the comparison returns to the same result page", async ({ page }) => {
+  await inspectSource(page);
+  const comparisonReads = await page.evaluateHandle((paths) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { request?: FolderSimilarityRequest }) => Promise<unknown> };
+    };
+    const offsets: number[] = [];
+    const invoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async (command, args) => {
+      if (command !== "find_similar_folders" || !args.request) return invoke(command, args);
+      const offset = args.request.offset;
+      offsets.push(offset);
+      // Give the two real matches a page each, so both destinations still open in the Atlas.
+      const result = await invoke(command, { request: { ...args.request, offset: 0 } }) as FolderSimilarityPage;
+      const matches = result.matches.filter(({ folder }) => paths.includes(folder.path));
+      return { ...result, offset, limit: 1, total_matches: matches.length, matches: matches.slice(offset, offset + 1) };
+    };
+    return offsets;
+  }, [mirrorPath, backupPath]);
+
+  await similarFoldersButton(page).press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Similar folders", exact: true });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const pages = dialog.getByRole("group", { name: "Result pages", exact: true });
+  await expect(match).toContainText(mirrorPath);
+  await pages.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(match).toContainText(backupPath);
+
+  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await expect(match).toContainText(backupPath);
+  await expect(pages.getByRole("button", { name: "Previous", exact: true })).toBeEnabled();
+  await expect(pages.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+  expect(await comparisonReads.jsonValue()).toEqual([0, 1]);
 });
 
 test("a failed folder jump keeps the chosen comparison open for retry", async ({ page }) => {

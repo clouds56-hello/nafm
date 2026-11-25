@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
-import { ContentActions } from "./analysis/ContentActions";
+import { ContentActions, type ComparisonKind } from "./analysis/ContentActions";
+import { FileCopiesDialog } from "./analysis/FileCopiesDialog";
 import { ReviewDrawer, type ReviewPosition } from "./analysis/ReviewDrawer";
+import { SimilarFoldersDialog } from "./analysis/SimilarFoldersDialog";
+import type { AnalysisPosition } from "./analysis/useAnalysisPage";
 import { AtlasInspector, type InspectorView } from "./AtlasInspector";
 import { AtlasToolbar, type AtlasToolbarExtension, type MapMode } from "./AtlasToolbar";
 import { CoverageFooter } from "./CoverageFooter";
@@ -18,7 +21,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
-import type { DirectorySort, FileContentMatch, FinderPosition, FolderSimilarityMatch, HealthMetric, StorageNode } from "../lib/types";
+import type { DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -43,6 +46,11 @@ interface ReviewInspection {
   position: ReviewPosition;
   returning: boolean;
 }
+
+type ComparisonSession = { workspace: string; siteId: string; siteName: string; node: StorageNode; open: boolean } & (
+  | { kind: "copies"; destination?: { siteId: string; path: string }; position: AnalysisPosition<FileContentMatchesPage> | null }
+  | { kind: "similarity"; destination?: { siteId: string; nodeId: string }; position: AnalysisPosition<FolderSimilarityPage> | null }
+);
 
 function directoryScope(workspace: string | undefined, site: string | undefined, folder: string | undefined) {
   return JSON.stringify([workspace, site, folder]);
@@ -99,6 +107,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
+  const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
   const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
@@ -180,6 +189,21 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
   const returnToReview = !finderPosition && reviewed && selected?.kind === "file"
     && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
+  const comparison = comparisonSession?.workspace === findWorkspace ? comparisonSession : null;
+  const returnToComparison = comparison?.destination && comparison.destination.siteId === siteId && (comparison.kind === "copies"
+    ? selected?.kind === "file" && selected.path === comparison.destination.path
+    : !selected && folder?.id === comparison.destination.nodeId);
+
+  function openComparison(kind: ComparisonKind) {
+    if (!findWorkspace || !site || !selectedNode) return;
+    const source = { workspace: findWorkspace, siteId: site.id, siteName: site.name, node: selectedNode, open: true };
+    setComparisonSession({ ...source, kind, position: null });
+  }
+
+  function closeComparison() {
+    if (comparison?.destination) setAnalysisFocusRequested(true);
+    setComparisonSession(null);
+  }
 
   function openReview() {
     setReviewInspection(null);
@@ -386,18 +410,6 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
     setAnalysisFocusRequested(true);
   }
 
-  async function showIndexedFileInAtlas(match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal) {
-    const error = await state.jumpToContentMatch(match, signal);
-    if (error === null) showAnalysisDetails(match.site_id);
-    return error;
-  }
-
-  async function showSimilarFolderInAtlas(match: FolderSimilarityMatch, signal: AbortSignal) {
-    const error = await state.jumpToSimilarFolder(match, signal);
-    if (error === null) showAnalysisDetails(match.folder.site_id);
-    return error;
-  }
-
   function changeMode(mode: MapMode) {
     setMapMode(mode);
     state.setHealthMetric(mode === "coverage_health" ? "coverage_health" : "space_health");
@@ -586,7 +598,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
-                    returnAction={findWorkspace && finderPosition ? {
+                    returnAction={returnToComparison && comparison ? {
+                      label: "Back to comparison",
+                      run: () => setComparisonSession({ ...comparison, open: true }),
+                    } : findWorkspace && finderPosition ? {
                       label: "Back to results",
                       run: () => setFinderSession((session) => session && { ...session, openedFrom: "details" }),
                     } : returnToReview ? {
@@ -602,10 +617,6 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                   >
                     {dashboard && selectedNode && (
                       <ContentActions
-                        workspaceName={dashboard.workspace_name}
-                        siteId={site.id}
-                        siteName={site.name}
-                        contentRevision={state.contentRevision}
                         node={selectedNode}
                         metric={state.healthMetric}
                         sourceAnalysisReady={siteAnalysisReady(site)}
@@ -613,9 +624,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                         stagingBusy={state.stagingBusy}
                         onStage={() => void state.stageSelected()}
                         onUnstage={() => { if (selectedNode.path) void state.removeStaged(selectedNode.path); }}
-                        onReview={returnToReview ? undefined : openReview}
-                        onJumpDuplicate={showIndexedFileInAtlas}
-                        onJumpFolder={showSimilarFolderInAtlas}
+                        onReview={returnToReview && !returnToComparison ? undefined : openReview}
+                        onCompare={openComparison}
                       />
                     )}
                   </StorageDetails>
@@ -667,6 +677,29 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           </div>
         </section>
       </main>
+      {comparison?.open && (comparison.kind === "copies" ? comparison.node.path !== null && (
+        <FileCopiesDialog
+          key={state.contentRevision} workspaceName={comparison.workspace} siteId={comparison.siteId}
+          source={{ name: comparison.node.name, site: comparison.siteName, path: comparison.node.path, size: comparison.node.total_bytes }}
+          contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToContentMatch} onClose={closeComparison}
+          onShown={(match, position) => {
+            setComparisonSession({ ...comparison, open: false, position, destination: { siteId: match.site_id, path: match.path } });
+            showAnalysisDetails(match.site_id);
+          }}
+        />
+      ) : (
+        <SimilarFoldersDialog
+          key={state.contentRevision} workspaceName={comparison.workspace} siteId={comparison.siteId}
+          siteName={comparison.siteName} node={comparison.node}
+          contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToSimilarFolder} onClose={closeComparison}
+          onShown={(match, position) => {
+            setComparisonSession({
+              ...comparison, open: false, position, destination: { siteId: match.folder.site_id, nodeId: match.folder.node_id },
+            });
+            showAnalysisDetails(match.folder.site_id);
+          }}
+        />
+      ))}
       {finder && (
         <FileFinder
           key={finder.workspace}
@@ -732,10 +765,11 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           onClose={closeReview}
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}
-          onInspect={showIndexedFileInAtlas}
+          onInspect={state.jumpToContentMatch}
           onInspected={(file, position) => {
             setReviewInspection({ workspace: dashboard.workspace_name, siteId: file.site_id, path: file.path, position, returning: false });
             state.setReviewOpen(false);
+            showAnalysisDetails(file.site_id);
           }}
         />
       )}

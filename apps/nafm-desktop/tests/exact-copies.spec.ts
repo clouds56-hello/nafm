@@ -51,6 +51,18 @@ test("compare exact copies in place, then inspect their destination and return",
   await sites.getByRole("button", { name: "Close sites" }).click();
 
   await inspectOriginalFile(page);
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { offset?: number }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const offsets: number[] = [];
+    bridge.invoke = (command, args) => {
+      if (command === "get_file_content_matches") offsets.push(args.offset ?? 0);
+      return invoke(command, args);
+    };
+    return offsets;
+  });
   const dialog = await openExactCopies(page);
   const backup = dialog.getByRole("button", { name: /Studio archive.*Backup campaign|Backup campaign.*Studio archive/i });
   const shared = dialog.getByRole("button", { name: /Team share.*Campaign mirror|Campaign mirror.*Team share/i });
@@ -67,12 +79,33 @@ test("compare exact copies in place, then inspect their destination and return",
   await expect(match).toContainText(sharedPath);
   await expect(currentFolder(page)).toHaveText("Brand campaign");
 
-  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).click();
+  await page.setViewportSize({ width: 500, height: 430 });
+  const body = dialog.locator(".atlas-analysis-body");
+  const scrollTop = await body.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  await show.press("Enter");
   await expect(dialog).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Campaign mirror");
   await expect(inspector(page).getByRole("heading", { name: fileName, exact: true })).toBeVisible();
   await expect(inspector(page)).toContainText(sharedPath);
 
+  const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+  await details.getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await expect(dialog).toBeVisible();
+  await expect(original).toContainText(sourcePath);
+  await expect(match).toContainText(sharedPath);
+  await expect(shared).toHaveAttribute("aria-pressed", "true");
+  await expect(show).toBeFocused();
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeCloseTo(scrollTop, 0);
+  expect(await reads.jsonValue()).toEqual([0]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
   await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
   await expect(currentFolder(page)).toHaveText("Brand campaign");
   await expect(inspector(page).getByRole("heading", { name: fileName, exact: true })).toBeVisible();

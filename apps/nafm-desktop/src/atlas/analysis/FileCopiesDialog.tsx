@@ -1,12 +1,12 @@
 import { useCallback, useState } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import { getFileContentMatches } from "../../lib/tauri";
-import type { FileContentMatch } from "../../lib/types";
+import type { FileContentMatch, FileContentMatchesPage } from "../../lib/types";
 import { CheckIcon } from "../../management/Icons";
-import { AnalysisLocation, AnalysisNavigationFooter } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, useComparisonScroll } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
-import { useAnalysisPage } from "./useAnalysisPage";
+import { useAnalysisPage, type AnalysisPosition } from "./useAnalysisPage";
 import { useAnalysisNavigation } from "./useAnalysisNavigation";
 
 const COPY_PAGE_SIZE = 10;
@@ -22,25 +22,36 @@ interface FileCopiesDialogProps {
   workspaceName: string;
   siteId: string;
   source: FileLocation;
+  contentRevision: number;
+  position: AnalysisPosition<FileContentMatchesPage> | null;
   onJump: (match: FileContentMatch, signal: AbortSignal) => Promise<string | null>;
   onClose: () => void;
+  onShown: (match: FileContentMatch, position: AnalysisPosition<FileContentMatchesPage>) => void;
 }
 
 function containingFolder(path: string) {
   return path.split(/[\\/]/).filter(Boolean).at(-2);
 }
 
-export function FileCopiesDialog({ workspaceName, siteId, source, onJump, onClose }: FileCopiesDialogProps) {
+export function FileCopiesDialog({ workspaceName, siteId, source, contentRevision, position, onJump, onClose, onShown }: FileCopiesDialogProps) {
   const path = source.path;
   const load = useCallback(
     (offset: number) => getFileContentMatches(siteId, path, offset, COPY_PAGE_SIZE, workspaceName),
     [workspaceName, siteId, path],
   );
-  const { page, loading, error, goTo, retry } = useAnalysisPage(load);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const navigation = useAnalysisNavigation(onJump, onClose);
+  const { page, loading, error, goTo, retry } = useAnalysisPage(load, position?.page.offset,
+    position?.revision === contentRevision ? position.page : undefined);
+  const [selectedId, setSelectedId] = useState<string | null>(position?.selected_id ?? null);
+  const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, Boolean(page && !loading && !error));
+  const navigation = useAnalysisNavigation(onJump, onClose, (match) => {
+    if (page) onShown(match, { page, selected_id: match.file_id, scroll_top: readScroll(), revision: contentRevision });
+  });
   const matches = page?.matches.filter((match) => !match.is_current) ?? [];
-  const selected = matches.find((match) => match.file_id === selectedId) ?? matches[0];
+  const selectedMatch = matches.find((match) => match.file_id === selectedId);
+  const selected = selectedMatch ?? matches[0];
+  const matchChanged = position && page && position.revision !== contentRevision && !loading && !error
+    && (page.offset === position.page.offset || page.total_matches <= position.page.offset)
+    && selectedId === position.selected_id && !selectedMatch;
   const copyCount = page?.status === "ready" ? Math.max(0, page.total_matches - 1) : 0;
 
   return (
@@ -50,11 +61,11 @@ export function FileCopiesDialog({ workspaceName, siteId, source, onJump, onClos
       footer={selected && (
         <AnalysisNavigationFooter
           error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
-          pendingLabel="Opening copy…" onShow={() => void navigation.show(selected)}
+          pendingLabel="Opening copy…" buttonRef={showButton} onShow={() => void navigation.show(selected)}
         />
       )}
     >
-      <section className="atlas-analysis-results" aria-busy={loading}>
+      <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
         <div className="atlas-analysis-comparison" data-comparing={selected ? "" : undefined}>
           <AnalysisLocation label="Selected file" name={source.name} site={source.site} path={source.path} detail={formatBytes(source.size)} />
           {selected && (
@@ -66,6 +77,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, onJump, onClos
         </div>
         {loading && !page && <p role="status">Finding exact copies…</p>}
         {error && <AnalysisError error={error} retry={retry} />}
+        {matchChanged && <p role="status">The comparison results changed.</p>}
         {page && (
           <>
             {page.status === "not_hashed" && <p role="status">Scan this site to hash the file and find copies.</p>}
