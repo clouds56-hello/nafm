@@ -421,8 +421,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           progressBySite: state.progressBySite,
           completionBySite: state.completionBySite,
           cancellingRequestIds: state.cancellingRequestIds,
+          blockedSiteIds: state.scanBlockedSiteIds,
           lastResult: state.lastScanResult,
           onStop: (id) => void state.cancel(id),
+          onScan: state.scan,
         }}
         extension={toolbarExtension}
       />

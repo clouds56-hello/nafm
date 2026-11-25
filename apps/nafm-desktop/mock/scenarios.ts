@@ -6,6 +6,7 @@ export const scenarioLabels = {
   partial: "Partial verification",
   empty: "Empty workspace",
   scanning: "Scan in progress",
+  "scan-failed": "Interrupted scan",
   slow: "Slow folder reads",
   recovery: "Interrupted navigation",
 } satisfies Record<PreviewScenario, string>;

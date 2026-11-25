@@ -15,6 +15,12 @@ function currentFolder(page: Page) {
   return page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
 }
 
+async function openProjects(page: Page) {
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Projects");
+}
+
 async function openMock(page: Page, scenario = "") {
   // Advance background scans explicitly so they cannot finish during assertions about active requests.
   await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
@@ -26,7 +32,7 @@ async function openMock(page: Page, scenario = "") {
 test.describe("compact scan activity", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
-  test("scan activity stays available while browsing with both panels closed", async ({ page }) => {
+  test("stopping and resuming verification keeps the same folder open", async ({ page }) => {
     await openMock(page, "scanning");
     const trigger = activityTrigger(page);
     const activity = activityPanel(page);
@@ -39,26 +45,89 @@ test.describe("compact scan activity", () => {
     await trigger.tap();
     await expect(activity.getByText(studio, { exact: true })).toBeVisible();
     await expect(activity.getByText("Verifying files", { exact: true })).toBeVisible();
-    await expect(activity.getByRole("progressbar", { name: `Scan progress for ${studio}` })).toBeVisible();
+    const progress = activity.getByRole("progressbar", { name: `Scan progress for ${studio}` });
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute("value", "127");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
     await page.keyboard.press("Escape");
     await expect(activity).toBeHidden();
     await expect(trigger).toBeFocused();
 
-    const map = page.getByRole("region", { name: "Circular storage map" });
-    await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
-    await expect(currentFolder(page)).toHaveText("Projects");
+    await openProjects(page);
 
     await trigger.tap();
+    await page.clock.runFor(5_000);
+    await expect(progress).toHaveAttribute("value", "142");
     await activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true }).tap();
-    await page.clock.runFor(1_000);
+    await page.clock.runFor(350);
     const result = activity.getByRole("region", { name: "Latest scan result" });
     await expect(result.getByText("Scan stopped", { exact: true })).toBeVisible();
-    await expect(result.getByText("29 files awaiting verification", { exact: true })).toBeVisible();
+    await expect(result.getByText("14 files awaiting verification", { exact: true })).toBeVisible();
+    await expect(currentFolder(page)).toHaveText("Projects");
+
+    const resume = activity.getByRole("button", { name: `Resume verification of ${studio}`, exact: true });
+    await expect(resume).toBeInViewport({ ratio: 1 });
+    await resume.tap();
+    await expect(activity.getByRole("region", { name: studio, exact: true })).toBeFocused();
+    await expect(activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
+    await page.clock.runFor(2_800);
+    await expect(progress).toHaveAttribute("value", "146");
+    await expect(progress).toHaveAttribute("max", "156");
+
+    await page.clock.runFor(3_000);
+    await expect(result.getByText("Scan finished", { exact: true })).toBeVisible();
+    await expect(result.getByText("156 files verified", { exact: true })).toBeVisible();
+    await expect(resume).toHaveCount(0);
     await expect(currentFolder(page)).toHaveText("Projects");
     await expect(sites).toBeHidden();
     await expect(inspector).toBeHidden();
   });
+});
+
+test("reopening shows pending verification for just the affected site", async ({ page }) => {
+  await openMock(page, "partial");
+  await openProjects(page);
+  await page.reload();
+  await expect(currentFolder(page)).toHaveText("Projects");
+
+  const activity = activityPanel(page);
+  await activityTrigger(page).press("Enter");
+  await expect(activity.getByRole("region", { name: "Latest scan result" })).toHaveCount(0);
+  const pending = activity.getByRole("region", { name: "Verification pending" });
+  await expect(pending.getByText("39 files awaiting verification", { exact: true })).toBeVisible();
+  const resume = pending.getByRole("button", { name: `Resume verification of ${studio}`, exact: true });
+  await expect(pending.getByRole("button")).toHaveCount(1);
+  await expect(resume).toBeFocused();
+  await resume.press("Enter");
+  await expect(activity.getByRole("region", { name: studio, exact: true })).toBeFocused();
+  await expect(activity.getByRole("button", { name: /^Stop / })).toHaveCount(1);
+  await expect(activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
+  await expect(currentFolder(page)).toHaveText("Projects");
+});
+
+test("a failed scan can be retried without leaving the current folder", async ({ page }) => {
+  await openMock(page, "scan-failed");
+  await openProjects(page);
+
+  const activity = activityPanel(page);
+  await activityTrigger(page).click();
+  await page.clock.runFor(4_100);
+  const result = activity.getByRole("region", { name: "Latest scan result" });
+  await expect(result.getByText("Scan failed", { exact: true })).toBeVisible();
+  await expect(result.getByText("Couldn’t read a folder in Studio archive.", { exact: true })).toBeVisible();
+  await expect(result.getByRole("button", { name: /^Resume verification/ })).toHaveCount(0);
+
+  const retry = result.getByRole("button", { name: `Retry scan of ${studio}`, exact: true });
+  await retry.press("Enter");
+  await expect(activity.getByRole("region", { name: studio, exact: true })).toBeFocused();
+  await expect(activity.getByRole("button", { name: /^Stop / })).toHaveCount(1);
+  await expect(activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
+
+  await page.clock.runFor(5_600);
+  await expect(result.getByText("Scan finished", { exact: true })).toBeVisible();
+  await expect(result.getByText("156 files verified", { exact: true })).toBeVisible();
+  await expect(retry).toHaveCount(0);
+  await expect(currentFolder(page)).toHaveText("Projects");
 });
 
 test("Scan all shows one Stop action for its sites and retains the result", async ({ page }) => {
@@ -97,7 +166,7 @@ test("stopping one scan leaves the other running through verification", async ({
   await openMock(page, "partial");
   const trigger = activityTrigger(page);
   const activity = activityPanel(page);
-  await expect(trigger).toBeHidden();
+  await expect(trigger).toBeVisible();
 
   await page.getByRole("button", { name: "Sites", exact: true }).click();
   const sites = page.getByRole("complementary", { name: "Sites", exact: true });
@@ -116,6 +185,7 @@ test("stopping one scan leaves the other running through verification", async ({
   await expect(stopField).toHaveCount(0);
   await expect(activity.getByText("Scan stopped", { exact: true })).toBeVisible();
   await expect(stopStudio).toBeEnabled();
+  await expect(activity.getByRole("button", { name: `Resume verification of ${studio}`, exact: true })).toHaveCount(0);
 
   await page.clock.runFor(2_300);
   await expect(activity.getByText("Verifying files", { exact: true })).toBeVisible();

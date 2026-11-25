@@ -858,7 +858,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       scheduleFinalAnalysisRefresh((event.site_states ?? []).map((state) => state.site_id));
       if (event.kind === "failed") setNotice(event.message ?? "The scan failed.");
       if (event.kind === "cancelled") {
-        setNotice("Scan cancelled. Indexed files remain; unfinished hashes will resume on the next scan.");
+        setNotice("Scan stopped. Indexed files remain available.");
       }
     }
   }, [

@@ -28,6 +28,12 @@ interface PreviewScan {
   timer: number | undefined;
 }
 
+interface PreviewScanOptions {
+  stepTime?: number;
+  initialStep?: number;
+  failureMessage?: string;
+}
+
 function registerPreviewIpc(handler: Parameters<typeof mockIPC>[0]) {
   mockIPC(handler, { shouldMockEvents: true });
   const bridge = (window as Window & {
@@ -78,6 +84,7 @@ function notify(
   kind: ScanTaskEvent["kind"],
   state: ScanTaskSiteState | null = null,
   summary: ScanSummary | null = null,
+  message: string | null = null,
 ) {
   void emit<ScanTaskEvent>(SCAN_EVENT, {
     request_id: task.request_id, scope: state ? "site" : "task", site_id: state?.site_id ?? null, kind,
@@ -85,7 +92,7 @@ function notify(
     total_files: state?.total_files ?? null, hashed_files: state?.hashed_files ?? null,
     reused_files: state?.reused_files ?? null, hashes_pending: state?.hashes_pending ?? null,
     current_path: state?.current_path ?? null, site_states: state ? null : task.site_states,
-    summary, message: null,
+    summary, message,
   });
 }
 
@@ -99,7 +106,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     ["site:team-share", "interrupt"],
   ] : []);
 
-  function startScan(selector: ScanSelector, stepTime = 900, initialStep = 0): ScanTask {
+  function startScan(selector: ScanSelector, { stepTime = 900, initialStep = 0, failureMessage }: PreviewScanOptions = {}): ScanTask {
     const workspace = management.current();
     const sites = selector.all ? [...workspace.sites.values()] : [getSite(workspace, selector.site_id!)];
     if (!sites.length) throw new Error("Add a source before scanning.");
@@ -146,7 +153,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     scan.task.site_states.forEach((state) => notify(scan.task, "started", state));
     if (initialStep > 0) updateProgress(SCAN_STEPS[initialStep]);
     scan.timer = window.setInterval(() => {
-      const step = SCAN_STEPS[++scan.step];
+      const step = failureMessage ? undefined : SCAN_STEPS[++scan.step];
       if (step) {
         updateProgress(step);
         return;
@@ -154,6 +161,11 @@ export function installPreviewBackend(scenario: PreviewScenario) {
 
       window.clearInterval(scan.timer);
       scans.delete(scan.task.request_id);
+      if (failureMessage) {
+        scan.task.status = "failed";
+        notify(scan.task, "failed", null, null, failureMessage);
+        return;
+      }
       scan.task.status = "completed";
       scan.task.site_states = scan.task.site_states.map((state) => ({ ...state, status: "completed", current_path: null }));
       for (const state of scan.task.site_states) {
@@ -285,6 +297,12 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   const first = management.current().sites.values().next().value;
   if (scenario === "scanning" && first) {
     const hashingStep = SCAN_STEPS.findIndex(([phase]) => phase === "hashing");
-    startScan({ site_id: first.id }, 5000, hashingStep);
+    startScan({ site_id: first.id }, { stepTime: 5_000, initialStep: hashingStep });
+  }
+  if (scenario === "scan-failed" && first) {
+    startScan({ site_id: first.id }, {
+      stepTime: 4_000,
+      failureMessage: `Couldn’t read a folder in ${first.name}.`,
+    });
   }
 }

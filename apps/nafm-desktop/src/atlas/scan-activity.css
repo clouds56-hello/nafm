@@ -8,7 +8,7 @@
   place-items: center;
 }
 
-.atlas-scan-icon:is([data-state="running"], [data-state="stopping"])::after {
+.atlas-scan-icon:is([data-state="running"], [data-state="stopping"], [data-state="pending"])::after {
   position: absolute;
   inset: -1px -2px auto auto;
   width: 6px;
@@ -20,7 +20,7 @@
 }
 
 .atlas-scan-icon[data-state="cancelled"] svg { color: #edbd8a; }
-.atlas-scan-icon[data-state="stopping"]::after { background: #edbd8a; }
+.atlas-scan-icon:is([data-state="stopping"], [data-state="pending"])::after { background: #edbd8a; }
 .atlas-scan-icon[data-state="failed"] svg { color: #f3a492; }
 
 .atlas-scan-announcement {
@@ -52,7 +52,7 @@
   gap: 8px;
 }
 
-.atlas-scan-stop {
+.atlas-scan-action {
   flex: none;
   min-height: 28px;
   padding: 3px 9px;
@@ -63,10 +63,14 @@
   font: inherit;
 }
 
-.atlas-scan-stop:hover:not([aria-disabled="true"]) { background: #252742; }
-.atlas-scan-stop[aria-disabled="true"] { color: var(--atlas-muted); cursor: default; }
+.atlas-scan-action:hover:not([aria-disabled="true"]) { background: #252742; }
+.atlas-scan-action[aria-disabled="true"] { color: var(--atlas-muted); cursor: default; }
+.atlas-scan-resume { border-color: #606495; background: #252742; }
+.atlas-scan-resume:hover:not([aria-disabled="true"]) { background: #303456; }
 .atlas-scan-site-list { display: grid; gap: 8px; margin: 5px 0 0; padding: 0; list-style: none; }
 .atlas-scan-site { display: grid; gap: 3px; min-width: 0; }
+.atlas-scan-recovery-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.atlas-scan-recovery-row > div { display: grid; gap: 3px; }
 .atlas-scan-site strong { font-weight: 500; }
 .atlas-scan-site-status {
   display: flex;
@@ -84,8 +88,8 @@
 }
 
 .atlas-scan-result p { margin: 6px 0 0; color: var(--atlas-muted); }
-.atlas-scan-result:focus-visible, .atlas-scan-activity-panel:focus-visible { outline-offset: -2px; }
+.atlas-scan-request:focus-visible, .atlas-scan-activity-panel:focus-visible { outline-offset: -2px; }
 
 @media (max-width: 760px), (pointer: coarse) {
-  .atlas-scan-stop { min-height: 44px; }
+  .atlas-scan-action { min-height: 44px; }
 }

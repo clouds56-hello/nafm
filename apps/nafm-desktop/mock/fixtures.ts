@@ -1,6 +1,6 @@
 import type { SiteOverview, StorageNode } from "../src/lib/types";
 
-export type PreviewScenario = "populated" | "deep" | "partial" | "empty" | "scanning" | "slow" | "recovery";
+export type PreviewScenario = "populated" | "deep" | "partial" | "empty" | "scanning" | "scan-failed" | "slow" | "recovery";
 
 export const PREVIEW_WORKSPACE = "Studio workspace";
 
