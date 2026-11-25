@@ -177,12 +177,96 @@ test("Find files restores a late result and its scroll position while Atlas Back
   await expect(input).toHaveValue(searchText);
   await expect(previous).toBeFocused();
   expect(await offsets.evaluate((reads) => [...reads])).toEqual(loadedOffsets);
+  await previous.press("Enter");
+  await expect(dialog).toBeHidden();
+  await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
+  await expect(details(page).getByRole("heading", { name: "Proof 096.jpg", exact: true })).toBeVisible();
+  await backToResults(page).click();
+  await expect(input).toHaveValue(searchText);
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  expect(await scroller.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollPosition, 0);
+  expect(await offsets.evaluate((reads) => [...reads])).toEqual(loadedOffsets);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await opener.click();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("");
   await expect(result(dialog, /Proof 095\.jpg/i)).toHaveCount(0);
+});
+
+test("Find files restores the search that opened each inspected result in Atlas history", async ({ page }) => {
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  const input = query(dialog);
+  const proofQuery = "  PrOoF 001  ";
+  const trailerQuery = "Trailer master";
+  const proof = result(dialog, /^Proof 001\.jpg/i);
+  const mirror = result(dialog, /Trailer master\.mov/i).filter({ hasText: mirroredTrailer });
+  const previous = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  const next = folderPath(page).getByRole("button", { name: "Next location", exact: true });
+  const proofDetails = details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true });
+
+  await input.fill(proofQuery);
+  await proof.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(proofDetails).toBeVisible();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(proofQuery);
+
+  await input.fill(trailerQuery);
+  await mirror.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page)).toContainText(mirroredTrailer);
+  await previous.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(proofDetails).toBeVisible();
+  await expect(backToResults(page)).toBeVisible();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(proofQuery);
+  await expect(proof).toBeFocused();
+  await expect(mirror).toHaveCount(0);
+  await proof.press("Enter");
+  await expect(dialog).toBeHidden();
+
+  await next.press("Enter");
+  await expect(details(page)).toContainText(mirroredTrailer);
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(trailerQuery);
+  await expect(mirror).toBeFocused();
+});
+
+test("Atlas history keeps distinct Finder visits to the same file", async ({ page }) => {
+  await page.goto("/mock/");
+  await page.getByRole("button", { name: "Find files", exact: true }).click();
+  const dialog = finder(page);
+  const input = query(dialog);
+  const proof = result(dialog, /^Proof 001\.jpg/i);
+  const proofDetails = details(page).getByRole("heading", { name: "Proof 001.jpg", exact: true });
+  const firstQuery = "  PrOoF 001  ";
+
+  await input.fill(firstQuery);
+  await proof.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(proofDetails).toBeVisible();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(firstQuery);
+
+  await input.fill("001.jpg");
+  await proof.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(proofDetails).toBeVisible();
+
+  const path = folderPath(page);
+  const next = path.getByRole("button", { name: "Next location", exact: true });
+  await expect(next).toBeDisabled();
+  await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(next).toBeEnabled();
+  await expect(proofDetails).toBeVisible();
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(firstQuery);
+  await expect(proof).toBeFocused();
 });
 
 test("an older finder result cannot replace a newer query and a failed search can be retried", async ({ page }) => {

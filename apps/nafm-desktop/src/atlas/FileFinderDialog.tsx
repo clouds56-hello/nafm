@@ -1,82 +1,97 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { formatBytes, formatCount } from "../lib/format";
-import type { IndexedFileSearchResult } from "../lib/types";
+import type { FinderPosition, IndexedFileSearchResult } from "../lib/types";
 import { OpenInIcon, SearchIcon } from "../management/Icons";
 import { AnalysisDialog } from "./analysis/AnalysisDialog";
 import { AnalysisError } from "./analysis/AnalysisPageControls";
 import { useAnalysisNavigation } from "./analysis/useAnalysisNavigation";
-import { useIndexedFileSearch } from "./useIndexedFileSearch";
+import { useIndexedFileSearch, type FinderSearchResult } from "./useIndexedFileSearch";
 import "./file-finder.css";
 
 interface FileFinderProps {
   workspace: string;
   contentRevision: number;
-  open: boolean;
-  onOpen: (file: IndexedFileSearchResult, signal: AbortSignal) => Promise<string | null>;
-  onOpened: (file: IndexedFileSearchResult) => void;
-  onClose: () => void;
-}
-
-interface FinderPosition {
-  fileId: string;
-  query: string;
-  revision: number;
-  scrollTop: number;
-}
-
-export function FileFinder({ workspace, contentRevision, open, onOpen, onOpened, onClose }: FileFinderProps) {
-  const search = useIndexedFileSearch(workspace, contentRevision, open);
-  const [position, setPosition] = useState<FinderPosition | null>(null);
-  if (!open) return null;
-
-  return (
-    <FileFinderDialog
-      workspace={workspace} search={search} contentRevision={contentRevision}
-      position={position?.query === search.name && position.revision === contentRevision ? position : null}
-      onOpen={onOpen} onClose={onClose}
-      onOpened={(file, scrollTop) => {
-        setPosition({ fileId: file.file_id, query: search.name, revision: contentRevision, scrollTop });
-        onOpened(file);
-      }}
-    />
-  );
-}
-
-interface FileFinderDialogProps {
-  workspace: string;
-  contentRevision: number;
-  search: ReturnType<typeof useIndexedFileSearch>;
+  session: symbol;
   position: FinderPosition | null;
-  onOpen: FileFinderProps["onOpen"];
-  onOpened: (file: IndexedFileSearchResult, scrollTop: number) => void;
+  open: boolean;
+  onOpen: (file: IndexedFileSearchResult, signal: AbortSignal, position: FinderPosition) => Promise<string | null>;
+  onOpened: (file: IndexedFileSearchResult, position: FinderPosition) => void;
   onClose: () => void;
 }
 
-function FileFinderDialog({ workspace, contentRevision, search, position, onOpen, onOpened, onClose }: FileFinderDialogProps) {
+interface FinderChoice {
+  file: IndexedFileSearchResult;
+  position: FinderPosition;
+}
+
+export function FileFinder({ open, ...props }: FileFinderProps) {
+  const { workspace, session, contentRevision } = props;
+  const cache = useMemo(() => new Map<string, FinderSearchResult>(), [workspace, session, contentRevision]);
+  if (!open) return null;
+  return <FileFinderDialog {...props} cache={cache} />;
+}
+
+interface FileFinderDialogProps extends Omit<FileFinderProps, "open"> {
+  cache: Map<string, FinderSearchResult>;
+}
+
+function FileFinderDialog({ workspace, contentRevision, session, position, cache, onOpen, onOpened, onClose }: FileFinderDialogProps) {
+  const search = useIndexedFileSearch(workspace, contentRevision, position?.query ?? "", cache);
   const input = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLElement>(null);
   const list = useRef<HTMLUListElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const pendingFocus = useRef<number | null>(null);
-  const navigation = useAnalysisNavigation(onOpen, onClose, (file) => {
-    onOpened(file, results.current?.closest(".atlas-analysis-body")?.scrollTop ?? 0);
-  });
+  const restoring = useRef<FinderPosition | null>(null);
+  const navigation = useAnalysisNavigation(
+    ({ file, position }: FinderChoice, signal) => onOpen(file, signal, position),
+    onClose,
+    ({ file, position }) => {
+      search.remember();
+      onOpened(file, position);
+    },
+  );
+
+  useLayoutEffect(() => {
+    // The modal re-applies its initial input focus when mount effects are replayed.
+    restoring.current = position;
+  }, [position]);
 
   useLayoutEffect(() => {
     pendingFocus.current = null;
     const pane = results.current?.closest(".atlas-analysis-body");
-    if (!pane) return;
-    pane.scrollTop = position?.scrollTop ?? 0;
-    const row = list.current?.querySelector<HTMLButtonElement>('button[aria-current="true"]');
-    if (!row) return;
+    if (pane) pane.scrollTop = 0;
+  }, [contentRevision, search.name]);
 
+  useLayoutEffect(() => {
+    const saved = restoring.current;
+    if (!saved) return;
+    if (document.activeElement !== input.current) {
+      restoring.current = null;
+      return;
+    }
+    const row = list.current?.querySelector<HTMLButtonElement>('button[aria-current="true"]');
+    const pane = results.current?.closest(".atlas-analysis-body");
+    // Let the saved pages restore the scrollable height before setting the offset.
+    const needsMoreRows = search.hasMore && !search.error && search.files.length < saved.loaded_count;
+    if (!row || !pane || needsMoreRows) return;
+
+    restoring.current = null;
+    pane.scrollTop = saved.scroll_top;
     row.focus({ preventScroll: true });
     const bounds = pane.getBoundingClientRect();
     const rowBounds = row.getBoundingClientRect();
     if (rowBounds.bottom <= bounds.top || rowBounds.top >= bounds.bottom) {
       row.scrollIntoView({ block: "nearest" });
     }
-  }, [contentRevision, search.name, position]);
+  }, [search.error, search.files, search.hasMore]);
+
+  useEffect(() => {
+    const saved = restoring.current;
+    if (!saved || search.loading || search.error) return;
+    if (search.hasMore && search.files.length < saved.loaded_count) search.loadMore();
+    else restoring.current = null;
+  }, [search.loading, search.error, search.hasMore, search.files.length, search.loadMore]);
 
   useEffect(() => {
     const marker = sentinel.current;
@@ -118,6 +133,17 @@ function FileFinderDialog({ workspace, contentRevision, search, position, onOpen
     }
   }
 
+  function openFile(file: IndexedFileSearchResult) {
+    restoring.current = null;
+    void navigation.show({
+      file,
+      position: {
+        session, query: search.query, file_id: file.file_id, loaded_count: search.files.length,
+        scroll_top: results.current?.closest(".atlas-analysis-body")?.scrollTop ?? 0,
+      },
+    });
+  }
+
   const count = search.total;
   const status = navigation.opening ? "Opening file…"
     : search.loading && !search.files.length ? "Searching…"
@@ -134,6 +160,7 @@ function FileFinderDialog({ workspace, contentRevision, search, position, onOpen
               ref={input} type="search" aria-label="File name" autoComplete="off" spellCheck={false}
               placeholder="Search by file name" value={search.query} readOnly={navigation.opening}
               onChange={(event) => {
+                restoring.current = null;
                 search.changeQuery(event.currentTarget.value);
                 navigation.clearError();
               }}
@@ -148,10 +175,11 @@ function FileFinderDialog({ workspace, contentRevision, search, position, onOpen
                 if (!search.files.length || navigation.opening) return;
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
+                  restoring.current = null;
                   list.current?.querySelector("button")?.focus();
                 } else if (event.key === "Enter") {
                   event.preventDefault();
-                  void navigation.show(search.files[0]);
+                  openFile(search.files[0]);
                 }
               }}
             />
@@ -170,9 +198,9 @@ function FileFinderDialog({ workspace, contentRevision, search, position, onOpen
               <li key={file.file_id}>
                 <button
                   className="atlas-analysis-row atlas-finder-result" type="button"
-                  aria-current={file.file_id === position?.fileId || undefined}
+                  aria-current={(file.file_id === position?.file_id && position.query === search.query) || undefined}
                   aria-disabled={navigation.opening || undefined}
-                  onClick={navigation.opening ? undefined : () => void navigation.show(file)}
+                  onClick={navigation.opening ? undefined : () => openFile(file)}
                   onKeyDown={(event) => moveResult(event, index)}
                 >
                   <span className="atlas-finder-location">

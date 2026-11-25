@@ -35,6 +35,7 @@ import type {
   DirectorySort,
   DuplicateFile,
   FileContentMatch,
+  FinderPosition,
   FolderOpenDestination,
   FolderSimilarityMatch,
   HealthMetric,
@@ -68,6 +69,12 @@ interface NavigationEntry {
   anchor_offset: number;
   selected_node_id: string;
   sort: DirectorySort;
+  finder_position?: FinderPosition | null;
+}
+
+interface AtlasSelection {
+  node: StorageNode;
+  finderPosition: FinderPosition | null;
 }
 
 interface DirectoryWindow extends StorageChildrenPage {
@@ -106,7 +113,7 @@ interface LocationLoadOptions {
 
 type FileRevealDestination =
   | { kind: "node"; siteId: string; id: string; shouldApply?: () => boolean }
-  | { kind: "match"; siteId: string; id: string; signal: AbortSignal };
+  | { kind: "match"; siteId: string; id: string; signal: AbortSignal; finderPosition?: FinderPosition };
 
 type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">;
 type FileRevealResult = { location: FileRevealLocation; error: null } | { location: null; error: string };
@@ -149,12 +156,17 @@ function withDirectorySort(entry: NavigationEntry, sort: DirectorySort): Navigat
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
+  const previousSearch = left.finder_position;
+  const nextSearch = right.finder_position;
   return left.site_id === right.site_id
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
     && left.anchor_offset === right.anchor_offset
     && sameSort(left.sort, right.sort)
-    && left.selected_node_id === right.selected_node_id;
+    && left.selected_node_id === right.selected_node_id
+    && previousSearch?.session === nextSearch?.session
+    && previousSearch?.query === nextSearch?.query
+    && previousSearch?.file_id === nextSearch?.file_id;
 }
 
 function findNode(root: StorageNode, nodeId: string | null): StorageNode | null {
@@ -190,7 +202,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const [activeTree, setActiveTree] = useState<StorageTree | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [location, setLocation] = useState<StorageLocation | null>(null);
-  const [selectedNode, setSelectedNode] = useState<StorageNode | null>(null);
+  const [selection, setSelection] = useState<AtlasSelection | null>(null);
   const [backHistory, setBackHistory] = useState<NavigationEntry[]>([]);
   const [forwardHistory, setForwardHistory] = useState<NavigationEntry[]>([]);
   const [childrenPage, setChildrenPage] = useState<DirectoryWindow | null>(null);
@@ -221,7 +233,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
   const childrenLoadingRef = useRef(false);
   const pendingRangeRef = useRef<RowRange | null>(null);
   const childrenRetryRef = useRef<RowRange | null>(null);
-  const selectedNodeRef = useRef<StorageNode | null>(null);
+  const selectionRef = useRef<AtlasSelection | null>(null);
   const lastLocationBySite = useRef(new Map<string, NavigationEntry>());
   const backHistoryRef = useRef<NavigationEntry[]>([]);
   const forwardHistoryRef = useRef<NavigationEntry[]>([]);
@@ -284,6 +296,12 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, []);
 
+  const selectLocationNode = useCallback((node: StorageNode | null, finderPosition: FinderPosition | null = null) => {
+    const next = node ? { node, finderPosition } : null;
+    selectionRef.current = next;
+    setSelection(next);
+  }, []);
+
   const clearLocation = useCallback(() => {
     locationRequestRef.current += 1;
     childrenRequestRef.current += 1;
@@ -294,12 +312,11 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     childrenRetryRef.current = null;
     locationRef.current = null;
     childrenPageRef.current = null;
-    selectedNodeRef.current = null;
     backHistoryRef.current = [];
     forwardHistoryRef.current = [];
     setActiveTree(null);
     setLocation(null);
-    setSelectedNode(null);
+    selectLocationNode(null);
     setChildrenPage(null);
     setTreeError(null);
     setLocationFailure(null);
@@ -308,7 +325,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setLoadingMoreChildren(false);
     setBackHistory([]);
     setForwardHistory([]);
-  }, []);
+  }, [selectLocationNode]);
 
   useEffect(() => {
     if (workspaceNameRef.current !== expectedWorkspace) {
@@ -347,7 +364,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const currentLocation = locationRef.current;
     if (!siteId || currentLocation?.site_id !== siteId) return null;
     const currentPage = childrenPageRef.current;
-    const selected = selectedNodeRef.current;
+    const selected = selectionRef.current;
     return {
       site_id: siteId,
       target_site_id: targetSiteRef.current,
@@ -356,7 +373,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       limit: Math.max(CHILDREN_PAGE_SIZE, currentPage?.children.length ?? 0),
       anchor_offset: currentPage?.anchor_offset ?? 0,
       sort: currentPage?.sort ?? DEFAULT_DIRECTORY_SORT,
-      selected_node_id: selected?.id ?? currentLocation.root.id,
+      selected_node_id: selected?.node.id ?? currentLocation.root.id,
+      finder_position: selected?.finderPosition,
     };
   }, []);
 
@@ -425,9 +443,9 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         anchor_offset: nextLocation.root.id === entry.node_id && entry.anchor_offset < snapshot.page.total_children
           ? entry.anchor_offset : snapshot.page.offset,
       };
-      const selectedId = historyAction === "preserve"
-        ? selectedNodeRef.current?.id ?? entry.selected_node_id
-        : entry.selected_node_id;
+      const preserved = historyAction === "preserve" ? selectionRef.current : null;
+      const selectedId = preserved?.node.id ?? entry.selected_node_id;
+      const finderPosition = preserved ? preserved.finderPosition : entry.finder_position ?? null;
       const selection = findNode(nextLocation.root, selectedId)
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
@@ -437,7 +455,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       }
       locationRef.current = nextLocation;
       childrenPageRef.current = page;
-      selectedNodeRef.current = selection;
       selectedSiteRef.current = entry.site_id;
       targetSiteRef.current = entry.target_site_id;
       childrenRetryRef.current = null;
@@ -446,7 +463,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setCoverageTargetSiteId(entry.target_site_id);
       setLocation(nextLocation);
       setChildrenPage(page);
-      setSelectedNode(selection);
+      selectLocationNode(selection, selection.id === selectedId ? finderPosition : null);
       setChildrenError(null);
       setTreeError(null);
       if (!silent || previousEntry?.site_id !== entry.site_id
@@ -499,7 +516,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       signal?.removeEventListener("abort", finish);
       finish();
     }
-  }, [currentNavigationEntry]);
+  }, [currentNavigationEntry, selectLocationNode]);
 
   const retryLocation = useCallback(async () => {
     if (!locationFailure?.retry || locationFailure.workspace !== workspaceNameRef.current
@@ -1044,7 +1061,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     }
   }, [reloadDashboard]);
 
-  const activeSelectedNode = selectedNode ?? location?.root ?? null;
+  const activeSelectedNode = selection?.node ?? location?.root ?? null;
 
   const openFolderExternally = useCallback(async (node: StorageNode, destination: FolderOpenDestination) => {
     const workspace = workspaceNameRef.current;
@@ -1082,8 +1099,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         childrenLoadingRef.current = false;
         setChildrenLoading(false);
       }
-      selectedNodeRef.current = node;
-      setSelectedNode(node);
+      selectLocationNode(node);
       return;
     }
     const group = node.kind === "smaller_items" ? /^smaller_items:(\d+):(.+)$/.exec(node.id) : null;
@@ -1102,7 +1118,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       // The atlas group offset counts entries in descending size order.
       sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
     }, "push", { action: { title: `Couldn’t open ${node.name}` } });
-  }, [loadFolderLocation]);
+  }, [loadFolderLocation, selectLocationNode]);
 
   const navigateHistory = useCallback(async function navigateHistory(
     direction: "back" | "forward", retrying = false,
@@ -1266,7 +1282,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     const previousEntry = currentNavigationEntry();
     const isRequested = () => destination.kind === "match"
       ? !destination.signal.aborted
-      : (selectedSiteRef.current === destination.siteId && selectedNodeRef.current?.id === destination.id
+      : (selectedSiteRef.current === destination.siteId && selectionRef.current?.node.id === destination.id
         && (destination.shouldApply?.() ?? true));
     const cancelled = { location: null, error: "File navigation was cancelled." } as const;
     if (!isRequested()) return cancelled;
@@ -1317,6 +1333,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       const selectedIndex = reveal.page.children.findIndex((child) => child.id === reveal.selected_file.id);
       if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
       const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
+      const finderPosition = destination.kind === "match" ? destination.finderPosition : previousEntry?.finder_position;
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
@@ -1326,6 +1343,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
         anchor_offset: page.anchor_offset,
         sort,
         selected_node_id: reveal.selected_file.id,
+        finder_position: finderPosition,
       };
 
       if (previousEntry && previousEntry.site_id !== destinationEntry.site_id) {
@@ -1336,7 +1354,6 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       targetSiteRef.current = destinationEntry.target_site_id;
       locationRef.current = reveal.location;
       childrenPageRef.current = page;
-      selectedNodeRef.current = reveal.selected_file;
       childrenRequestRef.current += 1;
       childrenRetryRef.current = null;
 
@@ -1345,15 +1362,14 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       setLocation(reveal.location);
       setChildrenPage(page);
       setChildrenError(null);
-      setSelectedNode(reveal.selected_file);
+      selectLocationNode(reveal.selected_file, finderPosition);
       if (destination.kind === "match") setDuplicateJumpRevision((current) => current + 1);
       setTreeError(null);
 
       // Showing the file in its current directory changes the inspector and scroll position only.
-      if (destination.kind === "match" || previousEntry?.node_id !== destinationEntry.node_id) {
-        if (previousEntry && !sameNavigationEntry(previousEntry, destinationEntry)) {
-          backHistoryRef.current = [...backHistoryRef.current, previousEntry];
-        }
+      if (previousEntry && (destination.kind === "match" || previousEntry.node_id !== destinationEntry.node_id)
+        && !sameNavigationEntry(previousEntry, destinationEntry)) {
+        backHistoryRef.current = [...backHistoryRef.current, previousEntry];
         forwardHistoryRef.current = [];
         setBackHistory(backHistoryRef.current);
         setForwardHistory([]);
@@ -1368,10 +1384,12 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       signal?.removeEventListener("abort", finish);
       finish();
     }
-  }, [currentNavigationEntry]);
+  }, [currentNavigationEntry, selectLocationNode]);
 
-  const jumpToContentMatch = useCallback(async (match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal): Promise<string | null> => {
-    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal });
+  const jumpToContentMatch = useCallback(async (
+    match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, finderPosition?: FinderPosition,
+  ): Promise<string | null> => {
+    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, finderPosition });
     return result.error;
   }, [revealFile]);
 
@@ -1400,7 +1418,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
 
   const revealSelectedFileInContents = useCallback(async (fileId: string, shouldApply?: () => boolean) => {
     const siteId = selectedSiteRef.current;
-    if (!siteId || selectedNodeRef.current?.kind !== "file" || childrenLoadingRef.current) return null;
+    if (!siteId || selectionRef.current?.node.kind !== "file" || childrenLoadingRef.current) return null;
     const result = await revealFile({ kind: "node", siteId, id: fileId, shouldApply });
     return result.location;
   }, [revealFile]);
@@ -1572,6 +1590,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     setHealthMetric,
     location,
     selectedNode: activeSelectedNode,
+    finderPosition: selection?.finderPosition ?? null,
     selectNode,
     jumpToContentMatch,
     jumpToSimilarFolder,
@@ -1671,6 +1690,7 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
     runPreview,
     scan,
     scanningTaskCount,
+    selection?.finderPosition,
     selectCoverageTarget,
     selectNode,
     selectSite,

@@ -18,7 +18,7 @@ import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
-import type { DirectorySort, FileContentMatch, FolderSimilarityMatch, HealthMetric, IndexedFileSearchResult, StorageNode } from "../lib/types";
+import type { DirectorySort, FileContentMatch, FinderPosition, FolderSimilarityMatch, HealthMetric, StorageNode } from "../lib/types";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -30,9 +30,10 @@ interface ContentsVisit {
 type InspectorPane = InspectorView | ContentsVisit;
 
 interface FinderSession {
+  id: symbol;
   workspace: string;
   openedFrom: "atlas" | "details" | null;
-  result: Pick<IndexedFileSearchResult, "site_id" | "path"> | null;
+  latestPosition: FinderPosition | null;
 }
 
 function directoryScope(workspace: string | undefined, site: string | undefined, folder: string | undefined) {
@@ -96,11 +97,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
   const openFileFinder = useCallback(() => {
     if (!findWorkspace) return;
-    setFinderSession((session) => ({
-      workspace: findWorkspace,
-      openedFrom: "atlas",
-      result: session?.workspace === findWorkspace ? session.result : null,
-    }));
+    setFinderSession((session) => session?.workspace === findWorkspace ? { ...session, openedFrom: "atlas" }
+      : { id: Symbol(), workspace: findWorkspace, openedFrom: "atlas", latestPosition: null });
   }, [findWorkspace]);
   const siteId = site?.id;
   const pane = inspectorOpen && siteId ? inspectorBySite.get(siteId) ?? "contents" : null;
@@ -168,8 +166,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
-  const canReturnToFinder = Boolean(findWorkspace && finder?.result && selected?.kind === "file"
-    && finder.result.site_id === siteId && finder.result.path === selected.path);
+  const finderPosition = selected?.kind === "file" && state.finderPosition?.session === finder?.id
+    ? state.finderPosition : null;
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
     return directoryKey(dashboard?.workspace_name, siteId, target?.id, folder?.id, sort, anchor);
   }
@@ -565,7 +563,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                     metric={metric}
                     targetCompleteness={targetCompleteness}
                     targetName={target?.name ?? null}
-                    onBackToResults={canReturnToFinder ? () => {
+                    onBackToResults={findWorkspace && finderPosition ? () => {
                       setFinderSession((session) => session && { ...session, openedFrom: "details" });
                     } : undefined}
                     onShowInContents={selected?.kind === "file" && !fileOpen
@@ -643,10 +641,12 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
         <FileFinder
           key={finder.workspace}
           workspace={finder.workspace} contentRevision={state.contentRevision}
+          session={finder.id} position={finder.openedFrom === "details" ? finderPosition : finder.latestPosition}
           open={finder.openedFrom !== null && finder.workspace === findWorkspace}
           onOpen={state.jumpToContentMatch}
-          onOpened={(file) => {
-            setFinderSession({ workspace: finder.workspace, openedFrom: null, result: file });
+          onOpened={(file, position) => {
+            setFinderSession((session) => session?.id === finder.id
+              ? { ...session, openedFrom: null, latestPosition: position } : session);
             showAnalysisDetails(file.site_id);
           }}
           onClose={() => {

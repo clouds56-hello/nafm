@@ -315,6 +315,14 @@ export interface IndexedFileSearchPage {
   total_matches: number;
 }
 
+export interface FinderPosition {
+  session: symbol;
+  query: string;
+  file_id: string;
+  scroll_top: number;
+  loaded_count: number;
+}
+
 export interface ScanSelector {
   site_id?: string;
   all?: boolean;
