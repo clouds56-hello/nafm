@@ -94,12 +94,14 @@ test("Find files restores a late result and its scroll position while Atlas Back
   await input.fill(searchText);
   await expect(result(dialog, /Proof 001\.jpg/i)).toBeVisible();
   const last = result(dialog, /Proof 096\.jpg/i);
+  const finalMatch = result(dialog, /^Proofs\.pdf/i);
   await expect(last).toHaveCount(0);
 
   const scroller = dialog.locator(".atlas-analysis-body");
   await expect(async () => {
     await scroller.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
     await expect(last).toBeInViewport({ ratio: 1, timeout: 1_000 });
+    await expect(finalMatch).toBeAttached({ timeout: 1_000 });
   }).toPass({ timeout: 12_000 });
   const loadedOffsets = await offsets.evaluate((reads) => [...reads]);
   expect(loadedOffsets.some((offset) => offset > 0)).toBe(true);
