@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import type { WorkspaceSwitchFailure } from "../hooks/useWorkspace";
+import type { AtlasToolbarFocus, WorkspaceSwitchFailure } from "../hooks/useWorkspace";
 import { formatCount } from "../lib/format";
 import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, SearchIcon, WorkspaceIcon } from "../management/Icons";
@@ -35,7 +35,7 @@ export interface AtlasToolbarProps {
     disabled: boolean;
     pending: boolean;
     failure: WorkspaceSwitchFailure | null;
-    focusRequested: boolean;
+    focusRequested: AtlasToolbarFocus | null;
     onSwitch: (name: string) => void;
     onDismissFailure: () => void;
     onFocusHandled: () => void;
@@ -303,12 +303,13 @@ export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity
   useLayoutEffect(() => {
     if (pending) return;
     if (document.activeElement === document.body) {
-      if (failure) {
-        workspaceRecovery.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus({ preventScroll: true });
-      } else if (focusRequested) {
+      if (focusRequested) {
         const picker = workspacePicker.current;
-        const control = picker && !picker.disabled && picker.getClientRects().length ? picker : workspaceActions.current;
+        const usePicker = focusRequested === "workspace" && picker && !picker.disabled && picker.getClientRects().length;
+        const control = usePicker ? picker : workspaceActions.current;
         control?.focus({ preventScroll: true });
+      } else if (failure) {
+        workspaceRecovery.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus({ preventScroll: true });
       }
     }
     if (focusRequested) onFocusHandled();

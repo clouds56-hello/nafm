@@ -101,6 +101,32 @@ test("partial verification marks 100% coverage as approximate without a full-cov
   await expect(dialog.getByRole("status").filter({ hasText: "verified portions" })).toBeVisible();
 });
 
+test("Atlas history keeps the source and matching folder’s inspector tabs independent", async ({ page }) => {
+  const dialog = await openComparison(page);
+  await dialog.getByRole("button", { name: /Studio archive.*Backup campaign/ }).press("Enter");
+  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(folderDetails(page)).toContainText(backupPath);
+
+  const contents = inspector(page).getByRole("tab", { name: "Contents", exact: true });
+  const details = inspector(page).getByRole("tab", { name: "Details", exact: true });
+  await contents.press("Enter");
+  await expect(contents).toHaveAttribute("aria-selected", "true");
+  await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(details).toHaveAttribute("aria-selected", "true");
+  await expect(folderDetails(page)).toContainText(sourcePath);
+
+  await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(contents).toHaveAttribute("aria-selected", "true");
+  await expect(inspector(page).getByRole("tabpanel", { name: "Contents", exact: true })
+    .getByRole("button", { name: /^Trailer master\.mov/ })).toBeVisible();
+  await details.press("Enter");
+  await expect(folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true })).toBeVisible();
+});
+
 test("the compact comparison restores the chosen folder and scroll position after inspection", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 580 });
   const dialog = await openComparison(page);

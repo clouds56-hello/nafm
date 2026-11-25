@@ -17,7 +17,7 @@ import { SourceLibrary } from "./SourceLibrary";
 import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
-import { useDashboard } from "../hooks/useDashboard";
+import { useDashboard, type AtlasInspection } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import type { useWorkspace } from "../hooks/useWorkspace";
 import { siteAnalysisReady } from "../lib/analysis";
@@ -34,7 +34,6 @@ interface ContentsVisit {
   view: InspectorView;
   contentsKey: string;
   fileId: string;
-  revealRevision: number;
   source: "contents" | "atlas";
 }
 
@@ -97,14 +96,13 @@ function HealthScale() {
 
 interface WorkspaceAtlasProps {
   workspace: ReturnType<typeof useWorkspace>;
-  siteListRevision: number;
   siteAddition?: SiteAddition;
   browsingScope: string;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) => void;
   toolbarExtension?: AtlasToolbarExtension;
 }
 
-export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
+export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sitesOpen, setSitesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -127,13 +125,13 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   const [contentsReveal, setContentsReveal] = useState<{ key: string; index: number; onApplied: () => void } | null>(null);
   const [historyFocusOrigin, setHistoryFocusOrigin] = useState<HTMLElement | null>(null);
   const finishHistoryFocus = useCallback(() => setHistoryFocusOrigin(null), []);
-  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromFinderDetails: boolean } | null>(null);
+  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ origin: HTMLElement; fromInspectionDetails: boolean } | null>(null);
   const [finderSession, setFinderSession] = useState<FinderSession | null>(null);
-  const [finderViews, setFinderViews] = useState(() => new Map<FinderPosition, InspectorView>());
+  const [inspectionViews, setInspectionViews] = useState(() => new Map<AtlasInspection, InspectorView>());
   const [reviewInspection, setReviewInspection] = useState<ReviewInspection | null>(null);
   const [comparisonSession, setComparisonSession] = useState<ComparisonSession | null>(null);
   const [mapMode, setMapMode] = useState<MapMode>("size");
-  const state = useDashboard(workspace.management?.active_workspace.name ?? null, siteListRevision, browsingScope, directoryRefresh);
+  const state = useDashboard(workspace.management?.active_workspace.name ?? null, workspace.siteListRevision, browsingScope, directoryRefresh);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
@@ -143,9 +141,9 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       : { id: Symbol(), workspace: findWorkspace, openedFrom: "atlas", latestPosition: null });
   }, [findWorkspace]);
   const siteId = site?.id;
-  const finderVisit = selectedNode?.kind === "file" ? state.finderPosition : null;
+  const inspection = state.inspection;
   const pane = inspectorOpen && siteId
-    ? finderVisit ? finderViews.get(finderVisit) ?? "details" : inspectorBySite.get(siteId) ?? "contents"
+    ? inspection ? inspectionViews.get(inspection) ?? "details" : inspectorBySite.get(siteId) ?? "contents"
     : null;
   const visit = typeof pane === "object" ? pane : null;
   const inspectorView = typeof pane === "string" ? pane : visit?.view ?? null;
@@ -161,10 +159,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     setInspectorOpen(true);
   }, [rememberPane]);
   function changeInspectorView(next: InspectorView) {
-    if (finderVisit) {
+    if (inspection) {
       lastOpened.current = "inspector";
       setRevealedRow(null);
-      setFinderViews((saved) => new Map(saved).set(finderVisit, next));
+      setInspectionViews((saved) => new Map(saved).set(inspection, next));
       setInspectorOpen(true);
     } else {
       openInspector(next);
@@ -233,7 +231,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
       onCancel: (id: number) => void state.cancel(id),
     } : undefined;
   const selected = selectedNode?.id === folder?.id ? null : selectedNode;
-  const finderPosition = finderVisit?.session === finder?.id ? finderVisit : null;
+  const finderPosition = inspection?.kind === "finder" && inspection.position.session === finder?.id ? inspection.position : null;
   const reviewed = reviewInspection?.workspace === findWorkspace ? reviewInspection : null;
   const returnToReview = !finderPosition && reviewed && selected?.kind === "file"
     && reviewed.siteId === siteId && reviewed.path === selected.path ? reviewed : null;
@@ -291,9 +289,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     contentsScroll.current.delete(search.enabled ? searchContentsKey(sort, searchQuery) : contentsKeyFor(sort, 0));
     return state.setDirectorySort(sort);
   }
-  const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id
-    && visit.revealRevision === state.duplicateJumpRevision ? visit : null;
-  // A new location or an exact-copy jump ends this list's local Back/Forward step.
+  const currentVisit = visit?.contentsKey === contentsKey && visit.fileId === selected?.id ? visit : null;
+  // An inspection owns its own pane while the ordinary list's local visit stays saved.
   useEffect(() => {
     if (visit && !currentVisit) {
       const view = visit.view === "details" && selected?.kind === "file" ? "details" : "contents";
@@ -432,28 +429,28 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
   useLayoutEffect(() => {
     if (!historyFocusRequest) return;
     setHistoryFocusRequest(null);
-    const { origin, fromFinderDetails } = historyFocusRequest;
+    const { origin, fromInspectionDetails } = historyFocusRequest;
     const pane = contentsPane.current;
     const focus = document.activeElement;
     if (!pane || (focus !== origin && focus !== document.body && focus !== pane)) return;
     if (inspectorView === "contents") {
-      if (fromFinderDetails) revealInCompactAtlas(pane.closest("aside"));
+      if (fromInspectionDetails) revealInCompactAtlas(pane.closest("aside"));
       setHistoryFocusOrigin(origin);
-    } else if (inspectorView === "details" && finderVisit) {
+    } else if (inspectorView === "details" && inspection) {
       revealInCompactAtlas(pane.closest("aside"));
       setAnalysisFocusRequested(true);
     }
-  }, [finderVisit, historyFocusRequest, inspectorView]);
+  }, [inspection, historyFocusRequest, inspectorView]);
 
   useEffect(() => {
     function moveHistory(move: () => Promise<boolean> | undefined, target: EventTarget | null) {
       const pane = contentsPane.current;
       const result = move();
       if (!result || !(target instanceof HTMLElement) || !pane) return;
-      const fromFinderDetails = Boolean(finderVisit && inspectorView === "details" && pane.closest("aside")?.contains(target));
-      if (!fromFinderDetails && !pane.contains(target)) return;
+      const fromInspectionDetails = Boolean(inspection && inspectorView === "details" && pane.closest("aside")?.contains(target));
+      if (!fromInspectionDetails && !pane.contains(target)) return;
       void result.then((moved) => {
-        if (moved && contentsPane.current === pane) setHistoryFocusRequest({ origin: target, fromFinderDetails });
+        if (moved && contentsPane.current === pane) setHistoryFocusRequest({ origin: target, fromInspectionDetails });
       });
     }
 
@@ -488,7 +485,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     }
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, finderVisit, openFileFinder]);
+  }, [sitesOpen, inspectorView, canGoBack, canGoForward, canGoUp, fileOpen, goBack, goForward, goUp, closeInspector, findWorkspace, inspection, openFileFinder]);
 
   async function showFileInContents(file: StorageNode) {
     if (!folder || (pendingReveal.current && !pendingReveal.current.signal.aborted)) return;
@@ -526,11 +523,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     }
   }
 
-  function showAnalysisDetails(siteId?: string) {
+  function showAnalysisDetails() {
     inspectorOrigin.current = null;
     lastOpened.current = "inspector";
     setRevealedRow(null);
-    if (siteId) setInspectorBySite((saved) => new Map(saved).set(siteId, "details"));
     setInspectorOpen(true);
     setAnalysisFocusRequested(true);
   }
@@ -576,7 +572,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
     if (!origin || inspectorView === "contents" || currentVisit) {
       if (!origin) inspectorOrigin.current = null;
       openInspector({
-        view: "details", fileId: node.id, contentsKey, revealRevision: state.duplicateJumpRevision,
+        view: "details", fileId: node.id, contentsKey,
         source: origin ? "atlas" : "contents",
       });
     } else {
@@ -593,10 +589,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           disabled: state.activeTaskCount > 0 || workspace.workspaceSwitching,
           pending: workspace.workspaceSwitching,
           failure: workspace.workspaceSwitchFailure,
-          focusRequested: workspace.workspaceSwitchFocus,
+          focusRequested: workspace.atlasToolbarFocus,
           onSwitch: (name) => void workspace.quickSwitchWorkspace(name),
           onDismissFailure: workspace.dismissWorkspaceSwitchFailure,
-          onFocusHandled: workspace.finishWorkspaceSwitchFocus,
+          onFocusHandled: workspace.finishAtlasToolbarFocus,
         }}
         navigation={{
           siteName: site?.name ?? null,
@@ -742,7 +738,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
                 detailsKey={selected?.id ?? folder?.id ?? null}
                 contentsPane={contentsPane}
                 siteId={site.id}
-                finderVisit={finderVisit}
+                inspection={inspection}
                 fileOpen={fileOpen}
                 folderName={folder?.name}
                 view={inspectorView}
@@ -858,7 +854,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           contentRevision={state.contentRevision} position={comparison.position} onJump={state.jumpToContentMatch} onClose={closeComparison}
           onShown={(match, position) => {
             setComparisonSession({ ...comparison, open: false, position, destination: { siteId: match.site_id, path: match.path } });
-            showAnalysisDetails(match.site_id);
+            showAnalysisDetails();
           }}
         />
       ) : (
@@ -872,7 +868,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
             setComparisonSession({
               ...comparison, open: false, position, destination: { siteId: match.folder.site_id, nodeId: match.folder.node_id },
             });
-            showAnalysisDetails(match.folder.site_id);
+            showAnalysisDetails();
           }}
         />
       ))}
@@ -955,7 +951,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, brow
           onInspected={(file, position) => {
             setReviewInspection({ workspace: dashboard.workspace_name, siteId: file.site_id, path: file.path, position, returning: false });
             state.setReviewOpen(false);
-            showAnalysisDetails(file.site_id);
+            showAnalysisDetails();
           }}
         />
       )}

@@ -4,7 +4,7 @@ export type AddSiteOrigin = "atlas" | "sites" | "sources" | "coverage" | "settin
 
 export interface AddSiteRequest {
   workspaceName: string;
-  dashboardRevision: number;
+  workspaceRevision: number;
   opener: HTMLButtonElement;
   origin: AddSiteOrigin;
 }

@@ -46,6 +46,50 @@ test.beforeEach(async ({ page }) => {
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
+test("Atlas Back restores the scrolled filtered Contents list after inspecting a staged copy", async ({ page }) => {
+  await stageCopy(page, "Backup campaign");
+  await folderPath(page).getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+  await page.getByRole("region", { name: "Circular storage map" })
+    .getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+
+  await inspector(page).getByRole("tab", { name: "Contents", exact: true }).press("Enter");
+  const contents = inspector(page).getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const lastProof = grid.getByRole("button", { name: /^Proof 096\.jpg/ });
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+    .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+  const query = "  pRoOf  ";
+  await filter.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "96");
+  await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await expect(lastProof).toBeInViewport({ ratio: 0.99 });
+  const scrollTop = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+  await page.getByRole("button", { name: /^Review\b/ }).press("Enter");
+  const dialog = review(page);
+  await inspectCopy(dialog, "Staged copies", backupPath).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(inspector(page)).toContainText(backupPath);
+
+  const back = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  await back.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(filter).toHaveValue(query);
+  await expect(lastProof).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBeCloseTo(scrollTop, 0);
+  await expect(back).toBeFocused();
+
+  await folderPath(page).getByRole("button", { name: "Next location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(inspector(page)).toContainText(backupPath);
+  await expect(inspector(page).getByRole("button", { name: "Back to review", exact: true })).toBeVisible();
+});
+
 test("cleanup review can undo and redo a removal before running a fresh preview", async ({ page }) => {
   await stageCopy(page, "Backup campaign");
   await folderPath(page).getByRole("button", { name: "Projects", exact: true }).click();

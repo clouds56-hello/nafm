@@ -79,12 +79,16 @@ interface NavigationEntry {
   selected_node_id: string;
   sort: DirectorySort;
   atlas_group?: true;
-  finder_position?: FinderPosition | null;
+  inspection?: AtlasInspection | null;
 }
+
+export type AtlasInspection =
+  | { kind: "finder"; position: FinderPosition }
+  | { kind: "analysis" };
 
 interface AtlasSelection {
   node: StorageNode;
-  finderPosition: FinderPosition | null;
+  inspection: AtlasInspection | null;
 }
 
 interface DirectoryWindow extends StorageChildrenPage {
@@ -130,7 +134,7 @@ interface DirectoryAnchorLoad {
 
 type FileRevealDestination =
   | { kind: "node"; siteId: string; id: string; filter?: StorageDirectoryFilter; shouldApply?: () => boolean }
-  | { kind: "match"; siteId: string; id: string; signal: AbortSignal; finderPosition?: FinderPosition };
+  | { kind: "match"; siteId: string; id: string; signal: AbortSignal; inspection: AtlasInspection };
 
 type FileRevealLocation = Pick<NavigationEntry, "site_id" | "target_site_id" | "node_id" | "sort" | "anchor_offset">
   & { filtered_page?: StorageChildrenPage | null };
@@ -175,8 +179,13 @@ function withDirectorySort(entry: NavigationEntry, sort: DirectorySort): Navigat
 }
 
 function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boolean {
-  const previousSearch = left.finder_position;
-  const nextSearch = right.finder_position;
+  const previousSearch = left.inspection?.kind === "finder" ? left.inspection.position : null;
+  const nextSearch = right.inspection?.kind === "finder" ? right.inspection.position : null;
+  const sameInspection = left.inspection?.kind === "analysis" || right.inspection?.kind === "analysis"
+    ? left.inspection === right.inspection
+    : previousSearch?.session === nextSearch?.session
+      && previousSearch?.query === nextSearch?.query
+      && previousSearch?.file_id === nextSearch?.file_id;
   return left.site_id === right.site_id
     && left.target_site_id === right.target_site_id
     && left.node_id === right.node_id
@@ -184,9 +193,7 @@ function sameNavigationEntry(left: NavigationEntry, right: NavigationEntry): boo
     && left.atlas_group === right.atlas_group
     && sameSort(left.sort, right.sort)
     && left.selected_node_id === right.selected_node_id
-    && previousSearch?.session === nextSearch?.session
-    && previousSearch?.query === nextSearch?.query
-    && previousSearch?.file_id === nextSearch?.file_id;
+    && sameInspection;
 }
 
 function findNode(root: StorageNode, nodeId: string | null): StorageNode | null {
@@ -247,7 +254,6 @@ export function useDashboard(
   const [previewLoading, setPreviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [contentRevision, setContentRevision] = useState(0);
-  const [duplicateJumpRevision, setDuplicateJumpRevision] = useState(0);
   const selectedSiteRef = useRef<string | null>(null);
   const targetSiteRef = useRef<string | null>(null);
 
@@ -280,6 +286,7 @@ export function useDashboard(
   const stagingInProgress = useRef(false);
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
+  const previousSiteListRevision = useRef(siteListRevision);
 
   const updateCompletionBySite = useCallback((
     update: (current: Map<string, ScanCompletionView>) => Map<string, ScanCompletionView>,
@@ -323,8 +330,8 @@ export function useDashboard(
     }
   }, []);
 
-  const selectLocationNode = useCallback((node: StorageNode | null, finderPosition: FinderPosition | null = null) => {
-    const next = node ? { node, finderPosition } : null;
+  const selectLocationNode = useCallback((node: StorageNode | null, inspection: AtlasInspection | null = null) => {
+    const next = node ? { node, inspection } : null;
     selectionRef.current = next;
     setSelection(next);
   }, []);
@@ -403,7 +410,7 @@ export function useDashboard(
       sort: currentPage?.sort ?? DEFAULT_DIRECTORY_SORT,
       atlas_group: currentPage?.atlas_group,
       selected_node_id: selected?.node.id ?? currentLocation.root.id,
-      finder_position: selected?.finderPosition,
+      inspection: selected?.inspection,
     };
   }, []);
 
@@ -477,7 +484,7 @@ export function useDashboard(
       };
       const preserved = historyAction === "preserve" ? selectionRef.current : null;
       const selectedId = preserved?.node.id ?? entry.selected_node_id;
-      const finderPosition = preserved ? preserved.finderPosition : entry.finder_position ?? null;
+      const inspection = preserved ? preserved.inspection : entry.inspection ?? null;
       const selection = findNode(nextLocation.root, selectedId)
         ?? page.children.find((child) => child.id === selectedId)
         ?? nextLocation.root;
@@ -496,7 +503,7 @@ export function useDashboard(
       setCoverageTargetSiteId(entry.target_site_id);
       setLocation(nextLocation);
       setChildrenPage(page);
-      selectLocationNode(selection, selection.id === selectedId ? finderPosition : null);
+      selectLocationNode(selection, selection.id === selectedId ? inspection : null);
       setChildrenError(null);
       setTreeError(null);
       if (!silent || previousEntry?.site_id !== entry.site_id
@@ -672,7 +679,7 @@ export function useDashboard(
     ));
   }, [clearAnalysisRefreshes, invalidateCleanupPreview, updateCompletionBySite]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (siteListChanged = false) => {
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
     const locationGeneration = locationRequestRef.current;
@@ -699,13 +706,23 @@ export function useDashboard(
         selectedSiteRef.current = nextSite;
         targetSiteRef.current = nextTarget;
       }
-      if (nextSite) await refreshTree(nextSite, nextTarget, true);
+      const current = siteListChanged ? currentNavigationEntry() : null;
+      if (current && current.site_id === nextSite) {
+        const selected = selectionRef.current?.node;
+        const anchor = selected?.kind === "file" && !childrenPageRef.current?.children.some((entry) => entry.id === selected.id)
+          ? { request: { child_id: selected.id, query: null } }
+          : undefined;
+        // Site edits refresh the visible folder without blocking a newer navigation.
+        await loadFolderLocation({ ...current, target_site_id: nextTarget }, "preserve", { silent: true, anchor });
+      } else if (nextSite) {
+        await refreshTree(nextSite, nextTarget, true);
+      }
     } catch (loadError) {
       if (dashboardRequestRef.current === requestId) setError(errorMessage(loadError));
     } finally {
       if (dashboardRequestRef.current === requestId) setLoading(false);
     }
-  }, [acceptDashboard, browsingScope, clearLocation, refreshTree]);
+  }, [acceptDashboard, browsingScope, clearLocation, currentNavigationEntry, loadFolderLocation, refreshTree]);
 
   const reloadDashboard = useCallback(async () => {
     if (!dashboardRef.current) {
@@ -827,7 +844,12 @@ export function useDashboard(
   }, [refreshTree, reloadDashboard]);
 
   useEffect(() => {
-    void refresh();
+    const siteListChanged = previousSiteListRevision.current !== siteListRevision;
+    if (siteListChanged) {
+      previousSiteListRevision.current = siteListRevision;
+      setContentRevision((current) => current + 1);
+    }
+    void refresh(siteListChanged);
   }, [refresh, siteListRevision]);
 
   const handleScanEvent = useCallback((event: ScanTaskEvent) => {
@@ -1441,7 +1463,7 @@ export function useDashboard(
       const selectedIndex = reveal.page.children.findIndex((child) => child.id === reveal.selected_file.id);
       if (selectedIndex < 0) throw new Error("The selected file could not be found in its directory.");
       const page: DirectoryWindow = { ...reveal.page, anchor_offset: reveal.page.offset + selectedIndex, sort };
-      const finderPosition = destination.kind === "match" ? destination.finderPosition : previousEntry?.finder_position;
+      const inspection = destination.kind === "match" ? destination.inspection : previousEntry?.inspection;
       const destinationEntry: NavigationEntry = {
         site_id: reveal.tree.site_id,
         target_site_id: reveal.tree.coverage_target?.id ?? null,
@@ -1451,7 +1473,7 @@ export function useDashboard(
         anchor_offset: page.anchor_offset,
         sort,
         selected_node_id: reveal.selected_file.id,
-        finder_position: finderPosition,
+        inspection,
       };
 
       if (previousEntry && previousEntry.site_id !== destinationEntry.site_id) {
@@ -1470,8 +1492,7 @@ export function useDashboard(
       setLocation(reveal.location);
       setChildrenPage(page);
       setChildrenError(null);
-      selectLocationNode(reveal.selected_file, finderPosition);
-      if (destination.kind === "match") setDuplicateJumpRevision((current) => current + 1);
+      selectLocationNode(reveal.selected_file, inspection);
       setTreeError(null);
 
       // Showing the file in its current directory changes the inspector and scroll position only.
@@ -1497,7 +1518,8 @@ export function useDashboard(
   const jumpToContentMatch = useCallback(async (
     match: Pick<FileContentMatch, "site_id" | "file_id">, signal: AbortSignal, finderPosition?: FinderPosition,
   ): Promise<string | null> => {
-    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, finderPosition });
+    const inspection: AtlasInspection = finderPosition ? { kind: "finder", position: finderPosition } : { kind: "analysis" };
+    const result = await revealFile({ kind: "match", siteId: match.site_id, id: match.file_id, signal, inspection });
     return result.error;
   }, [revealFile]);
 
@@ -1516,7 +1538,7 @@ export function useDashboard(
     const sort = readSiteDirectorySort(workspace, site_id);
     let message = "The matched folder could not be opened.";
     const result = await loadFolderLocation({
-      site_id, node_id, target_site_id: target, selected_node_id: node_id,
+      site_id, node_id, target_site_id: target, selected_node_id: node_id, inspection: { kind: "analysis" },
       offset: 0, limit: CHILDREN_PAGE_SIZE, anchor_offset: 0, sort,
     }, "push", { signal, onError: (error) => { message = error; } });
     if (result === "superseded") return "Folder navigation was cancelled.";
@@ -1733,12 +1755,11 @@ export function useDashboard(
     setHealthMetric,
     location,
     selectedNode: activeSelectedNode,
-    finderPosition: selection?.finderPosition ?? null,
+    inspection: selection?.inspection ?? null,
     selectNode,
     jumpToContentMatch,
     jumpToSimilarFolder,
     revealSelectedFileInContents,
-    duplicateJumpRevision,
     childrenPage,
     contentsAnchorOffset: childrenPage?.anchor_offset ?? 0,
     contentsGroup: childrenPage?.atlas_group ?? false,
@@ -1810,7 +1831,6 @@ export function useDashboard(
     coverageTargetSiteId,
     contentRevision,
     dashboard,
-    duplicateJumpRevision,
     error,
     healthMetric,
     isSelectedStaged,
@@ -1838,7 +1858,7 @@ export function useDashboard(
     runPreview,
     scan,
     scanningTaskCount,
-    selection?.finderPosition,
+    selection?.inspection,
     selectCoverageTarget,
     selectNode,
     selectSite,

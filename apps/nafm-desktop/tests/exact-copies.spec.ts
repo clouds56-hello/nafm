@@ -17,12 +17,17 @@ function inspector(page: Page) {
   return page.getByRole("complementary", { name: "Inspector" });
 }
 
-async function inspectOriginalFile(page: Page) {
+async function openBrandCampaign(page: Page) {
   const map = page.getByRole("region", { name: "Circular storage map" });
   await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Projects");
   await map.getByRole("button", { name: /^Brand campaign,/ }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Brand campaign");
+  return map;
+}
+
+async function inspectOriginalFile(page: Page) {
+  const map = await openBrandCampaign(page);
   await map.getByRole("button", { name: /^Trailer master\.mov,/ }).press("Enter");
   await expect(inspector(page).getByRole("heading", { name: fileName, exact: true })).toBeVisible();
 }
@@ -142,6 +147,47 @@ test("an exact-copy jump that fails keeps the comparison available to retry", as
   await expect(dialog).toBeHidden();
   await expect(currentFolder(page)).toHaveText("Backup campaign");
   await expect(inspector(page)).toContainText(backupPath);
+});
+
+test("Atlas history retains the original filtered Contents visit across an exact-copy inspection", async ({ page }) => {
+  await openBrandCampaign(page);
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = inspector(page).getByRole("tabpanel", { name: "Contents", exact: true });
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true })
+    .or(contents.getByRole("textbox", { name: "Find in folder", exact: true }));
+  const query = "  tRaIlEr  ";
+  await filter.fill(query);
+  const grid = contents.getByRole("grid");
+  await expect(grid).toHaveAttribute("aria-rowcount", "1");
+  const trailer = grid.getByRole("button", { name: /^Trailer master\.mov/ });
+  await trailer.press("Enter");
+  const backToContents = inspector(page).getByRole("button", { name: "Back to Contents", exact: true });
+  await expect(backToContents).toBeVisible();
+
+  const dialog = await openExactCopies(page);
+  await expect(dialog.getByRole("region", { name: "Matching copy", exact: true })).toContainText(backupPath);
+  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+
+  const back = folderPath(page).getByRole("button", { name: "Previous location", exact: true });
+  await back.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(inspector(page)).toContainText(sourcePath);
+  await expect(backToContents).toBeVisible();
+  await back.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(filter).toHaveValue(query);
+  await expect(trailer).toBeFocused();
+
+  const forward = folderPath(page).getByRole("button", { name: "Next location", exact: true });
+  await forward.press("Enter");
+  await expect(backToContents).toBeVisible();
+  await forward.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await expect(inspector(page)).toContainText(backupPath);
+  await expect(inspector(page).getByRole("button", { name: "Back to comparison", exact: true })).toBeVisible();
 });
 
 for (const scanSite of ["Field drive", "Studio archive"]) {

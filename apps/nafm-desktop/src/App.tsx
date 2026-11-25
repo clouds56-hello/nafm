@@ -17,15 +17,14 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
   const workspace = useWorkspace();
   const [addingSite, setAddingSite] = useState<AddSiteRequest | null>(null);
   const [siteAddition, setSiteAddition] = useState<SiteAddition>();
-  const [siteListRevision, setSiteListRevision] = useState(0);
-  const addition = siteAddition?.dashboardRevision === workspace.dashboardRevision ? siteAddition : undefined;
+  const addition = siteAddition?.workspaceRevision === workspace.workspaceRevision ? siteAddition : undefined;
 
   function openAddSite(event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) {
     // WebKit doesn't focus a button on pointer activation. Give the dialog a return target.
     const opener = event.currentTarget;
     opener.focus({ preventScroll: true });
     setSiteAddition(undefined);
-    setAddingSite({ opener, origin, workspaceName, dashboardRevision: workspace.dashboardRevision });
+    setAddingSite({ opener, origin, workspaceName, workspaceRevision: workspace.workspaceRevision });
   }
 
   return (
@@ -35,9 +34,8 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
         aria-busy={workspace.workspaceSwitching || undefined}
       >
         <WorkspaceAtlas
-          key={workspace.dashboardRevision}
+          key={workspace.workspaceRevision}
           workspace={workspace}
-          siteListRevision={siteListRevision}
           siteAddition={addition}
           onAddSite={openAddSite}
           toolbarExtension={toolbarExtension}
@@ -72,9 +70,8 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
           blocked={workspace.activeTaskCount > 0}
           onClose={() => setAddingSite(null)}
           onMutation={(result, createdSiteName) => {
-            workspace.acceptMutation(result, false);
+            workspace.acceptMutation(result, createdSiteName !== undefined);
             if (createdSiteName === undefined) return;
-            setSiteListRevision((revision) => revision + 1);
             if (result.active_workspace.name !== addingSite.workspaceName) return;
             const created = result.snapshot?.sites.find((site) => site.name === createdSiteName);
             setSiteAddition({ ...addingSite, name: createdSiteName, siteId: created?.id });

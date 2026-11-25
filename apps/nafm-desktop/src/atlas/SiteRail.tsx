@@ -241,7 +241,10 @@ export function SiteRail({
                       type="button"
                       aria-label={`Manage ${site.name}`}
                       title={`Manage ${site.name}`}
-                      onClick={() => onManage(site.id)}
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        onManage(site.id);
+                      }}
                     >
                       <span aria-hidden="true">⋯</span>
                     </button>

@@ -8,6 +8,8 @@ export interface WorkspaceSwitchFailure {
   message: string;
 }
 
+export type AtlasToolbarFocus = "workspace" | "actions";
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -24,20 +26,26 @@ export function useWorkspace() {
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
   const [pendingWorkspaceName, setPendingWorkspaceName] = useState<string | null>(null);
   const [workspaceSwitchFailure, setWorkspaceSwitchFailure] = useState<WorkspaceSwitchFailure | null>(null);
-  const [workspaceSwitchFocus, setWorkspaceSwitchFocus] = useState(false);
-  const [dashboardRevision, setDashboardRevision] = useState(0);
+  const [atlasToolbarFocus, setAtlasToolbarFocus] = useState<AtlasToolbarFocus | null>(null);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [siteListRevision, setSiteListRevision] = useState(0);
   const [activeTaskCount, setActiveTaskCount] = useState(0);
   const managementRef = useRef<ManagementSnapshot | null>(null);
   const managementRequestRef = useRef(0);
   const previousActiveTaskCountRef = useRef(0);
   const workspaceSwitchingRef = useRef(false);
+  const managementOpener = useRef<{ element: HTMLElement | SVGElement | null; siteId: string | null } | null>(null);
 
-  const remountDashboard = useCallback(() => {
-    previousActiveTaskCountRef.current = 0;
-    setActiveTaskCount(0);
-    setWorkspaceSwitchFailure(null);
-    setWorkspaceSwitchFocus(false);
-    setDashboardRevision((current) => current + 1);
+  const updateDashboard = useCallback((workspaceChanged: boolean, siteListChanged = false) => {
+    if (workspaceChanged) {
+      previousActiveTaskCountRef.current = 0;
+      setActiveTaskCount(0);
+      setWorkspaceSwitchFailure(null);
+      setAtlasToolbarFocus(null);
+      setWorkspaceRevision((current) => current + 1);
+    } else if (siteListChanged) {
+      setSiteListRevision((current) => current + 1);
+    }
   }, []);
 
   const acceptSnapshot = useCallback((next: ManagementSnapshot, dashboardChanged: boolean) => {
@@ -52,10 +60,8 @@ export function useWorkspace() {
     setSelectedSiteId((current) => (
       current && !next.sites.some((site) => site.id === current) ? null : current
     ));
-    if (dashboardChanged || workspaceChanged) {
-      remountDashboard();
-    }
-  }, [remountDashboard]);
+    updateDashboard(workspaceChanged, dashboardChanged);
+  }, [updateDashboard]);
 
   const refreshManagement = useCallback(async (
     background = false,
@@ -78,7 +84,7 @@ export function useWorkspace() {
       setSelectedSiteId((current) => (
         current && !next.sites.some((site) => site.id === current) ? null : current
       ));
-      if (workspaceChanged) remountDashboard();
+      updateDashboard(workspaceChanged);
     } catch (error) {
       if (managementRequestRef.current === requestId) {
         const message = errorMessage(error);
@@ -89,7 +95,7 @@ export function useWorkspace() {
     } finally {
       if (managementRequestRef.current === requestId) setManagementLoading(false);
     }
-  }, [remountDashboard]);
+  }, [updateDashboard]);
 
   const acceptMutation = useCallback((
     result: ManagementMutationResult,
@@ -100,7 +106,7 @@ export function useWorkspace() {
       && previous.active_workspace.name !== result.active_workspace.name;
 
     if (result.snapshot) {
-      acceptSnapshot(result.snapshot, dashboardChanged || workspaceChanged);
+      acceptSnapshot(result.snapshot, dashboardChanged);
     } else {
       managementRequestRef.current += 1;
       if (previous) {
@@ -125,16 +131,14 @@ export function useWorkspace() {
       }
       if (workspaceChanged) setSelectedSiteId(null);
       setManagementLoading(false);
-      if (dashboardChanged || workspaceChanged) {
-        remountDashboard();
-      }
+      updateDashboard(workspaceChanged, dashboardChanged);
     }
 
     setManagementError(result.refresh_error
       ? `The change was saved, but management data could not be refreshed: ${result.refresh_error}`
       : null);
     if (!result.snapshot) void refreshManagement(true, true);
-  }, [acceptSnapshot, refreshManagement, remountDashboard]);
+  }, [acceptSnapshot, refreshManagement, updateDashboard]);
 
   useEffect(() => {
     void refreshManagement();
@@ -144,11 +148,30 @@ export function useWorkspace() {
     if (managementOpen) void refreshManagement(true);
   }, [managementOpen, refreshManagement]);
 
+  useEffect(() => {
+    if (managementOpen) return;
+    const opener = managementOpener.current;
+    managementOpener.current = null;
+    if (!opener || document.activeElement !== document.body) return;
+    const siteRemoved = opener.siteId !== null && managementRef.current?.sites.every((site) => site.id !== opener.siteId);
+    if (!siteRemoved && opener.element?.isConnected && opener.element.getClientRects().length) {
+      opener.element.focus({ preventScroll: true });
+    }
+    if (document.activeElement === document.body) setAtlasToolbarFocus("actions");
+  }, [managementOpen]);
+
   const openManagement = useCallback((
     section: ManagementSection,
     siteId: string | null = null,
   ) => {
     if (managementOpen && managementBusy) return;
+    if (!managementOpen) {
+      const active = document.activeElement;
+      managementOpener.current = {
+        element: (active instanceof HTMLElement || active instanceof SVGElement) && active !== document.body ? active : null,
+        siteId,
+      };
+    }
     setManagementSection(section);
     setSelectedSiteId(siteId);
     setManagementOpen(true);
@@ -178,7 +201,7 @@ export function useWorkspace() {
     setWorkspaceSwitchFailure((current) => current?.name === name ? current : null);
     try {
       acceptMutation(await switchWorkspace(name), true);
-      setWorkspaceSwitchFocus(true);
+      setAtlasToolbarFocus("workspace");
     } catch (error) {
       setWorkspaceSwitchFailure({ name, message: errorMessage(error) });
     } finally {
@@ -189,14 +212,15 @@ export function useWorkspace() {
 
   const dismissWorkspaceSwitchFailure = useCallback(() => {
     setWorkspaceSwitchFailure(null);
-    setWorkspaceSwitchFocus(true);
+    setAtlasToolbarFocus("workspace");
   }, []);
-  const finishWorkspaceSwitchFocus = useCallback(() => setWorkspaceSwitchFocus(false), []);
+  const finishAtlasToolbarFocus = useCallback(() => setAtlasToolbarFocus(null), []);
 
   return {
     management, managementLoading, managementError, managementOpen, managementBusy, managementSection,
-    selectedSiteId, pendingWorkspaceName, workspaceSwitching: pendingWorkspaceName !== null, dashboardRevision, activeTaskCount,
-    workspaceSwitchFailure, workspaceSwitchFocus, dismissWorkspaceSwitchFailure, finishWorkspaceSwitchFocus,
+    selectedSiteId, pendingWorkspaceName, workspaceSwitching: pendingWorkspaceName !== null,
+    workspaceRevision, siteListRevision, activeTaskCount,
+    workspaceSwitchFailure, atlasToolbarFocus, dismissWorkspaceSwitchFailure, finishAtlasToolbarFocus,
     openManagement, setManagementOpen, setManagementSection, setManagementBusy, setSelectedSiteId,
     acceptMutation, refreshManagement, quickSwitchWorkspace, handleActiveTaskCountChange,
   };

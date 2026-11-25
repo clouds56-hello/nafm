@@ -159,6 +159,170 @@ test("a failed quick workspace switch keeps Atlas open and retries the intended 
   expect(await attempts.jsonValue()).toEqual([fieldWorkspace, fieldWorkspace]);
 });
 
+for (const entry of ["compact Sites", "desktop Actions"] as const) {
+  test.describe(entry, () => {
+    const compact = entry === "compact Sites";
+    test.use({ viewport: compact ? { width: 390, height: 620 } : { width: 1100, height: 740 }, hasTouch: compact });
+
+    test("Settings returns to its opener and a same-workspace rename preserves Atlas browsing", async ({ page }) => {
+      await page.goto("/mock/?scenario=large");
+      await openFolder(page, "Photo Library");
+      await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+      await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+
+      const rail = sites(page);
+      const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+      const entries = contents.getByRole("region", { name: "Directory entries", exact: true });
+      const grid = entries.getByRole("grid");
+      const proof = grid.getByRole("button", { name: /^Proof 095\.jpg/ });
+      const filter = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+      const query = "  pRoOf  ";
+      await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+      await filter.fill(query);
+      await expect(grid).toHaveAttribute("aria-rowcount", "96");
+      await contents.evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+      await expect(proof).toBeInViewport();
+      const scrollPosition = await contents.evaluate((pane) => pane.scrollTop);
+      expect(scrollPosition).toBeGreaterThan(0);
+
+      const previous = page.getByRole("navigation", { name: "Folder path" })
+        .getByRole("button", { name: "Previous location", exact: true });
+      const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+      const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+      const manageSite = (name: string) => rail.getByRole("button", { name: `Manage ${name}`, exact: true });
+
+      async function openSettings() {
+        if (compact) {
+          await manageSite("Field drive").tap();
+        } else {
+          await actions.press("Enter");
+          await page.getByRole("group", { name: "Workspace actions", exact: true })
+            .getByRole("button", { name: "Settings", exact: true }).press("Enter");
+          await settings.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+          await settings.getByRole("button", { name: /^Field drive/ }).press("Enter");
+        }
+        await expect(settings.getByRole("heading", { name: "Field drive", exact: true })).toBeVisible();
+      }
+
+      async function dismissSettings(site: string) {
+        await page.keyboard.press("Escape");
+        await expect(settings).toBeHidden();
+        const opener = compact ? manageSite(site) : actions;
+        await expect(opener).toBeFocused();
+        await expect(opener).toBeInViewport({ ratio: 0.99 });
+        await expect(currentFolder(page)).toHaveText("Photo Library");
+        await expect(rail).toBeVisible();
+        await expect(contents).toBeVisible();
+        await expect(filter).toHaveValue(query);
+        await expect(proof).toBeVisible();
+        await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scrollPosition);
+        await expect(previous).toBeEnabled();
+      }
+
+      await openSettings();
+      await dismissSettings("Field drive");
+
+      await openSettings();
+      await settings.getByRole("textbox", { name: "Display name", exact: true }).fill("Field archive");
+      await settings.getByRole("button", { name: "Save", exact: true }).press("Enter");
+      await expect(settings.getByRole("heading", { name: "Field archive", exact: true })).toBeVisible();
+      await dismissSettings("Field archive");
+      await expect(rail.getByRole("button", { name: "Open Field archive in Atlas", exact: true })).toBeVisible();
+      await expect(entries).not.toHaveAttribute("aria-busy", "true");
+
+      await proof.press("ArrowDown");
+      await expect(grid.getByRole("button", { name: /^Proof 096\.jpg/ })).toBeFocused();
+      await previous.press("Enter");
+      await expect(currentFolder(page)).toHaveText("Studio archive");
+      await expect(rail).toBeVisible();
+      await expect(contents).toBeVisible();
+    });
+  });
+}
+
+function holdAtlasRead(page: Page, command: "load_dashboard" | "get_storage_view_snapshot", folder?: string) {
+  return page.evaluateHandle(({ command, folder }) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const state = { held: false, replied: false, release };
+    bridge.invoke = async (name, args) => {
+      const response = await invoke(name, args);
+      if (!state.held && name === command && (!folder || args.nodeId?.endsWith(`/${folder}`))) {
+        state.held = true;
+        await gate;
+        state.replied = true;
+      }
+      return response;
+    };
+    return state;
+  }, { command, folder });
+}
+
+test("Back keeps working while Atlas refreshes after a Settings edit", async ({ page }) => {
+  await page.goto("/mock/");
+  await openFolder(page, "Projects");
+  await openFolder(page, "Brand campaign");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  await sites(page).getByRole("button", { name: "Manage Field drive", exact: true }).press("Enter");
+
+  const refresh = await holdAtlasRead(page, "get_storage_view_snapshot", "Brand campaign");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  try {
+    await settings.getByRole("textbox", { name: "Display name", exact: true }).fill("Field archive");
+    await settings.getByRole("button", { name: "Save", exact: true }).press("Enter");
+    await expect.poll(() => refresh.evaluate((state) => state.held)).toBe(true);
+    await settings.getByRole("button", { name: "Close settings", exact: true }).press("Enter");
+    await expect(sites(page).getByRole("button", { name: "Manage Field archive", exact: true })).toBeFocused();
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect(currentFolder(page)).toHaveText("Projects");
+  } finally {
+    await refresh.evaluate((state) => state.release());
+  }
+
+  await expect.poll(() => refresh.evaluate((state) => state.replied)).toBe(true);
+  await expect(currentFolder(page)).toHaveText("Projects");
+  await expect(page.getByRole("tabpanel", { name: "Contents", exact: true })).toBeVisible();
+});
+
+test("closing Settings after unregistering its site focuses Workspace actions before Atlas refreshes", async ({ page }) => {
+  await page.goto("/mock/");
+  await openFolder(page, "Photo Library");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+  const rail = sites(page);
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const opener = rail.getByRole("button", { name: "Manage Field drive", exact: true });
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  await opener.press("Enter");
+
+  const refresh = await holdAtlasRead(page, "load_dashboard");
+
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  try {
+    await settings.getByRole("button", { name: "Unregister", exact: true }).click();
+    await settings.getByRole("button", { name: "Confirm unregister", exact: true }).click();
+    await expect.poll(() => refresh.evaluate((state) => state.held)).toBe(true);
+    await settings.getByRole("button", { name: "Close settings", exact: true }).press("Enter");
+    await expect(settings).toBeHidden();
+    await expect(opener).toBeVisible();
+    await expect(actions).toBeFocused();
+    await expect(actions).toBeInViewport({ ratio: 0.99 });
+  } finally {
+    await refresh.evaluate((state) => state.release());
+  }
+
+  await expect(opener).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(rail).toBeVisible();
+  await expect(contents.getByRole("heading", { name: "Photo Library", exact: true })).toBeVisible();
+  await expect(actions).toBeFocused();
+});
+
 test("a missing folder falls back to the remembered site's root", async ({ page }) => {
   await seedLocation(page, "field-drive", "site_folder:field-drive:0/No longer indexed");
   await page.goto("/mock/");
