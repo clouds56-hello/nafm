@@ -238,6 +238,11 @@ export function installPreviewBackend(scenario: PreviewScenario) {
 
   const handlers: Record<string, (args: CommandArgs) => unknown> = {
     "plugin:dialog|open": () => "/demo/Sample Folder",
+    copy_text(args) {
+      if (typeof args.text !== "string") throw new Error("Invalid clipboard text.");
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable in this browser.");
+      return navigator.clipboard.writeText(args.text);
+    },
     load_dashboard: loadDashboard,
     load_management: management.load,
     create_workspace: management.createWorkspace,

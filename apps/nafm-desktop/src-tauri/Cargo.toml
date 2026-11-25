@@ -19,6 +19,7 @@ nafm-bundle = { path = "../../../crates/nafm-bundle" }
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 chrono.workspace = true
 nafm-core = { path = "../../../crates/nafm-core" }
 serde.workspace = true

@@ -46,6 +46,10 @@ export function openFolderIn(request: FolderOpenRequest): Promise<string | null>
   return invoke("open_folder_in", { request });
 }
 
+export function copyText(text: string): Promise<void> {
+  return invoke("copy_text", { text });
+}
+
 export function findSimilarFolders(request: FolderSimilarityRequest): Promise<FolderSimilarityPage> {
   return invoke<FolderSimilarityPage>("find_similar_folders", { request });
 }

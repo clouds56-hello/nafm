@@ -3,19 +3,10 @@ import { createPortal } from "react-dom";
 import { formatBytes, formatCount } from "../lib/format";
 import { nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { HealthMetric, StorageNode } from "../lib/types";
+import { ModifiedDate } from "./ModifiedDate";
 import { directoryBranchColors } from "./radialGeometry";
 import { labelFor, PreviewSummary } from "./SectorPreview";
 import "./directory-preview.css";
-
-const shortDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-
-function ModifiedDate({ node, compact = false }: { node: StorageNode; compact?: boolean }) {
-  const time = node.modified_unix_millis;
-  const date = time == null ? null : new Date(time);
-  if (!date || !Number.isFinite(date.getTime())) return <>Date unavailable</>;
-  return <time dateTime={date.toISOString()}>{(compact ? shortDate : fullDate).format(date)}</time>;
-}
 
 export function DirectoryEntryLabel({ node, awaitingInventory, showDate }: {
   node: StorageNode;

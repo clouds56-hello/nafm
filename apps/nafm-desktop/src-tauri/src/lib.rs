@@ -31,6 +31,7 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .manage(state)
+    .manage(commands::clipboard::TextClipboard::default())
     .setup(|app| {
       let hub = Arc::new(ssh::prompts::PromptHub::new(app.handle().clone()));
       let sessions = Arc::new(ssh::Sessions::new(hub.clone()));
@@ -47,6 +48,7 @@ pub fn run() {
       commands::dashboard::load_dashboard,
       commands::dashboard::get_storage_tree,
       commands::dashboard::get_storage_location,
+      commands::clipboard::copy_text,
       commands::folders::open_folder_in,
       commands::dashboard::get_storage_children,
       commands::dashboard::get_adjacent_storage_file,
@@ -86,6 +88,7 @@ pub fn run() {
     .expect("error while building NAFM")
     .run(|app, event| {
       if matches!(event, tauri::RunEvent::Exit) {
+        app.state::<commands::clipboard::TextClipboard>().shutdown();
         app.state::<Arc<ssh::Sessions>>().shutdown();
       }
     });

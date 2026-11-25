@@ -1,4 +1,5 @@
 pub(crate) mod agents;
+pub(crate) mod clipboard;
 pub(crate) mod dashboard;
 pub(crate) mod folders;
 pub(crate) mod management;

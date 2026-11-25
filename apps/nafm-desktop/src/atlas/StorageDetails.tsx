@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { FolderOpenDestination, HealthMetric, StorageLocation, StorageNode } from "../lib/types";
+import { DetailPath } from "./DetailPath";
 import { FolderOpenControl } from "./FolderOpenControl";
+import { ModifiedDate } from "./ModifiedDate";
 import { CheckIcon } from "../management/Icons";
 import "./inspector.css";
 
@@ -125,10 +127,8 @@ export function StorageDetails({
         </div>
       )}
       <dl className="atlas-details">
-        <div className="atlas-detail-path">
-          <dt>{fileUnavailable ? "Last indexed path" : "Path"}</dt>
-          <dd>{node.path ? <code>{node.path}</code> : node.kind === "site" ? "Site root" : "—"}</dd>
-        </div>
+        <DetailPath key={node.path ?? node.id} label={fileUnavailable ? "Last indexed path" : "Path"}
+          path={node.path} empty={node.kind === "site" ? "Site root" : "—"} />
         {!fileUnavailable && (
           <>
             <div className="atlas-detail-metric">
@@ -146,6 +146,10 @@ export function StorageDetails({
             <div className="atlas-detail-metric">
               <dt>Verification</dt>
               <dd className="atlas-verification" data-status={verification.status}>{verification.label}</dd>
+            </div>
+            <div className="atlas-detail-metric">
+              <dt>{node.kind === "file" ? "Modified" : "Contents modified"}</dt>
+              <dd><ModifiedDate node={node} /></dd>
             </div>
             <HealthDetail label="Space health" score={space} active={metric === "space_health"} metric="space"
               evidence={node.space_total_files > 0 ? `${formatFileEquivalent(node.space_healthy_file_equivalents)} of ${formatCount(node.space_total_files)} file equivalents` : null} />
