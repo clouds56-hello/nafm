@@ -2,9 +2,11 @@ import { type FormEvent, type MouseEvent, useEffect, useState } from "react";
 import { addSiteFolder, removeSite, removeSiteFolder, renameSite } from "../lib/tauri";
 import type { ManagedSite, ManagementMutationResult, ManagementSnapshot, RemotePathMapping } from "../lib/types";
 import { formatBytes, formatCount, formatRelativeTime } from "../lib/format";
+import { useAddedSiteRow } from "../atlas/useAddedSiteRow";
 import { errorMessage, Field } from "./Field";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, TrashIcon } from "./Icons";
 import { SiteRootFields, useSiteRoot } from "./SiteRootFields";
+import { resolveAddedSite, type SiteAddition } from "./siteAddition";
 
 function AddRootForm({ site, workspaceName, remotePathMappings, busy, setBusy, onMutation, onCancel }: {
   site: ManagedSite;
@@ -170,9 +172,10 @@ function SiteDetail({ site, workspaceName, remotePathMappings, busy, setBusy, on
   );
 }
 
-export function SitesSection({ snapshot, selectedSiteId, busy, setBusy, onAddSite, onSelectedSiteChange, onMutation }: {
+export function SitesSection({ snapshot, selectedSiteId, siteAddition, busy, setBusy, onAddSite, onSelectedSiteChange, onMutation }: {
   snapshot: ManagementSnapshot;
   selectedSiteId: string | null;
+  siteAddition?: SiteAddition;
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string) => void;
@@ -180,6 +183,8 @@ export function SitesSection({ snapshot, selectedSiteId, busy, setBusy, onAddSit
   onMutation: (result: ManagementMutationResult, dashboardChanged: boolean) => void;
 }) {
   const selected = snapshot.sites.find((site) => site.id === selectedSiteId) ?? null;
+  const addedSite = resolveAddedSite(siteAddition, snapshot.active_workspace.name, snapshot.sites);
+  const addedButton = useAddedSiteRow(busy ? undefined : addedSite, onSelectedSiteChange);
   return (
     <section className="management-section management-sites" aria-labelledby="site-management-title">
       <header className="management-section-heading">
@@ -191,7 +196,11 @@ export function SitesSection({ snapshot, selectedSiteId, busy, setBusy, onAddSit
           {snapshot.sites.length === 0 ? (
             <div className="management-empty compact"><DriveIcon /><p>No sites in this workspace.</p></div>
           ) : snapshot.sites.map((site) => (
-            <button key={site.id} type="button" className={selected?.id === site.id ? "is-active" : ""} onClick={() => onSelectedSiteChange(site.id)} disabled={busy}>
+            <button
+              key={site.id} ref={addedSite?.id === site.id ? addedButton : undefined}
+              type="button" className={selected?.id === site.id ? "is-active" : ""} aria-current={selected?.id === site.id || undefined}
+              onClick={() => onSelectedSiteChange(site.id)} disabled={busy}
+            >
               <span className={`management-list-icon ${site.folders.some((folder) => folder.kind === "smb") ? "smb" : ""}`}>{site.folders.some((folder) => folder.kind === "smb") ? <NetworkIcon /> : <DriveIcon />}</span>
               <span>
                 <strong>{site.name}</strong>

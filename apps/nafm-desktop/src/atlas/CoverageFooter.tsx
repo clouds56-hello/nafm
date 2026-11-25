@@ -1,10 +1,11 @@
-import { useId, type MouseEventHandler, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, type MouseEventHandler, type ReactNode } from "react";
 import { siteAnalysisReady } from "../lib/analysis";
 import { formatCount } from "../lib/format";
 import type { HealthPresentation } from "../lib/health";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
 import { PlusIcon, RefreshIcon } from "../management/Icons";
+import { revealInCompactAtlas } from "./compactAtlasScroll";
 import "./coverage-footer.css";
 
 interface CoverageFooterProps {
@@ -21,6 +22,7 @@ interface CoverageFooterProps {
   onSwap: () => void;
   onScanTarget: () => void;
   onAddSite?: MouseEventHandler<HTMLButtonElement>;
+  addedTarget?: { id: string; opener: HTMLButtonElement };
   children?: ReactNode;
 }
 
@@ -63,10 +65,31 @@ function comparisonResult(
 
 export function CoverageFooter({
   source, target, targets, coverage, hasFolderContent, sourceScan, targetScan, navigationBusy,
-  canScanTarget, onTargetChange, onSwap, onScanTarget, onAddSite, children,
+  canScanTarget, onTargetChange, onSwap, onScanTarget, onAddSite, addedTarget, children,
 }: CoverageFooterProps) {
   const sourceStatusId = useId();
   const targetStatusId = useId();
+  const targetPicker = useRef<HTMLSelectElement>(null);
+  const removedAddFocus = useRef<HTMLButtonElement | null>(null);
+  const addButtonRef = useCallback((button: HTMLButtonElement | null) => {
+    if (!button) return;
+    return () => {
+      removedAddFocus.current = document.activeElement === button ? button : null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!addedTarget || !targets.some((site) => site.id === addedTarget.id)) return;
+    const { opener } = addedTarget;
+    const focus = document.activeElement;
+    // The new target's picker replaces Add site when the dashboard publishes the new row.
+    const replaceFocus = focus === opener || (focus === document.body && removedAddFocus.current === opener);
+    removedAddFocus.current = null;
+    if (!replaceFocus) return;
+    revealInCompactAtlas(targetPicker.current);
+    targetPicker.current?.focus({ preventScroll: true });
+  }, [addedTarget, targets]);
+
   const sourceStatus = readiness(source, sourceScan);
   const targetStatus = target ? readiness(target, targetScan) : null;
   const result = comparisonResult(target, coverage, hasFolderContent);
@@ -90,6 +113,7 @@ export function CoverageFooter({
           <div className="atlas-coverage-site">
             {targets.length > 0 ? (
               <select
+                ref={targetPicker}
                 value={target?.id ?? ""}
                 aria-label="Comparison target"
                 aria-describedby={targetStatus ? targetStatusId : undefined}
@@ -129,7 +153,7 @@ export function CoverageFooter({
           </button>
         )}
         {!targets.length && onAddSite && (
-          <button className="atlas-coverage-action" type="button" aria-haspopup="dialog" onClick={onAddSite}>
+          <button ref={addButtonRef} className="atlas-coverage-action" type="button" aria-haspopup="dialog" onClick={onAddSite}>
             <PlusIcon /> Add site
           </button>
         )}

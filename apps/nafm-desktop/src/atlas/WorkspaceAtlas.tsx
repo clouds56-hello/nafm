@@ -22,6 +22,7 @@ import { siteAnalysisReady, spaceHealthNotice } from "../lib/analysis";
 import { healthColor } from "../lib/format";
 import { nodeHealthPresentation, siteCompleteness } from "../lib/health";
 import type { DirectorySort, FileContentMatchesPage, FinderPosition, FolderSimilarityPage, HealthMetric, StorageNode } from "../lib/types";
+import { resolveAddedSite, type AddSiteOrigin, type SiteAddition } from "../management/siteAddition";
 
 interface ContentsVisit {
   view: InspectorView;
@@ -90,12 +91,13 @@ function HealthScale() {
 interface WorkspaceAtlasProps {
   workspace: ReturnType<typeof useWorkspace>;
   siteListRevision: number;
+  siteAddition?: SiteAddition;
   browsingScope: string;
-  onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string) => void;
+  onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) => void;
   toolbarExtension?: AtlasToolbarExtension;
 }
 
-export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
+export function WorkspaceAtlas({ workspace, siteListRevision, siteAddition, browsingScope, onAddSite, toolbarExtension }: WorkspaceAtlasProps) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sitesOpen, setSitesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -148,9 +150,14 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
     setRevealedRow(null);
     setInspectorOpen(false);
   }, []);
-  const openAddSite = dashboard && state.activeTaskCount === 0
-    ? (event: MouseEvent<HTMLButtonElement>) => onAddSite(event, dashboard.workspace_name)
-    : undefined;
+  const canAddSite = dashboard !== null && state.activeTaskCount === 0;
+  const addedSite = resolveAddedSite(siteAddition, dashboard?.workspace_name, dashboard?.sites ?? []);
+
+  function addSiteLauncher(origin: AddSiteOrigin) {
+    return dashboard && canAddSite
+      ? (event: MouseEvent<HTMLButtonElement>) => onAddSite(event, dashboard.workspace_name, origin)
+      : undefined;
+  }
 
   const folder = location?.root;
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
@@ -559,8 +566,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                   className="atlas-text-button"
                   type="button"
                   aria-haspopup="dialog"
-                  disabled={!openAddSite}
-                  onClick={openAddSite}
+                  disabled={!canAddSite}
+                  onClick={addSiteLauncher("atlas")}
                 >Add site</button>
               </div>
             ) : coverage && site && folder ? (
@@ -570,7 +577,8 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
                 sourceScan={coverageScan(site.id)} targetScan={target ? coverageScan(target.id) : undefined}
                 navigationBusy={state.childrenLoading}
                 canScanTarget={canScanTarget} onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
-                onScanTarget={scanCoverageTarget} onAddSite={openAddSite}
+                onScanTarget={scanCoverageTarget} onAddSite={addSiteLauncher("coverage")}
+                addedTarget={siteAddition?.origin === "coverage" ? addedSite : undefined}
               >
                 {target && <HealthScale />}
               </CoverageFooter>
@@ -585,6 +593,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
             <SiteRail
               sites={dashboard?.sites ?? []}
               activeId={site?.id ?? null}
+              addedSite={siteAddition?.origin === "sites" ? addedSite : undefined}
               scanRequests={state.scanRequestBySite}
               blockedIds={state.scanBlockedSiteIds}
               scanAllRequests={state.scanAllRequestIds}
@@ -596,7 +605,7 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
               onSelect={(id) => void selectSite(id)}
               onScan={(id) => void state.scan(id)}
               onCancel={(id) => void state.cancel(id)}
-              onAdd={openAddSite}
+              onAdd={addSiteLauncher("sites")}
               onManage={(id) => workspace.openManagement("sites", id)}
             />
             {site && (
@@ -757,9 +766,10 @@ export function WorkspaceAtlas({ workspace, siteListRevision, browsingScope, onA
           sites={dashboard?.sites ?? []}
           workspaceName={dashboard?.workspace_name ?? null}
           activeId={site?.id ?? null}
+          addedSite={siteAddition?.origin === "sources" ? addedSite : undefined}
           onSelect={(id) => void selectSite(id)}
           onClose={() => setSourcesOpen(false)}
-          onAdd={openAddSite}
+          onAdd={addSiteLauncher("sources")}
           scanRequests={state.scanRequestBySite}
           blockedIds={state.scanBlockedSiteIds}
           scanAllRequests={state.scanAllRequestIds}

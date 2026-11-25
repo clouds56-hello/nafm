@@ -201,6 +201,8 @@
   background: var(--source-panel);
 }
 
+.source-row[data-added] { scroll-margin-block: 8px; }
+
 .source-open {
   grid-column: span 3;
   grid-template-columns: subgrid;
@@ -283,6 +285,8 @@
 .source-inventory[data-scanning="true"] > span {
   color: var(--source-signal);
 }
+
+.source-inventory .source-added { color: var(--source-signal); font-weight: 650; }
 
 .source-identifiers small,
 .source-inventory small {

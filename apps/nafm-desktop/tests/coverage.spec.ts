@@ -16,6 +16,14 @@ function target(page: Page) {
   return coverage(page).getByRole("combobox", { name: "Comparison target" });
 }
 
+async function addSite(page: Page, name: string, path: string) {
+  const dialog = page.getByRole("dialog", { name: "Add site", exact: true });
+  await dialog.getByRole("textbox", { name: "Site name" }).fill(name);
+  await dialog.getByRole("textbox", { name: "Folder path" }).fill(path);
+  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+  await expect(dialog).toBeHidden();
+}
+
 async function showCoverage(page: Page) {
   const mapOptions = page.getByRole("button", { name: "Map options" });
   await mapOptions.click();
@@ -83,10 +91,7 @@ test("a workspace with one site can add a comparison target from Coverage", asyn
   await page.goto("/mock/?scenario=empty");
   const addDialog = page.getByRole("dialog", { name: "Add site", exact: true });
   await page.getByRole("button", { name: "Add site", exact: true }).click();
-  await addDialog.getByRole("textbox", { name: "Site name" }).fill("First archive");
-  await addDialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Archive");
-  await addDialog.getByRole("button", { name: "Add site", exact: true }).click();
-  await expect(addDialog).toBeHidden();
+  await addSite(page, "First archive", "/demo/Archive");
   await expect(currentFolder(page)).toHaveText("First archive");
 
   await showCoverage(page);
@@ -96,6 +101,57 @@ test("a workspace with one site can add a comparison target from Coverage", asyn
   await expect(addDialog).toBeVisible();
   await addDialog.getByRole("button", { name: "Cancel" }).click();
   await expect(addTarget).toBeFocused();
+
+  await addTarget.press("Enter");
+  await addSite(page, "Backup archive", "/demo/Backup");
+  await expect(target(page).locator("option:checked")).toHaveText("Backup archive");
+  await expect(target(page)).toBeFocused();
+  await expect(currentFolder(page)).toHaveText("First archive");
+});
+
+test("adding the first comparison target does not interrupt a newer folder drill", async ({ page }) => {
+  await page.goto("/mock/?scenario=empty");
+  await page.getByRole("button", { name: "Add site", exact: true }).click();
+  await addSite(page, "First archive", "/demo/Archive");
+  await page.getByRole("button", { name: "Scan this site", exact: true }).press("Enter");
+  const folder = page.getByRole("figure").getByRole("button", { name: /^Drone imagery,/ });
+  await expect(folder).toBeVisible({ timeout: 15_000 });
+  await showCoverage(page);
+  await coverage(page).getByRole("button", { name: "Add site", exact: true }).click();
+
+  const reads = await page.evaluateHandle((folderId) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const held = { dashboard: false, folder: false };
+    let releaseDashboard = () => {};
+    let releaseFolder = () => {};
+    const dashboardGate = new Promise<void>((resolve) => { releaseDashboard = resolve; });
+    const folderGate = new Promise<void>((resolve) => { releaseFolder = resolve; });
+    bridge.invoke = async (command, args) => {
+      if (command === "load_dashboard" && !held.dashboard) {
+        held.dashboard = true;
+        await dashboardGate;
+      }
+      if (command === "get_storage_view_snapshot" && args.nodeId === folderId) {
+        held.folder = true;
+        await folderGate;
+      }
+      return invoke(command, args);
+    };
+    return { held, releaseDashboard, releaseFolder };
+  }, await folder.getAttribute("data-node-id"));
+
+  await addSite(page, "Backup archive", "/demo/Backup");
+  await expect.poll(() => reads.evaluate(({ held }) => held.dashboard)).toBe(true);
+  await folder.press("Enter");
+  await expect.poll(() => reads.evaluate(({ held }) => held.folder)).toBe(true);
+  await reads.evaluate(({ releaseDashboard }) => releaseDashboard());
+  await expect(target(page).getByRole("option", { name: "Backup archive" })).toHaveCount(1);
+  await expect(target(page)).not.toBeFocused();
+  await reads.evaluate(({ releaseFolder }) => releaseFolder());
+  await expect(currentFolder(page)).toHaveText("Drone imagery");
 });
 
 test.describe("compact Coverage options", () => {

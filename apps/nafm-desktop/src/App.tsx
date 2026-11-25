@@ -5,6 +5,7 @@ import { useWorkspace } from "./hooks/useWorkspace";
 import { AddSiteDialog } from "./management/AddSiteDialog";
 import { ManagementCenter } from "./management/ManagementCenter";
 import { SshAuthentication } from "./management/SshAuthentication";
+import type { AddSiteOrigin, AddSiteRequest, SiteAddition } from "./management/siteAddition";
 import "./styles/atlas.css";
 
 export interface AppProps {
@@ -14,13 +15,17 @@ export interface AppProps {
 
 export default function App({ toolbarExtension, browsingScope = "desktop" }: AppProps) {
   const workspace = useWorkspace();
-  const [addingToWorkspace, setAddingToWorkspace] = useState<string | null>(null);
+  const [addingSite, setAddingSite] = useState<AddSiteRequest | null>(null);
+  const [siteAddition, setSiteAddition] = useState<SiteAddition>();
   const [siteListRevision, setSiteListRevision] = useState(0);
+  const addition = siteAddition?.dashboardRevision === workspace.dashboardRevision ? siteAddition : undefined;
 
-  function openAddSite(event: MouseEvent<HTMLButtonElement>, workspaceName: string) {
+  function openAddSite(event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) {
     // WebKit doesn't focus a button on pointer activation. Give the dialog a return target.
-    event.currentTarget.focus({ preventScroll: true });
-    setAddingToWorkspace(workspaceName);
+    const opener = event.currentTarget;
+    opener.focus({ preventScroll: true });
+    setSiteAddition(undefined);
+    setAddingSite({ opener, origin, workspaceName, dashboardRevision: workspace.dashboardRevision });
   }
 
   return (
@@ -33,6 +38,7 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
           key={workspace.dashboardRevision}
           workspace={workspace}
           siteListRevision={siteListRevision}
+          siteAddition={addition}
           onAddSite={openAddSite}
           toolbarExtension={toolbarExtension}
           browsingScope={browsingScope}
@@ -49,26 +55,26 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
         onClose={() => { if (!workspace.managementBusy) workspace.setManagementOpen(false); }}
         onSectionChange={workspace.setManagementSection}
         onSelectedSiteChange={workspace.setSelectedSiteId}
-        onAddSite={openAddSite}
+        onAddSite={(event, workspaceName) => openAddSite(event, workspaceName, "settings")}
+        siteAddition={addition?.origin === "settings" ? addition : undefined}
         onBusyChange={workspace.setManagementBusy}
         onMutation={workspace.acceptMutation}
         onRetry={() => void workspace.refreshManagement()}
       />
-      {addingToWorkspace !== null && (
+      {addingSite && (
         <AddSiteDialog
-          workspaceName={addingToWorkspace}
-          remotePathMappings={workspace.management?.active_workspace.name === addingToWorkspace
+          workspaceName={addingSite.workspaceName}
+          remotePathMappings={workspace.management?.active_workspace.name === addingSite.workspaceName
             ? workspace.management.remote_path_mappings : []}
           blocked={workspace.activeTaskCount > 0}
-          onClose={() => setAddingToWorkspace(null)}
+          onClose={() => setAddingSite(null)}
           onMutation={(result, createdSiteName) => {
             workspace.acceptMutation(result, false);
             if (createdSiteName === undefined) return;
             setSiteListRevision((revision) => revision + 1);
-            if (workspace.managementOpen && workspace.managementSection === "sites") {
-              const created = result.snapshot?.sites.find((site) => site.name === createdSiteName);
-              if (created) workspace.setSelectedSiteId(created.id);
-            }
+            if (result.active_workspace.name !== addingSite.workspaceName) return;
+            const created = result.snapshot?.sites.find((site) => site.name === createdSiteName);
+            setSiteAddition({ ...addingSite, name: createdSiteName, siteId: created?.id });
           }}
         />
       )}

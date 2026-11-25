@@ -3,6 +3,7 @@ import type { ManagementMutationResult, ManagementSnapshot } from "../lib/types"
 import { ConnectionsSection } from "./ConnectionsSection";
 import { CloseIcon, DriveIcon, NetworkIcon, RefreshIcon, WarningIcon, WorkspaceIcon } from "./Icons";
 import { SitesSection } from "./SitesSection";
+import type { SiteAddition } from "./siteAddition";
 import { WorkspaceSection } from "./WorkspaceSection";
 import "./management.css";
 
@@ -22,6 +23,7 @@ interface ManagementCenterProps {
   loading: boolean;
   error: string | null;
   activeTaskCount: number;
+  siteAddition?: SiteAddition;
   onClose: () => void;
   onSectionChange: (section: ManagementSection) => void;
   onSelectedSiteChange: (siteId: string | null) => void;
@@ -117,6 +119,7 @@ export function ManagementCenter(props: ManagementCenterProps) {
                 <SitesSection
                   snapshot={snapshot}
                   selectedSiteId={props.selectedSiteId}
+                  siteAddition={props.siteAddition}
                   busy={busy || scansActive}
                   setBusy={setBusy}
                   onSelectedSiteChange={props.onSelectedSiteChange}

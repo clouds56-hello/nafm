@@ -10,6 +10,27 @@ async function openSources(page: Page) {
   return page.getByRole("dialog", { name: "Sources", exact: true });
 }
 
+function holdNextDashboardRefresh(page: Page) {
+  return page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, release };
+    bridge.invoke = async (command, ...args) => {
+      const response = await invoke(command, ...args);
+      if (command === "load_dashboard" && !read.pending) {
+        read.pending = true;
+        await gate;
+      }
+      return response;
+    };
+    return read;
+  });
+}
+
 test("adding or dismissing a site leaves the atlas on the folder being explored", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });
@@ -47,7 +68,85 @@ test("adding or dismissing a site leaves the atlas on the folder being explored"
   await expect(folder).toHaveText("Projects");
 });
 
+test("adding a site from the compact rail reveals its row after inventory refresh", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  await page.goto("/mock/");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const folder = page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
+  await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+  await expect(folder).toHaveText("Projects");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  await expect(contents.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const rail = page.getByRole("complementary", { name: "Sites" });
+  const launch = rail.getByRole("button", { name: "Add site" });
+
+  const refresh = await holdNextDashboardRefresh(page);
+
+  await launch.click();
+  const dialog = addDialog(page);
+  await dialog.getByRole("textbox", { name: "Site name" }).fill("Print masters");
+  await dialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Prints");
+  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+  const row = rail.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Open Print masters in Atlas" }) });
+  try {
+    await expect.poll(() => refresh.evaluate((read) => read.pending)).toBe(true);
+    await expect(dialog).toBeHidden();
+    await expect(row).toHaveCount(0);
+  } finally {
+    await refresh.evaluate((read) => read.release());
+  }
+
+  const created = row.getByRole("button", { name: "Open Print masters in Atlas" });
+  await expect(created).toBeFocused();
+  await expect(row).toBeInViewport({ ratio: 0.98 });
+  await expect(row.getByRole("status")).toHaveText("Site added");
+  await expect(created).not.toHaveAttribute("aria-current", "true");
+  await expect(folder).toHaveText("Projects");
+  await expect(contents).toBeVisible();
+
+  await page.keyboard.press("Enter");
+  await expect(created).toHaveAttribute("aria-current", "true");
+  await expect(folder).toHaveText("Print masters");
+  await expect(rail).toBeVisible();
+  await expect(contents).toBeVisible();
+  await expect(map.getByRole("button", { name: "Scan this site", exact: true })).toBeEnabled();
+});
+
+test("a delayed site refresh leaves focus in Contents when browsing resumes", async ({ page }) => {
+  await page.goto("/mock/");
+  const folder = page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
+  await expect(folder).toHaveText("Studio archive");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  const rail = page.getByRole("complementary", { name: "Sites" });
+  await expect(rail.getByRole("button", { name: "Open Studio archive in Atlas" })).toBeFocused();
+  const refresh = await holdNextDashboardRefresh(page);
+
+  await rail.getByRole("button", { name: "Add site" }).click();
+  const dialog = addDialog(page);
+  await dialog.getByRole("textbox", { name: "Site name" }).fill("Print masters");
+  await dialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Prints");
+  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+  const contents = page.getByRole("tab", { name: "Contents", exact: true });
+  try {
+    await expect.poll(() => refresh.evaluate((read) => read.pending)).toBe(true);
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+    await expect(contents).toBeFocused();
+  } finally {
+    await refresh.evaluate((read) => read.release());
+  }
+
+  const created = rail.getByRole("button", { name: "Open Print masters in Atlas" });
+  await expect(created).toBeVisible();
+  await expect(contents).toBeFocused();
+  const pane = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  await expect(pane.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
+});
+
 test("the source library stays open while a site is cancelled or created", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
   await page.goto("/mock/");
   const sources = await openSources(page);
   const launch = sources.getByRole("button", { name: "Add site", exact: true });
@@ -68,10 +167,19 @@ test("the source library stays open while a site is cancelled or created", async
   await save.click();
 
   await expect(dialog).toBeHidden();
-  await expect(sources.getByRole("button", { name: "Open Print masters in Atlas" })).toBeVisible();
+  const created = sources.getByRole("button", { name: "Open Print masters in Atlas" });
+  await expect(created).toBeFocused();
+  await expect(created).toBeInViewport({ ratio: 0.98 });
+  await expect(sources.getByRole("status").filter({ hasText: /^Site added$/ })).toBeVisible();
+  await expect(created).not.toHaveAttribute("aria-current", "true");
+  await expect(sources).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sources).toBeHidden();
+  await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]')).toHaveText("Studio archive");
 });
 
 test("Settings selects the new site after adding an SMB root", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 });
   await page.goto("/mock/");
   await page.getByRole("button", { name: "Workspace actions" }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -91,6 +199,10 @@ test("Settings selects the new site after adding an SMB root", async ({ page }) 
   await dialog.getByRole("checkbox", { name: "Include hidden files" }).uncheck();
   await dialog.getByRole("button", { name: "Add site", exact: true }).click();
   await expect(dialog).toBeHidden();
+  const created = settings.getByRole("button", { name: /^Print shop\b/ });
+  await expect(created).toBeFocused();
+  await expect(created).toBeInViewport({ ratio: 0.98 });
+  await expect(created).toHaveAttribute("aria-current", "true");
   await expect(settings.getByRole("heading", { name: "Print shop" })).toBeVisible();
   await expect(settings.getByText("SMB · Hidden skipped")).toBeVisible();
 });

@@ -2,12 +2,14 @@ import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
+import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
 import "./sources.css";
 
 interface SourceLibraryProps {
   sites: SiteOverview[];
   workspaceName: string | null;
   activeId: string | null;
+  addedSite?: AddedSiteRow;
   onSelect: (id: string) => void;
   onClose: () => void;
   onAdd?: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -35,11 +37,12 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 }
 
 export function SourceLibrary({
-  sites, workspaceName, activeId, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
+  sites, workspaceName, activeId, addedSite, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
   scanAllRequests, cancellingRequests, progressBySite, onCancelScan, onManage, error, errorAction, recovery,
 }: SourceLibraryProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const addedButton = useAddedSiteRow(addedSite);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -94,9 +97,12 @@ export function SourceLibrary({
                 const stopping = scanning && cancellingRequests.has(requestId);
                 const scanAll = scanning && scanAllRequests.has(requestId);
                 const progress = scanning ? progressBySite.get(site.id) : undefined;
+                const justAdded = addedSite?.id === site.id;
+                const showAdded = justAdded && !scanning && site.scan_state === "idle" && !site.latest_inventory_at;
                 return (
-                  <li key={site.id} className="source-row">
+                  <li key={site.id} className="source-row" data-added={showAdded || undefined}>
                     <button
+                      ref={justAdded ? addedButton : undefined}
                       type="button"
                       className="source-open"
                       aria-current={activeId === site.id ? "true" : undefined}
@@ -112,6 +118,7 @@ export function SourceLibrary({
                         </span>
                       </span>
                       <span id={`source-inventory-${site.id}`} className="source-inventory" data-scanning={scanning}>
+                        {showAdded && <span className="source-added" role="status">Site added</span>}
                         <span>{stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase) : inventoryLabel(site, scanning)}</span>
                         {progress ? (
                           <small title={progress.current_path ?? undefined}>

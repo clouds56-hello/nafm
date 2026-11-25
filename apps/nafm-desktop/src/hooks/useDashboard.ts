@@ -615,7 +615,8 @@ export function useDashboard(expectedWorkspace: string | null, siteListRevision:
       const nextSite = [requestedSite, savedSite].find((id) => id !== null && currentSiteIdsRef.current.has(id))
         ?? next.sites[0]?.id ?? null;
       const nextTarget = validTarget(next.sites, nextSite, targetSiteRef.current);
-      if (nextSite && requestedSite === nextSite && nextTarget === targetSiteRef.current
+      // A background change to the site list must not replace a newer location request.
+      if (nextSite && requestedSite === nextSite
         && (childrenLoadingRef.current || locationGeneration !== locationRequestRef.current)) return;
       if (!nextSite || (locationRef.current && locationRef.current.site_id !== nextSite)) clearLocation();
       if (!locationRef.current) {

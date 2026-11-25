@@ -130,6 +130,8 @@
   background: #20233a;
 }
 
+.atlas-site-rail-item[data-added] { scroll-margin-block: 6px; }
+
 .atlas-site-rail .atlas-site-rail-select {
   display: grid;
   width: 100%;
@@ -218,6 +220,7 @@
 }
 
 .atlas-site-rail-status[data-scanning] { color: var(--atlas-accent); }
+.atlas-site-rail-added { display: block; color: var(--atlas-accent); font-weight: 650; }
 .atlas-site-rail-actions { display: flex; flex: none; gap: 2px; }
 
 .atlas-site-rail .atlas-site-rail-scan,

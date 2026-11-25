@@ -4,12 +4,14 @@ import { scanPhaseLabel } from "../lib/scanView";
 import type { ScanProgressView, SiteOverview } from "../lib/types";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
+import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
 import "./site-rail.css";
 
 interface SiteRailProps {
   open: boolean;
   sites: SiteOverview[];
   activeId: string | null;
+  addedSite?: AddedSiteRow;
   scanRequests: ReadonlyMap<string, number>;
   blockedIds: ReadonlySet<string>;
   scanAllRequests: ReadonlySet<number>;
@@ -45,6 +47,7 @@ export function SiteRail({
   open,
   sites,
   activeId,
+  addedSite,
   scanRequests,
   blockedIds,
   scanAllRequests,
@@ -59,6 +62,7 @@ export function SiteRail({
   onManage,
 }: SiteRailProps) {
   const titleId = useId();
+  const addedStatusId = useId();
   const rail = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -76,6 +80,8 @@ export function SiteRail({
     }
     wasOpen.current = open;
   }, [open]);
+
+  const addedButton = useAddedSiteRow(addedSite);
 
   function moveSite(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -157,16 +163,20 @@ export function SiteRail({
               : scanning ? scanAll ? `Stop remaining scans from ${site.name}` : `Stop scan of ${site.name}`
                 : `Scan ${site.name}`;
             const hasInventory = site.latest_inventory_at !== null || site.hash_status === "ready" || site.total_files > 0;
+            const justAdded = addedSite?.id === site.id;
+            const showAdded = justAdded && !hasInventory && !scanning && site.scan_state === "idle";
             const selected = activeId === site.id;
             const DeviceIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
 
             return (
-              <li key={site.id} className="atlas-site-rail-item" data-active={selected || undefined}>
+              <li key={site.id} className="atlas-site-rail-item" data-active={selected || undefined} data-added={showAdded || undefined}>
                 <button
+                  ref={justAdded ? addedButton : undefined}
                   className="atlas-site-rail-select"
                   type="button"
                   aria-current={selected || undefined}
                   aria-label={`Open ${site.name} in Atlas`}
+                  aria-describedby={showAdded ? addedStatusId : undefined}
                   onKeyDown={(event) => moveSite(event, index)}
                   onClick={(event) => {
                     event.currentTarget.focus({ preventScroll: true });
@@ -204,7 +214,10 @@ export function SiteRail({
                   </div>
                 )}
                 <div className="atlas-site-rail-footer">
-                  <span className="atlas-site-rail-status" data-scanning={scanning || undefined} title={status}>{status}</span>
+                  <div className="atlas-site-rail-status" data-scanning={scanning || undefined}>
+                    {showAdded && <span id={addedStatusId} className="atlas-site-rail-added" role="status">Site added</span>}
+                    <span title={status}>{status}</span>
+                  </div>
                   <div className="atlas-site-rail-actions">
                     <button
                       className="atlas-site-rail-scan"
