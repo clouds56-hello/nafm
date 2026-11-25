@@ -260,6 +260,7 @@ export function useDashboard(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [folderLaunchFeedback, setFolderLaunchFeedback] = useState<string | null>(null);
   const [locationFailure, setLocationFailure] = useState<LocationFailure | null>(null);
   const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
   const [coverageTargetSiteId, setCoverageTargetSiteId] = useState<string | null>(null);
@@ -292,6 +293,7 @@ export function useDashboard(
   const [contentRevision, setContentRevision] = useState(0);
   const selectedSiteRef = useRef<string | null>(null);
   const targetSiteRef = useRef<string | null>(null);
+  const folderLaunchRequest = useRef(0);
 
   const locationRequestRef = useRef(0);
   const locationRef = useRef<StorageLocation | null>(null);
@@ -1285,19 +1287,28 @@ export function useDashboard(
 
   const activeSelectedNode = selection?.node ?? location?.root ?? null;
 
+  const clearFolderLaunchFeedback = useCallback(() => {
+    folderLaunchRequest.current += 1;
+    setFolderLaunchFeedback(null);
+  }, []);
+
   const openFolderExternally = useCallback(async (node: StorageNode, destination: FolderOpenDestination) => {
     const workspace = workspaceNameRef.current;
     const siteId = locationRef.current?.site_id;
     if (!workspace || !siteId) return;
+    const request = ++folderLaunchRequest.current;
+    const application = destination === "terminal" ? "Terminal" : "the file manager";
     setNotice(null);
-    let message: string | null;
+    setFolderLaunchFeedback(`Opening ${node.name} in ${application}…`);
+    let message: string;
     try {
-      message = await openFolderIn({ workspace_name: workspace, site_id: siteId, node_id: node.id, destination });
+      const previewMessage = await openFolderIn({ workspace_name: workspace, site_id: siteId, node_id: node.id, destination });
+      message = previewMessage ?? `Opened ${node.name} in ${application}.`;
     } catch (error) {
-      message = errorMessage(error);
+      message = `Couldn’t open ${node.name} in ${application}. ${errorMessage(error)}`;
     }
-    if (message && workspace === workspaceNameRef.current && siteId === locationRef.current?.site_id) {
-      setNotice(message);
+    if (request === folderLaunchRequest.current && workspace === workspaceNameRef.current) {
+      setFolderLaunchFeedback(message);
     }
   }, []);
 
@@ -1839,6 +1850,8 @@ export function useDashboard(
     error,
     notice,
     clearNotice: () => setNotice(null),
+    folderLaunchFeedback,
+    clearFolderLaunchFeedback,
     locationFailure,
     locationProgress,
     retryLocation,
@@ -1924,6 +1937,7 @@ export function useDashboard(
     childrenLoading,
     loadingMoreChildren,
     childrenPage,
+    clearFolderLaunchFeedback,
     completionBySite,
     scanInterruptions,
     cancellingRequestIds,
@@ -1933,6 +1947,7 @@ export function useDashboard(
     contentRevision,
     dashboard,
     error,
+    folderLaunchFeedback,
     healthMetric,
     isSelectedStaged,
     jumpToContentMatch,

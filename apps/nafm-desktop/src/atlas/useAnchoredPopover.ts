@@ -29,8 +29,9 @@ export function useAnchoredPopover(
     if (!focusSelector || !button || !popup) return;
     popup.showPopover?.();
 
+    let anchor: DOMRect;
     const position = () => {
-      const anchor = button.getBoundingClientRect();
+      anchor = button.getBoundingClientRect();
       const { width } = popup.getBoundingClientRect();
       const gap = 6;
       const edge = 8;
@@ -44,6 +45,10 @@ export function useAnchoredPopover(
     };
     const handleScroll = (event: Event) => {
       if (scrollBehavior === "dismiss" && event.target instanceof Node && event.target.contains(button)) {
+        const current = button.getBoundingClientRect();
+        // A sticky header can stay in place while its list or the page scrolls.
+        if (current.top === anchor.top && current.bottom === anchor.bottom
+          && current.left === anchor.left && current.right === anchor.right) return;
         setFocusSelector(null);
         if (popup.contains(document.activeElement)) button.focus({ preventScroll: true });
       } else {

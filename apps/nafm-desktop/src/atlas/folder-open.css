@@ -21,6 +21,7 @@
   background: #23263a;
   color: var(--atlas-accent);
 }
+.atlas-folder-open-trigger[aria-disabled="true"] { opacity: .6; cursor: default; }
 
 .atlas-folder-open-menu {
   position: fixed;

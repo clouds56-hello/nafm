@@ -464,6 +464,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const openingSiteId = state.locationProgress?.opening_site_id;
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
   const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
+  const atlasNotice = state.notice ?? state.folderLaunchFeedback;
 
   const contentsUpOrigin = state.locationFailure?.contentsUpOrigin;
   useLayoutEffect(() => {
@@ -1065,10 +1066,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
         />
       )}
 
-      {state.notice && !recoveryOnMap && !sourcesOpen && !state.reviewOpen && (
+      {atlasNotice && !recoveryOnMap && !sourcesOpen && !state.reviewOpen && (
         <div className="atlas-alert" role="status">
-          <span>{state.notice}</span>
-          <button className="atlas-text-button" type="button" onClick={state.clearNotice}>Dismiss</button>
+          <span>{atlasNotice}</span>
+          <button className="atlas-text-button" type="button"
+            onClick={state.notice ? state.clearNotice : state.clearFolderLaunchFeedback}>Dismiss</button>
         </div>
       )}
 

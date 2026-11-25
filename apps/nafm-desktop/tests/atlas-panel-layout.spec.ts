@@ -221,7 +221,8 @@ test.describe("desktop Atlas panels", () => {
     await page.setViewportSize({ width: 1080, height: 700 });
     await site.focus();
     await page.setViewportSize({ width: 390, height: 650 });
-    await expect(site).toBeInViewport({ ratio: 0.99 });
+    // Firefox can round nearest scrolling by half a CSS pixel at the lower border.
+    await expect(site).toBeInViewport({ ratio: 0.98 });
     await expect(site).toBeFocused();
 
     await page.setViewportSize({ width: 1080, height: 700 });

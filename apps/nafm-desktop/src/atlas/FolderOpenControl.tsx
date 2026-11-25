@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from "react";
+import { useId, useLayoutEffect, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import type { FolderOpenDestination, StorageNode } from "../lib/types";
 import { FolderIcon, OpenInIcon, TerminalIcon } from "../management/Icons";
@@ -26,6 +26,25 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
   const remote = /^smb:\/\//i.test(node.path ?? "");
   const label = `Open ${node.name} in…`;
 
+  useLayoutEffect(() => {
+    const button = trigger.current;
+    const menu = panel.current;
+    const surface = button?.closest<HTMLElement>(".atlas-toolbar-navigation, .atlas-readout");
+    const contents = button?.closest(".atlas-directory")?.closest<HTMLElement>(".atlas-inspector-pane");
+    if (!button) return;
+    return () => {
+      const active = document.activeElement;
+      if (active !== button && !menu?.contains(active)) return;
+      queueMicrotask(() => {
+        if (button.isConnected || document.activeElement !== document.body) return;
+        const replacement = surface?.isConnected ? surface.querySelector<HTMLElement>(".atlas-folder-open-trigger")
+          ?? (surface.matches(".atlas-readout") ? surface : surface.querySelector<HTMLElement>("h1")) : contents;
+        // Contents can then restore its history cursor from the pane.
+        if (replacement?.getClientRects().length) replacement.focus({ preventScroll: true });
+      });
+    };
+  }, [open, panel, trigger]);
+
   async function launch(destination: FolderOpenDestination) {
     if (opening || (destination === "terminal" && remote)) return;
     close(true);
@@ -38,11 +57,13 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
   }
 
   function navigateMenu(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "Tab") {
       // Continue normal tab navigation from the icon, including in the portal fallback.
       close(true);
       return;
     }
+    if (event.shiftKey) return;
     const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     let next: number;
@@ -79,7 +100,8 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
         aria-disabled={opening || undefined} tabIndex={tabIndex}
         onClick={opening ? undefined : toggle}
         onKeyDown={(event) => {
-          if (opening || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+          if (opening || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+            || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
           event.preventDefault();
           event.stopPropagation();
           show(event.key === "ArrowUp" ? '[role="menuitem"]:last-child' : undefined);
