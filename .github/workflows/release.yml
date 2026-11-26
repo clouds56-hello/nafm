@@ -70,8 +70,6 @@ jobs:
     needs:
       - quality
       - validate-version
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -80,22 +78,26 @@ jobs:
             platform: macos-15
             target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg -- --locked
+            asset_platform: darwin_aarch64
+            extensions: dmg
             apple_signing_identity: "-"
           - name: macOS Intel
             platform: macos-15-intel
             target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --bundles dmg -- --locked
+            asset_platform: darwin_x64
+            extensions: dmg
             apple_signing_identity: "-"
           - name: Linux x64
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: --target x86_64-unknown-linux-gnu --bundles appimage,deb -- --locked
+            asset_platform: linux_amd64
+            extensions: AppImage deb
             apple_signing_identity: ""
           - name: Windows x64
             platform: windows-latest
             target: x86_64-pc-windows-msvc
-            args: --target x86_64-pc-windows-msvc --bundles nsis -- --locked
-            apple_signing_identity: ""
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
@@ -163,20 +165,104 @@ jobs:
         working-directory: apps/nafm-desktop
         run: pnpm agents:check
 
-      - name: Build and attach desktop bundle
+      - name: Build macOS and Linux bundles
+        if: runner.os != 'Windows'
+        id: tauri
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           APPLE_SIGNING_IDENTITY: ${{ matrix.apple_signing_identity }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/nafm-desktop
           tauriScript: pnpm tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: NAFM ${{ github.ref_name }}
-          generateReleaseNotes: true
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: false
           retryAttempts: 2
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: NAFM_[version]_[platform]_[arch][ext]
+
+      - name: Stage macOS and Linux release downloads
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          BUNDLE_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          ASSET_PLATFORM: ${{ matrix.asset_platform }}
+          EXPECTED_EXTENSIONS: ${{ matrix.extensions }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          read -ra extensions <<< "$EXPECTED_EXTENSIONS"
+          for extension in "${extensions[@]}"; do
+            bundle=$(jq -er --arg suffix ".$extension" \
+              'map(select(endswith($suffix))) | select(length == 1) | .[0]' <<< "$BUNDLE_PATHS")
+            cp -- "$bundle" "release-assets/NAFM_${GITHUB_REF_NAME#v}_${ASSET_PLATFORM}.${extension}"
+          done
+
+      - name: Build Windows executable
+        if: runner.os == 'Windows'
+        working-directory: apps/nafm-desktop
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle -- --locked
+
+      - name: Package and smoke-test Windows portable ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          ./scripts/package-windows-portable.ps1 `
+            -DesktopExecutable target/x86_64-pc-windows-msvc/release/nafm-desktop.exe `
+            -AgentDirectory apps/nafm-desktop/src-tauri/resources/agents `
+            -OutputZip "release-assets/NAFM_${version}_windows_x64_portable.zip"
+
+      - name: Upload verified release downloads
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-release-${{ matrix.target }}
+          path: release-assets/
+          if-no-files-found: error
+          overwrite: true
+
+  draft:
+    name: Create draft GitHub Release
+    needs: bundle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Attach downloads to the tagged draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/NAFM_"${GITHUB_REF_NAME#v}"_*)
+          if [[ ${#assets[@]} -ne 5 ]]; then
+            echo "Expected five desktop release downloads and found ${#assets[@]}." >&2
+            exit 1
+          fi
+
+          release=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" |
+            jq -sr --arg tag "$GITHUB_REF_NAME" '
+              [.[][] | select(.tag_name == $tag)] |
+              if length == 0 then "missing"
+              elif length == 1 and .[0].draft then "draft"
+              else "unavailable" end')
+          case "$release" in
+            missing)
+              gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+                --draft --verify-tag --title "NAFM $GITHUB_REF_NAME" --generate-notes \
+                --notes 'On Windows, extract the entire ZIP and run `NAFM.exe` inside the `NAFM` folder. The app uses Microsoft Edge WebView2 and saves workspace data in your Windows user profile.'
+              ;;
+            draft)
+              gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+              ;;
+            *)
+              echo "Refusing to update a published release or ambiguous drafts for $GITHUB_REF_NAME." >&2
+              exit 1
+              ;;
+          esac

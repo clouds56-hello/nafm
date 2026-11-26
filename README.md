@@ -107,30 +107,34 @@ To rerun the atlas interaction tests, install Firefox once with
 
 Pull requests and pushes to `main` run Rust formatting, tests, Clippy, and the
 frontend production build. Pushing a version tag builds native desktop
-installers and attaches them to a draft GitHub Release:
+packages and attaches them to a draft GitHub Release after all builds pass.
 
 - macOS DMGs for Apple Silicon and Intel
-- a Windows x64 NSIS installer
+- a Windows x64 portable ZIP
 - Linux x64 AppImage and Debian packages
 
-Before tagging, keep the version in these files synchronized:
+On Windows, extract the whole ZIP and launch `NAFM.exe` from the `NAFM` folder.
+Keep the `agents` folder beside the executable. The app uses the Microsoft Edge
+WebView2 Runtime and saves its workspace in the Windows user profile.
+
+Before tagging, synchronize the version in these files and update the desktop
+package entry in `Cargo.lock`.
 
 - `apps/nafm-desktop/src-tauri/tauri.conf.json`
 - `apps/nafm-desktop/src-tauri/Cargo.toml`
 - `apps/nafm-desktop/package.json`
 
-Then create and push the matching tag:
+Then create and push the matching tag.
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow reruns the CI quality gate and rejects a tag that does not
-match all three application versions before starting native builds. Releases
-remain drafts because the current bundles are not notarized for macOS or signed
-for Windows. Configure platform signing before publishing a release to end
-users.
+The release workflow checks the version, reruns CI, and tests the extracted
+Windows package before uploading the downloads. Review the draft before
+publishing. Current macOS builds use ad-hoc signing and Windows builds are
+unsigned, so the operating system may show trust warnings.
 
 ## Folder similarity
 
