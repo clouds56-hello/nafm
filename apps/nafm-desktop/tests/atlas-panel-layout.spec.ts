@@ -38,6 +38,42 @@ async function expectFullCompactChart(page: Page) {
 test.describe("compact Atlas panels", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
+  test("the narrow Contents header keeps the folder, count and first three rows readable", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 480 });
+    await page.goto("/mock/?scenario=large");
+    await atlas(page).getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Contents & details" }).tap();
+    const pane = inspector(page).getByRole("tabpanel", { name: "Contents" });
+    const heading = pane.getByRole("heading", { name: "Photo Library", exact: true });
+    const count = pane.getByText("4,096 entries", { exact: true });
+    const sort = pane.getByRole("button", { name: "Sort contents" });
+    const search = pane.getByRole("button", { name: "Search this folder" });
+    const grid = pane.getByRole("grid", { name: "Photo Library entries" });
+    await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+
+    // Modified is the widest sort label. It must leave room for Search and the folder context.
+    await sort.tap();
+    await page.getByRole("radio", { name: "Date modified" }).check();
+    await page.keyboard.press("Escape");
+    await expect(sort).toHaveText("Modified");
+    expect(await heading.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    expect(await count.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    const title = await bounds(heading);
+    const total = await bounds(count);
+    expect(title.right).toBeLessThanOrEqual(total.left);
+    const up = await bounds(pane.getByRole("button", { name: "Up to Studio archive" }));
+    const opener = await bounds(pane.getByRole("button", { name: "Open Photo Library in…" }));
+    const order = await bounds(sort);
+    const find = await bounds(search);
+    expect(Math.max(title.bottom, total.bottom)).toBeLessThanOrEqual(Math.min(up.top, opener.top, order.top, find.top));
+    expect(up.right).toBeLessThanOrEqual(opener.left);
+    expect(opener.right).toBeLessThanOrEqual(order.left);
+    expect(order.right).toBeLessThanOrEqual(find.left);
+    expect(find.right).toBeLessThanOrEqual((await bounds(pane)).right);
+    await expect(grid.getByRole("row").nth(2)).toBeInViewport({ ratio: 0.99 });
+  });
+
   test("quick workspace switches restore keyboard focus to Actions and resume the previous folder", async ({ page }) => {
     await page.goto("/mock/");
     await expect(currentFolder(page)).toHaveText("Studio archive");

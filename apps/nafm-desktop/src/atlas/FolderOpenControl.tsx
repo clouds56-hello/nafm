@@ -15,13 +15,49 @@ export function canOpenFolder(node: StorageNode): boolean {
   return Boolean(node.path) && (node.kind === "directory" || node.kind === "local_root" || node.kind === "smb_root");
 }
 
+export function restoreFolderOpenFocus(button: HTMLButtonElement) {
+  if (!button.isConnected) return;
+  const pane = button.closest<HTMLElement>(".atlas-inspector-pane");
+  if (!pane) {
+    button.focus({ preventScroll: true });
+    return;
+  }
+
+  const toolbar = pane.closest(".atlas-shell")?.querySelector(".atlas-toolbar");
+  const bounds = pane.getBoundingClientRect();
+  const paneTop = Math.max(0, bounds.top, toolbar?.getBoundingClientRect().bottom ?? 0);
+  const bottom = Math.min(window.innerHeight, bounds.bottom);
+  const list = button.closest<HTMLElement>(".atlas-directory-list");
+  const header = list && pane.querySelector(".atlas-directory-header");
+  const top = Math.max(paneTop, header?.getBoundingClientRect().bottom ?? paneTop);
+  const anchor = button.getBoundingClientRect();
+  if (top < bottom && anchor.height > 0 && anchor.top < bottom && anchor.bottom > top) {
+    button.focus({ preventScroll: true });
+    return;
+  }
+
+  if (list && top < bottom) {
+    // The previous row can still be mounted in the virtual buffer behind the sticky header.
+    const visible = Array.from(list.querySelectorAll<HTMLElement>("[data-entry-id]")).find((entry) => {
+      const row = entry.getBoundingClientRect();
+      return row.height > 0 && row.top >= top - 1 && row.bottom <= bottom + 1;
+    });
+    (visible ?? list).focus({ preventScroll: true });
+  } else {
+    const target = paneTop < bottom ? pane : toolbar?.querySelector<HTMLElement>(".atlas-toolbar-navigation h1");
+    target?.focus({ preventScroll: true });
+  }
+}
+
+const dismissOnScroll = { focusAfterDismiss: restoreFolderOpenFocus };
+
 export function FolderOpenControl(props: FolderOpenControlProps) {
   return canOpenFolder(props.node) ? <FolderOpenMenu key={props.node.id} {...props} /> : null;
 }
 
 function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
   const id = useId();
-  const { open, trigger, panel, show, close, toggle, containerProps } = useAnchoredPopover('[role="menuitem"]', "dismiss");
+  const { open, trigger, panel, show, close, toggle, containerProps } = useAnchoredPopover('[role="menuitem"]', dismissOnScroll);
   const [opening, setOpening] = useState(false);
   const remote = /^smb:\/\//i.test(node.path ?? "");
   const label = `Open ${node.name} in…`;

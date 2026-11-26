@@ -193,6 +193,97 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   await expect(page.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
 });
 
+for (const keepSitesFocus of [false, true]) {
+  const handoff = keepSitesFocus ? "keeps newer Sites focus" : "returns focus to Sort";
+  test(`retrying a failed Contents sort ${handoff}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 520 });
+    await page.goto("/mock/?scenario=large");
+    const photos = page.getByRole("figure").getByRole("button", { name: /^Photo Library,/ });
+    const nodeId = await photos.getAttribute("data-node-id");
+    await photos.press("Enter");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const search = contents.getByLabel("Find in folder", { exact: true });
+    const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+    const grid = contents.getByRole("grid");
+    const row = (index: number) => grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+    const query = "  hArBoR SuRvEy  ";
+    await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+    await search.fill(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    const rowHeight = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 438 * rowHeight);
+    await expect(row(440)).toBeInViewport({ ratio: 0.99 });
+    const rowId = await row(440).getAttribute("data-entry-id");
+    const scroll = () => contents.evaluate((pane) => ({ inner: pane.scrollTop, outer: window.scrollY }));
+    const position = await scroll();
+
+    const message = "The directory index was busy.";
+    const reads = await page.evaluateHandle(({ nodeId, message }) => {
+      const bridge = (window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string; sort?: DirectorySort }) => Promise<unknown> };
+      }).__TAURI_INTERNALS__;
+      let releaseFirst!: () => void;
+      let releaseRetry!: () => void;
+      const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
+      const state = { count: 0, releaseFirst, releaseRetry };
+      const invoke = bridge.invoke.bind(bridge);
+      bridge.invoke = async (command, args) => {
+        const reply = await invoke(command, args);
+        if (command === "get_storage_view_snapshot" && args.nodeId === nodeId
+          && args.sort?.field === "name" && args.sort.direction === "desc") {
+          state.count += 1;
+          if (state.count === 1) {
+            await firstGate;
+            throw new Error(message);
+          }
+          if (state.count === 2) await retryGate;
+        }
+        return reply;
+      };
+      return state;
+    }, { nodeId, message });
+
+    const retry = contents.getByRole("button", { name: "Retry", exact: true });
+    const error = contents.getByRole("alert").filter({ hasText: message });
+    const closeSites = sites.getByRole("button", { name: "Close sites", exact: true });
+    try {
+      await sort.press("Enter");
+      await page.getByRole("radio", { name: "Name", exact: true }).press("Space");
+      await expect.poll(() => reads.evaluate((read) => read.count)).toBe(1);
+      await page.keyboard.press("Escape");
+      await expect(sort).toBeFocused();
+      await reads.evaluate((read) => read.releaseFirst());
+
+      await expect(error).toContainText("Couldn’t change the Contents order");
+      await expect(retry).toBeInViewport({ ratio: 0.99 });
+      await expect(sort).toHaveAttribute("title", "Size, descending");
+      await expect(sort).toBeFocused();
+      await expect(row(440)).toHaveAttribute("data-entry-id", rowId!);
+      await expect(row(440)).toBeInViewport({ ratio: 0.99 });
+      await expect.poll(scroll).toEqual(position);
+
+      await retry.press("Enter");
+      await expect.poll(() => reads.evaluate((read) => read.count)).toBe(2);
+      if (keepSitesFocus) await closeSites.evaluate((button) => button.focus({ preventScroll: true }));
+    } finally {
+      await reads.evaluate((read) => { read.releaseFirst(); read.releaseRetry(); });
+    }
+
+    await expect(error).toBeHidden();
+    await expect(sort).toHaveAttribute("title", "Name, descending");
+    await expect(search).toHaveValue(query);
+    await expect(row(1)).toHaveAccessibleName(/^Harbor survey 3991\.jpg/);
+    await expect(sites).toBeVisible();
+    await expect(keepSitesFocus ? closeSites : sort).toBeFocused();
+    if (!keepSitesFocus) await expect(sort).toBeInViewport({ ratio: 0.99 });
+  });
+}
+
 test("keyboard Tab moves between sort groups and can leave the compact menu", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 310 });
   await page.goto("/mock/");

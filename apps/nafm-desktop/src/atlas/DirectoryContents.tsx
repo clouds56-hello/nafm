@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { formatCount } from "../lib/format";
 import type {
   DirectoryRefresh, DirectoryRefreshPosition, DirectoryRefreshTarget, DirectorySort, FolderOpenDestination, HealthMetric,
@@ -23,6 +23,7 @@ interface DirectoryContentsProps {
   selection: StorageNode | null;
   sort: DirectorySort;
   onSort: (sort: DirectorySort) => Promise<void>;
+  sortRecovery?: ReactNode;
   metric: HealthMetric | null;
   targetCompleteness: number;
   scrollPane: RefObject<HTMLDivElement | null>;
@@ -54,7 +55,7 @@ function entryTabStop(list: HTMLUListElement | null) {
 }
 
 export function DirectoryContents({
-  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, metric, targetCompleteness,
+  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, sortRecovery, metric, targetCompleteness,
   scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   contentsFocusOrigin, onContentsFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
@@ -523,12 +524,15 @@ export function DirectoryContents({
               : loading ? "Reading directory…" : awaitingInventory ? "Waiting for the first inventory." : "This directory is empty."}
           </p>
         )}
-        {error && (
+        {(error || sortRecovery) && (
           <div className="atlas-directory-feedback">
-            <div className="atlas-directory-status" role="alert">
-              <span>{error}</span>
-              <button ref={retryButton} type="button" className="atlas-text-button" onClick={retryDirectory}>Retry</button>
-            </div>
+            {error && (
+              <div className="atlas-directory-status" role="alert">
+                <span>{error}</span>
+                <button ref={retryButton} type="button" className="atlas-text-button" onClick={retryDirectory}>Retry</button>
+              </div>
+            )}
+            {sortRecovery}
           </div>
         )}
       </div>

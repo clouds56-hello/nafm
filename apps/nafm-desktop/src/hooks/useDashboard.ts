@@ -131,6 +131,7 @@ interface LocationAction {
   title: string;
   progress: string;
   sourceSwitch?: boolean;
+  contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
   retry?: () => Promise<boolean>;
 }
@@ -145,6 +146,7 @@ interface LocationFailure {
   title: string;
   message: string;
   sourceSwitch?: boolean;
+  contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
   retry: (() => Promise<boolean>) | null;
 }
@@ -609,6 +611,7 @@ export function useDashboard(
             workspace,
             title: action.title,
             sourceSwitch: action.sourceSwitch,
+            contentsSort: action.contentsSort,
             contentsUpOrigin: action.contentsUpOrigin,
             message: unavailable ? "This location is no longer available in the index." : message,
             retry: unavailable ? null : action.retry ?? (async () =>
@@ -641,7 +644,7 @@ export function useDashboard(
     const destination = withDirectorySort(current, sort);
     if (destination !== current || childrenLoadingRef.current) {
       await loadFolderLocation(destination, "preserve", {
-        action: { title: "Couldn’t change the Contents order", progress: "Sorting Contents…" },
+        action: { title: "Couldn’t change the Contents order", progress: "Sorting Contents…", contentsSort: true },
       });
     }
   }, [currentNavigationEntry, loadFolderLocation]);

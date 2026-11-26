@@ -1,4 +1,5 @@
 .atlas-directory {
+  container: directory / inline-size;
   display: grid;
   min-width: 0;
   align-content: start;
@@ -43,6 +44,25 @@
   color: var(--atlas-muted);
   font: 10px/1.3 var(--atlas-mono);
   white-space: nowrap;
+}
+
+@container directory (max-width: 344px) {
+  .atlas-directory-header:has(.atlas-directory-up):has(.atlas-directory-sort) {
+    gap: 0 4px;
+
+    .atlas-directory-heading {
+      display: flex;
+      order: -1;
+      flex: 0 0 100%;
+      align-items: baseline;
+      gap: 7px;
+      margin-block: 2px 1px;
+    }
+
+    h2 { min-width: 0; line-height: 18px; }
+    .atlas-directory-total { flex: none; }
+    > .atlas-folder-open { margin-inline-end: auto; }
+  }
 }
 
 .atlas-directory-search-toggle,
@@ -374,6 +394,17 @@
 .atlas-directory-feedback > .atlas-directory-status {
   flex: none;
   background: var(--atlas-surface);
+}
+
+.atlas-directory-feedback:has(> .atlas-location-recovery) { height: auto; }
+
+.atlas-directory-feedback > .atlas-location-recovery {
+  z-index: 1;
+  flex: none;
+  padding: 8px;
+  border: 1px solid #665261;
+  border-radius: 6px;
+  background: #292335;
 }
 
 .atlas-directory :where(button, h2):focus-visible {

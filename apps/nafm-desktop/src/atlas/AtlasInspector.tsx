@@ -32,6 +32,7 @@ interface AtlasInspectorProps {
   contentsRevealOrigin?: Element | null;
   onBackToContents: () => void;
   onClose: () => void;
+  folderLaunchFeedback?: ReactNode;
   contents: ReactNode;
   details: ReactNode;
 }
@@ -43,7 +44,7 @@ const tabs = [
 
 export function AtlasInspector({
   view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, stepSource, folderName, detailsKey, origin,
-  onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, contents, details,
+  onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, folderLaunchFeedback, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
   const drawer = useRef<HTMLElement>(null);
@@ -237,6 +238,7 @@ export function AtlasInspector({
         </button>
         {steps && <p className="atlas-inspector-file-step-status" role="status">{steps.status}</p>}
       </header>
+      {folderLaunchFeedback}
       {tabs.map((tab) => (
         <div
           key={tab.view}

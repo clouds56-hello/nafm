@@ -207,6 +207,34 @@ test("a failed launch leaves the folder available for another choice", async ({ 
   await expect(page.getByRole("status").filter({ hasText: /file manager/i })).toContainText("Projects");
 });
 
+test("launch feedback stays with compact Contents and Dismiss returns to the opener", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const opener = contents.getByRole("button", { name: "Open Photo Library in…", exact: true });
+  await opener.press("Enter");
+  await page.getByRole("menuitem", { name: "File manager", exact: true }).press("Enter");
+
+  const feedback = inspector.getByRole("status").filter({ hasText: /would open Photo Library in the file manager/i });
+  await expect(feedback).toBeInViewport({ ratio: 0.99 });
+  await expect(opener).toBeFocused();
+  const paneTop = await contents.evaluate((pane) => pane.getBoundingClientRect().top);
+  const bounds = (await feedback.boundingBox())!;
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(paneTop + 1);
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+
+  await feedback.getByRole("button", { name: "Dismiss", exact: true }).press("Enter");
+  await expect(feedback).toBeHidden();
+  await expect(opener).toBeFocused();
+  await expect(opener).toBeInViewport({ ratio: 0.99 });
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("menuitem", { name: "File manager", exact: true })).toBeFocused();
+});
+
 test("Open in reports the newest folder launch from request through completion", async ({ page }) => {
   await openContents(page);
   const contents = page.getByRole("tabpanel", { name: "Contents" });
@@ -250,6 +278,71 @@ test("Open in reports the newest folder launch from request through completion",
   await expect(feedback).toContainText("Opened Photo Library in the file manager.");
   await expect(library).toBeFocused();
   await expect(contents.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
+});
+
+test("scrolling past an open row menu keeps keyboard focus in visible Contents", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid", { name: "Photo Library entries" });
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  const row = grid.getByRole("button", { name: /^Studio portraits/ });
+  const opener = grid.getByRole("button", { name: "Open Studio portraits in…", exact: true });
+  const menu = page.getByRole("menu", { name: "Open Studio portraits in…", exact: true });
+  await row.focus();
+  await page.keyboard.press("Tab");
+  await expect(opener).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(menu.getByRole("menuitem", { name: "File manager", exact: true })).toBeFocused();
+
+  const firstVisible = grid.getByRole("button", { name: /^Reference images/ });
+  const rowHeight = await grid.evaluate((list) =>
+    Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  const pane = (await contents.boundingBox())!;
+  const pageTop = await page.evaluate(() => window.scrollY);
+  await page.mouse.move(pane.x + 55, pane.y + pane.height - 34);
+  await page.mouse.wheel(0, 3 * rowHeight);
+
+  await expect(menu).toBeHidden();
+  await expect.poll(() => contents.evaluate((el) => el.scrollTop)).toBe(3 * rowHeight);
+  await expect(opener).toHaveCount(1); // The clipped row is still in the virtual buffer.
+  await expect(firstVisible).toBeFocused();
+  await expect(firstVisible).toBeInViewport({ ratio: 1 });
+  expect(await page.evaluate(() => window.scrollY)).toBe(pageTop);
+  await page.keyboard.press("ArrowDown");
+  await expect(grid.locator('[aria-rowindex="5"] [data-entry-id]')).toBeFocused();
+});
+
+test("scrolling past the Details open menu keeps keyboard focus on the pane", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  await inspector.getByRole("tab", { name: "Details", exact: true }).press("Enter");
+  const details = inspector.getByRole("tabpanel", { name: "Details", exact: true });
+  const opener = details.getByRole("button", { name: "Open Photo Library in…", exact: true });
+  const menu = page.getByRole("menu", { name: "Open Photo Library in…", exact: true });
+  await expect(opener).toBeInViewport({ ratio: 1 });
+  await opener.evaluate((button) => button.focus({ preventScroll: true }));
+  await page.keyboard.press("Space");
+  await expect(menu.getByRole("menuitem", { name: "File manager", exact: true })).toBeFocused();
+
+  const pageTop = await page.evaluate(() => window.scrollY);
+  const end = await details.evaluate((pane) => {
+    pane.scrollTop = pane.scrollHeight;
+    return pane.scrollTop;
+  });
+  expect(end).toBeGreaterThan(0);
+  await expect(menu).toBeHidden();
+  await expect(details).toBeFocused();
+  expect(await details.evaluate((pane) => pane.scrollTop)).toBe(end);
+  expect(await page.evaluate(() => window.scrollY)).toBe(pageTop);
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeHidden();
 });
 
 test.describe("touch folder launch", () => {

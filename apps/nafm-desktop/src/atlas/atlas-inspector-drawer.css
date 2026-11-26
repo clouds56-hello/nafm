@@ -34,6 +34,23 @@
   box-shadow: 0 12px 32px #08091380;
 }
 
+.atlas-inspector:has(> .atlas-inspector-launch-feedback) {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.atlas-inspector > .atlas-inspector-launch-feedback {
+  position: static;
+  width: auto;
+  max-width: none;
+  max-height: min(84px, 24dvh);
+  align-items: start;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 4px var(--atlas-inspector-padding, 14px);
+  border: 0;
+  border-bottom: 1px solid var(--atlas-border);
+}
+
 .atlas-inspector-bar {
   display: flex;
   min-width: 0;

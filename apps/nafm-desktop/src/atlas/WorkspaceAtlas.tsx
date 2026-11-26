@@ -10,6 +10,7 @@ import { CoverageFooter } from "./CoverageFooter";
 import { siteVerification } from "./siteVerification";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
+import { restoreFolderOpenFocus } from "./FolderOpenControl";
 import { LocationRecovery } from "./LocationRecovery";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
@@ -150,6 +151,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [inspectorBySite, setInspectorBySite] = useState(() => saved?.inspectorBySite ?? new Map<string, InspectorView>());
   const lastOpened = useRef<"sites" | "inspector">(saved?.lastOpened ?? "inspector");
   const mapRegion = useRef<HTMLElement>(null);
+  const folderLaunchSource = useRef<{ opener: HTMLButtonElement | null; inspector: boolean } | null>(null);
   useEffect(() => watchAtlasPanelReflow(mapRegion.current), []);
   const contentsPane = useRef<HTMLDivElement>(null);
   const directoryRefresh = useRef<DirectoryRefreshTarget | null>(null);
@@ -185,6 +187,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [mapMode, setMapMode] = useState<MapMode>(saved?.mapMode ?? "size");
   const state = useDashboard(workspaceName, workspace.siteListRevision, browsingScope, directoryRefresh, saved?.location);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
+  const openFolderExternally = useCallback<typeof state.openFolderExternally>((node, destination) => {
+    const active = document.activeElement;
+    const opener = active instanceof HTMLButtonElement && active.matches(".atlas-folder-open-trigger") ? active : null;
+    folderLaunchSource.current = { opener, inspector: Boolean(opener?.closest(".atlas-inspector")) };
+    return state.openFolderExternally(node, destination);
+  }, [state.openFolderExternally]);
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
   const openFileFinder = useCallback(() => {
@@ -492,7 +500,8 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
 
   const recoveryInSources = sourcesOpen && state.locationFailure?.sourceSwitch;
-  const recoveryOnMap = !recoveryInSources && Boolean(state.locationFailure) && !state.treeError && !state.error;
+  const recoveryInContents = state.locationFailure?.contentsSort;
+  const recoveryOnMap = !recoveryInSources && !recoveryInContents && Boolean(state.locationFailure) && !state.treeError && !state.error;
   const openingSiteId = state.locationProgress?.opening_site_id;
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
   const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
@@ -518,6 +527,14 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
 
   function focusAfterRecovery(button: HTMLButtonElement) {
     if (document.activeElement !== button && document.activeElement !== document.body) return;
+    if (recoveryInContents) {
+      const sort = contentsPane.current?.querySelector<HTMLButtonElement>(".atlas-directory-sort");
+      if (sort?.getClientRects().length) {
+        revealInCompactAtlas(sort.closest("[data-atlas-panel]"));
+        sort.focus({ preventScroll: true });
+      }
+      return;
+    }
     const heading = button.closest("dialog")?.querySelector<HTMLElement>("h1")
       ?? mapRegion.current?.closest(".atlas-shell")?.querySelector<HTMLElement>(".atlas-toolbar-location h1");
     (heading ?? mapRegion.current)?.focus({ preventScroll: true });
@@ -774,6 +791,28 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     }
   }
 
+  function dismissFolderLaunchFeedback() {
+    const source = folderLaunchSource.current;
+    folderLaunchSource.current = null;
+    state.clearFolderLaunchFeedback();
+    if (source?.opener?.isConnected) {
+      restoreFolderOpenFocus(source.opener);
+      return;
+    }
+    const pane = source?.inspector ? mapRegion.current?.querySelector<HTMLElement>(".atlas-inspector-pane:not([hidden])") : null;
+    const heading = mapRegion.current?.closest(".atlas-shell")?.querySelector<HTMLElement>(".atlas-toolbar-navigation h1");
+    (pane ?? heading)?.focus({ preventScroll: true });
+  }
+
+  const inlineLaunchFeedback = !state.notice && Boolean(inspectorView && folderLaunchSource.current?.inspector);
+  const notice = atlasNotice && !recoveryOnMap && !sourcesOpen && !state.reviewOpen ? (
+    <div className={inlineLaunchFeedback ? "atlas-alert atlas-inspector-launch-feedback" : "atlas-alert"} role="status">
+      <span>{atlasNotice}</span>
+      <button className="atlas-text-button" type="button"
+        onClick={state.notice ? state.clearNotice : dismissFolderLaunchFeedback}>Dismiss</button>
+    </div>
+  ) : null;
+
   return (
     <div className="atlas-shell" data-overlay-open={sitesOpen || inspectorView ? "" : undefined}>
       <AtlasToolbar
@@ -798,7 +837,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onForward: goForward,
           onUp: goUp,
           onBreadcrumb: navigateAncestor,
-          onOpenFolder: state.openFolderExternally,
+          onOpenFolder: openFolderExternally,
         }}
         map={{
           mode: mapMode,
@@ -951,10 +990,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 contentsRevealOrigin={revealedEntry?.origin}
                 onBackToContents={goBack}
                 onClose={closeInspector}
+                folderLaunchFeedback={inlineLaunchFeedback ? notice : null}
                 details={location ? (
                   <StorageDetails
                     node={selected ?? location.root}
-                    onOpenFolder={state.openFolderExternally}
+                    onOpenFolder={openFolderExternally}
                     parent={detailsParent}
                     revealFolderName={selected?.kind === "file" && detailsParent?.id !== folder?.id ? detailsParent?.name : undefined}
                     fileUnavailable={state.selectedFileUnavailable}
@@ -1010,7 +1050,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                   <>
                     <DirectoryContents
                       onGoUp={goUpFromContents}
-                      onOpenFolder={state.openFolderExternally}
+                      onOpenFolder={openFolderExternally}
                       location={location}
                       page={directoryPage}
                       total={search.enabled ? search.total : directoryPage?.total_children ?? 0}
@@ -1021,6 +1061,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       selection={selected}
                       sort={state.directorySort}
                       onSort={changeDirectorySort}
+                      sortRecovery={recoveryInContents ? recovery : undefined}
                       metric={metric}
                       targetCompleteness={targetCompleteness}
                       scrollPane={contentsPane}
@@ -1107,13 +1148,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
         />
       )}
 
-      {atlasNotice && !recoveryOnMap && !sourcesOpen && !state.reviewOpen && (
-        <div className="atlas-alert" role="status">
-          <span>{atlasNotice}</span>
-          <button className="atlas-text-button" type="button"
-            onClick={state.notice ? state.clearNotice : state.clearFolderLaunchFeedback}>Dismiss</button>
-        </div>
-      )}
+      {!inlineLaunchFeedback && notice}
 
       {sourcesOpen && (
         <SourceLibrary

@@ -15,7 +15,7 @@ export function focusPopoverItem(popup: HTMLElement, item: HTMLElement) {
 
 export function useAnchoredPopover(
   initialFocus: string,
-  scrollBehavior: "follow" | "dismiss" = "follow",
+  scrollBehavior: "follow" | { focusAfterDismiss: (trigger: HTMLButtonElement) => void } = "follow",
   align: "start" | "end" = "end",
 ) {
   const trigger = useRef<HTMLButtonElement>(null);
@@ -62,13 +62,13 @@ export function useAnchoredPopover(
       if (active instanceof HTMLElement && popup.contains(active)) revealPopoverItem(popup, active);
     };
     const handleScroll = (event: Event) => {
-      if (scrollBehavior === "dismiss" && event.target instanceof Node && event.target.contains(button)) {
+      if (scrollBehavior !== "follow" && event.target instanceof Node && event.target.contains(button)) {
         const current = button.getBoundingClientRect();
-        // A sticky header can stay in place while its list or the page scrolls.
-        if (current.top === anchor.top && current.bottom === anchor.bottom
-          && current.left === anchor.left && current.right === anchor.right) return;
+        // A sticky header can stay in place while scrolling, with up to a pixel of rounding.
+        if (Math.abs(current.top - anchor.top) <= 1 && Math.abs(current.bottom - anchor.bottom) <= 1
+          && Math.abs(current.left - anchor.left) <= 1 && Math.abs(current.right - anchor.right) <= 1) return;
         setFocusSelector(null);
-        if (popup.contains(document.activeElement)) button.focus({ preventScroll: true });
+        if (popup.contains(document.activeElement)) scrollBehavior.focusAfterDismiss(button);
       } else {
         position();
       }
