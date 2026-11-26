@@ -2,7 +2,7 @@ import { useCallback, useId, useLayoutEffect, useRef, type ReactNode, type RefOb
 import { isTauri } from "@tauri-apps/api/core";
 import type { AtlasToolbarFocus, WorkspaceSwitchFailure } from "../hooks/useWorkspace";
 import { formatCount } from "../lib/format";
-import type { FolderOpenDestination, SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
+import type { SiteOverview, StorageNode, WorkspaceSummary } from "../lib/types";
 import { RefreshIcon, SearchIcon, WorkspaceIcon } from "../management/Icons";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import { FolderOpenControl } from "./FolderOpenControl";
@@ -51,7 +51,6 @@ export interface AtlasToolbarProps {
     onForward: () => void;
     onUp: () => void;
     onBreadcrumb: (node: StorageNode) => void;
-    onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   };
   map: {
     mode: MapMode;
@@ -136,7 +135,7 @@ function FolderNavigation({ navigation }: Pick<AtlasToolbarProps, "navigation">)
       <FolderBreadcrumbs breadcrumbs={navigation.breadcrumbs} siteName={navigation.siteName} onNavigate={navigation.onBreadcrumb}
         canBack={navigation.canBack} canForward={navigation.canForward} canUp={navigation.canUp}
         heading={heading} onTriggerRemoved={restoreFocus} />
-      {current && <FolderOpenControl node={current} onOpen={navigation.onOpenFolder} />}
+      {current && <FolderOpenControl node={current} />}
     </nav>
   );
 }

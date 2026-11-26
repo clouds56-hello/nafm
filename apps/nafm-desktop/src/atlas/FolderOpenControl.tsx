@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useState, type KeyboardEvent } from "react";
+import { createContext, useContext, useId, useLayoutEffect, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import type { FolderOpenDestination, StorageNode } from "../lib/types";
 import { FolderIcon, OpenInIcon, TerminalIcon } from "../management/Icons";
@@ -7,9 +7,15 @@ import "./folder-open.css";
 
 interface FolderOpenControlProps {
   node: StorageNode;
-  onOpen: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   tabIndex?: number;
 }
+
+export interface FolderOpenActions {
+  isOpening: (node: StorageNode) => boolean;
+  open: (node: StorageNode, destination: FolderOpenDestination, opener: HTMLButtonElement | null) => void;
+}
+
+export const FolderOpenContext = createContext<FolderOpenActions | null>(null);
 
 export function canOpenFolder(node: StorageNode): boolean {
   return Boolean(node.path) && (node.kind === "directory" || node.kind === "local_root" || node.kind === "smb_root");
@@ -52,13 +58,17 @@ export function restoreFolderOpenFocus(button: HTMLButtonElement) {
 const dismissOnScroll = { focusAfterDismiss: restoreFolderOpenFocus };
 
 export function FolderOpenControl(props: FolderOpenControlProps) {
-  return canOpenFolder(props.node) ? <FolderOpenMenu key={props.node.id} {...props} /> : null;
+  const launch = useContext(FolderOpenContext);
+  if (!launch || !canOpenFolder(props.node)) return null;
+  return <FolderOpenMenu key={props.node.id} {...props} opening={launch.isOpening(props.node)} onOpen={launch.open} />;
 }
 
-function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
+function FolderOpenMenu({ node, onOpen, opening, tabIndex }: FolderOpenControlProps & {
+  onOpen: FolderOpenActions["open"];
+  opening: boolean;
+}) {
   const id = useId();
   const { open, trigger, panel, show, close, toggle, containerProps } = useAnchoredPopover('[role="menuitem"]', dismissOnScroll);
-  const [opening, setOpening] = useState(false);
   const remote = /^smb:\/\//i.test(node.path ?? "");
   const label = `Open ${node.name} in…`;
 
@@ -81,15 +91,10 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
     };
   }, [open, panel, trigger]);
 
-  async function launch(destination: FolderOpenDestination) {
+  function launch(destination: FolderOpenDestination) {
     if (opening || (destination === "terminal" && remote)) return;
     close(true);
-    setOpening(true);
-    try {
-      await onOpen(node, destination);
-    } finally {
-      setOpening(false);
-    }
+    onOpen(node, destination, trigger.current);
   }
 
   function navigateMenu(event: KeyboardEvent<HTMLDivElement>) {
@@ -117,12 +122,12 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
 
   const menu = open && (
     <div id={id} ref={panel} role="menu" aria-label={label} className="atlas-folder-open-menu" popover="manual" onKeyDown={navigateMenu}>
-      <button type="button" role="menuitem" tabIndex={-1} onClick={() => void launch("file_manager")}>
+      <button type="button" role="menuitem" tabIndex={-1} onClick={() => launch("file_manager")}>
         <FolderIcon /> File manager
       </button>
       <button type="button" role="menuitem" tabIndex={-1} aria-label="Terminal"
         aria-disabled={remote || undefined} aria-describedby={remote ? id + "-terminal-hint" : undefined}
-        onClick={() => void launch("terminal")}>
+        onClick={() => launch("terminal")}>
         <TerminalIcon />
         <span>Terminal{remote && <small id={id + "-terminal-hint"}>Requires a local folder</small>}</span>
       </button>
@@ -131,7 +136,7 @@ function FolderOpenMenu({ node, onOpen, tabIndex }: FolderOpenControlProps) {
 
   return (
     <div className="atlas-folder-open" {...containerProps}>
-      <button ref={trigger} type="button" className="atlas-folder-open-trigger" title={label}
+      <button ref={trigger} type="button" className="atlas-folder-open-trigger" title={opening ? `Opening ${node.name}…` : label}
         aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
         aria-disabled={opening || undefined} tabIndex={tabIndex}
         onClick={opening ? undefined : toggle}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
-import type { FolderOpenDestination, HealthMetric, StorageNode } from "../lib/types";
+import type { HealthMetric, StorageNode } from "../lib/types";
 import { DetailPath } from "./DetailPath";
 import { FolderOpenControl } from "./FolderOpenControl";
 import { ModifiedDate } from "./ModifiedDate";
@@ -19,7 +19,6 @@ interface StorageDetailsProps {
   metric: HealthMetric | null;
   targetCompleteness: number;
   targetName: string | null;
-  onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   returnAction?: { label: string; shortLabel?: string; run: () => void };
   onShowInContents?: () => void;
   revealFolderName?: string;
@@ -46,7 +45,7 @@ function HealthDetail({
 }
 
 export function StorageDetails({
-  node, parent, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
+  node, parent, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName,
   returnAction, onShowInContents, revealFolderName, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
@@ -91,7 +90,7 @@ export function StorageDetails({
         </p>
         <div className="atlas-readout-title">
           <h2>{node.name}</h2>
-          <FolderOpenControl node={node} onOpen={onOpenFolder} />
+          <FolderOpenControl node={node} />
         </div>
       </header>
       {fileUnavailable && <p className="atlas-inspector-status" role="status">This file is no longer in the index.</p>}

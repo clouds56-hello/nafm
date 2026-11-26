@@ -180,6 +180,23 @@
   font: 600 10px/1.35 var(--atlas-mono);
 }
 
+.atlas-site-rail-recovery {
+  margin-block: 5px;
+  padding: 6px;
+  border: 1px solid #665261;
+  border-radius: 5px;
+  background: #292335;
+}
+
+.atlas-site-rail-recovery .atlas-location-recovery {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.atlas-site-rail-recovery .atlas-location-recovery-actions { justify-content: flex-end; }
+.atlas-site-rail-recovery .atlas-location-recovery-actions button { scroll-margin-block: 4px; }
+
 .atlas-site-rail-stats,
 .atlas-site-rail-progress {
   margin: 5px 4px;

@@ -615,6 +615,76 @@ test("compact history restores a filtered file inspection after leaving its fold
   await expect(rail).toBeVisible();
 });
 
+test("an older file inspection keeps its Contents filter after a newer folder search", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.goto("/mock/?scenario=large");
+  await openFolder(page, "Photo Library");
+  const launcher = page.getByRole("button", { name: "Contents & details", exact: true });
+  await launcher.press("Enter");
+
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
+  const search = contents.getByRole("searchbox", { name: "Find in folder", exact: true });
+  const grid = contents.getByRole("grid");
+  const entry = (rank: number) => grid.locator(`[aria-rowindex="${rank}"] [data-entry-id]`);
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  const previous = path.getByRole("button", { name: "Previous location", exact: true });
+  const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+  const query = "  HaRbOr SuRvEy  ";
+  const newerQuery = "  Glasshouse  ";
+  const scrollTop = () => contents.evaluate((pane) => pane.scrollTop);
+
+  async function openFreshPhotoLibrary() {
+    await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    await openFolder(page, "Photo Library");
+  }
+
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  await search.fill(query);
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  const height = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 436 * height);
+  await expect(entry(440)).toBeInViewport({ ratio: 0.99 });
+  const nextFileId = await entry(441).getAttribute("data-entry-id");
+  const nextFileName = await entry(441).locator(".atlas-directory-identity > span").first().textContent();
+  const savedScroll = await scrollTop();
+  await entry(440).press("Enter");
+  const original = inspector.getByRole("heading", { name: "Harbor survey 2431.jpg", exact: true });
+  await expect(original).toBeVisible();
+
+  await openFreshPhotoLibrary();
+  await search.fill(newerQuery);
+  await expect(entry(1)).toHaveAccessibleName(/^Glasshouse /);
+  await previous.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await previous.press("Enter");
+  await expect(original).toBeVisible();
+  await expect(inspector.getByText("Match 440 of 666", { exact: true })).toBeVisible();
+  await inspector.getByRole("button", { name: "Next file", exact: true }).press("Enter");
+  await expect(inspector.getByRole("heading", { name: nextFileName!, exact: true })).toBeVisible();
+  await expect(inspector.getByText("Match 441 of 666", { exact: true })).toBeVisible();
+  await back.press("Enter");
+
+  async function expectOriginalResults() {
+    await expect(search).toHaveValue(query);
+    await expect(entry(441)).toHaveAttribute("data-entry-id", nextFileId!);
+    await expect(entry(441)).toBeFocused();
+    await expect(entry(441)).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(scrollTop).toBe(savedScroll);
+  }
+
+  await expectOriginalResults();
+  await inspector.getByRole("button", { name: "Close inspector", exact: true }).press("Enter");
+  await expect(contents).toBeHidden();
+  await launcher.press("Enter");
+  await expectOriginalResults();
+
+  await openFreshPhotoLibrary();
+  await expect(search).toHaveValue(newerQuery);
+  await expect(entry(1)).toHaveAccessibleName(/^Glasshouse /);
+});
+
 test("a missing folder falls back to the remembered site's root", async ({ page }) => {
   await seedLocation(page, "field-drive", "site_folder:field-drive:0/No longer indexed");
   await page.goto("/mock/");

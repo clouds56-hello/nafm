@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { formatCount } from "../lib/format";
 import type {
-  DirectoryRefresh, DirectoryRefreshPosition, DirectoryRefreshTarget, DirectorySort, FolderOpenDestination, HealthMetric,
+  DirectoryRefresh, DirectoryRefreshPosition, DirectoryRefreshTarget, DirectorySort, HealthMetric,
   StorageChildrenPage, StorageLocation, StorageNode,
 } from "../lib/types";
 import { CloseIcon, SearchIcon } from "../management/Icons";
@@ -45,7 +45,6 @@ interface DirectoryContentsProps {
   awaitingInventory: boolean;
   error: string | null;
   onSelect: (node: StorageNode) => void;
-  onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   onGoUp: (origin?: HTMLElement) => void;
   onLoadRange: (start: number, end: number, preferredIndex?: number) => void;
   onRetry: () => void;
@@ -59,7 +58,7 @@ export function DirectoryContents({
   location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, pendingSort, onSort, sortRecovery, metric, targetCompleteness,
   scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   contentsFocusOrigin, onContentsFocusHandled,
-  active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
+  active, loading, loadingMore, awaitingInventory, error, onSelect, onGoUp, onLoadRange, onRetry,
 }: DirectoryContentsProps) {
   const labelId = useId();
   const searchTrigger = useRef<HTMLButtonElement>(null);
@@ -450,7 +449,7 @@ export function DirectoryContents({
             </span>
           )}
         </div>
-        <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
+        <FolderOpenControl node={location.root} />
         {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} pendingSort={pendingSort} progressId={progressId} onChange={onSort} />}
         {directoryTotal > 0 && !searchOpen && !onRestoreSearch && !awaitingInventory && (
           <button
@@ -527,7 +526,7 @@ export function DirectoryContents({
                     >
                       <DirectoryEntryLabel node={node} awaitingInventory={awaitingInventory} showDate={sort.field === "date"} />
                     </button>
-                    <FolderOpenControl node={node} onOpen={onOpenFolder} tabIndex={tabStop === node.id ? 0 : -1} />
+                    <FolderOpenControl node={node} tabIndex={tabStop === node.id ? 0 : -1} />
                   </div>
                 </li>
               );

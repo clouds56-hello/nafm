@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { formatBytes, formatCount, percent } from "../lib/format";
 import { scanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
 import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
@@ -13,6 +13,7 @@ interface SiteRailProps {
   activeId: string | null;
   openingSiteId?: string;
   addedSite?: AddedSiteRow;
+  switchRecovery?: { siteId: string; origin: HTMLButtonElement; content: ReactNode };
   scanRequests: ReadonlyMap<string, number>;
   blockedIds: ReadonlySet<string>;
   scanAllRequests: ReadonlySet<number>;
@@ -21,7 +22,7 @@ interface SiteRailProps {
   scanInterruptions: ReadonlyMap<string, ScanInterruption>;
   onOpen: () => void;
   onClose: () => void;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, origin: HTMLButtonElement) => void;
   onScan: (id: string) => void;
   onCancel: (requestId: number) => void;
   onAdd?: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -51,6 +52,7 @@ export function SiteRail({
   activeId,
   openingSiteId,
   addedSite,
+  switchRecovery,
   scanRequests,
   blockedIds,
   scanAllRequests,
@@ -71,6 +73,7 @@ export function SiteRail({
   const trigger = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
+  const recoveryPanel = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(open);
 
   useLayoutEffect(() => {
@@ -86,6 +89,14 @@ export function SiteRail({
   }, [open]);
 
   const addedButton = useAddedSiteRow(addedSite);
+
+  const recoveryOrigin = switchRecovery?.origin;
+  useLayoutEffect(() => {
+    if (!open || !recoveryOrigin || document.activeElement !== recoveryOrigin) return;
+    const next = recoveryPanel.current?.querySelector<HTMLButtonElement>(".atlas-location-retry, .atlas-location-dismiss");
+    next?.focus({ preventScroll: true });
+    next?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [open, recoveryOrigin]);
 
   function moveSite(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -178,10 +189,13 @@ export function SiteRail({
             const selected = activeId === site.id;
             const opening = openingSiteId === site.id;
             const openingId = `${titleId}-opening-${site.id}`;
+            const siteRecovery = switchRecovery?.siteId === site.id ? switchRecovery.content : null;
+            const recoveryId = `${titleId}-recovery-${site.id}`;
+            const showOpening = opening && !siteRecovery;
             const DeviceIcon = site.kind === "smb" ? NetworkIcon : DriveIcon;
 
             return (
-              <li key={site.id} className="atlas-site-rail-item" data-active={selected || undefined} data-added={showAdded || undefined}>
+              <li key={site.id} className="atlas-site-rail-item" data-site-id={site.id} data-active={selected || undefined} data-added={showAdded || undefined}>
                 <button
                   ref={justAdded ? addedButton : undefined}
                   className="atlas-site-rail-select"
@@ -190,11 +204,11 @@ export function SiteRail({
                   aria-label={`Open ${site.name} in Atlas`}
                   aria-busy={opening || undefined}
                   aria-disabled={opening || undefined}
-                  aria-describedby={[showAdded ? addedStatusId : null, opening ? openingId : null].filter(Boolean).join(" ") || undefined}
+                  aria-describedby={[showAdded ? addedStatusId : null, showOpening ? openingId : null, siteRecovery ? recoveryId : null].filter(Boolean).join(" ") || undefined}
                   onKeyDown={(event) => moveSite(event, index)}
                   onClick={(event) => {
                     event.currentTarget.focus({ preventScroll: true });
-                    if (!opening) onSelect(site.id);
+                    if (!opening) onSelect(site.id, event.currentTarget);
                   }}
                 >
                   <span className="atlas-site-rail-device"><DeviceIcon /></span>
@@ -203,10 +217,13 @@ export function SiteRail({
                     <span title={site.location}>{site.location}</span>
                   </span>
                 </button>
-                {opening && (
+                {showOpening && (
                   <p id={openingId} className="atlas-site-rail-opening" role="status" aria-label={`Opening ${site.name} in Atlas…`}>
                     Opening in Atlas…
                   </p>
+                )}
+                {siteRecovery && (
+                  <div className="atlas-site-rail-recovery" id={recoveryId} ref={recoveryPanel}>{siteRecovery}</div>
                 )}
                 {hasInventory && (
                   <p className="atlas-site-rail-stats">

@@ -12,7 +12,6 @@ import {
   loadDashboard,
   moveStageHistory,
   onScanTaskEvent,
-  openFolderIn,
   previewCleanup,
   stagePath,
   startScan,
@@ -62,6 +61,7 @@ import type {
   StorageTree,
   StorageViewSnapshot,
 } from "../lib/types";
+import type { FolderLaunches } from "../atlas/useFolderLaunches";
 import { DEFAULT_DIRECTORY_SORT } from "../lib/types";
 
 const CHILDREN_PAGE_SIZE = 6;
@@ -134,6 +134,17 @@ export interface CoverageAction {
   capturePanelFocus: () => HTMLElement | undefined;
 }
 
+interface SiteRailAction {
+  siteId: string;
+  origin: HTMLButtonElement;
+  capturePanelFocus: () => HTMLElement | undefined;
+}
+
+export interface SiteSwitchOptions {
+  coverageAction?: CoverageAction;
+  railAction?: Omit<SiteRailAction, "siteId">;
+}
+
 interface LocationAction {
   title: string;
   progress: string;
@@ -141,6 +152,7 @@ interface LocationAction {
   contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
   coverageAction?: CoverageAction;
+  siteRail?: SiteRailAction;
   retry?: () => Promise<boolean>;
 }
 
@@ -158,7 +170,8 @@ interface LocationFailure {
   contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
   coverageAction?: CoverageAction;
-  visibleCoverageFocus?: HTMLElement;
+  siteRail?: SiteRailAction;
+  visiblePanelFocus?: HTMLElement;
   retry: (() => Promise<boolean>) | null;
 }
 
@@ -277,6 +290,7 @@ export function useDashboard(
   siteListRevision: number,
   browsingScope: string,
   directoryRefresh: RefObject<DirectoryRefreshTarget | null>,
+  launchFolder: FolderLaunches["run"],
   resumeLocation?: AtlasWorkspaceLocation,
 ) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -626,7 +640,8 @@ export function useDashboard(
             contentsSort: action.contentsSort,
             contentsUpOrigin: action.contentsUpOrigin,
             coverageAction: action.coverageAction,
-            visibleCoverageFocus: action.coverageAction?.capturePanelFocus(),
+            siteRail: action.siteRail,
+            visiblePanelFocus: (action.coverageAction ?? action.siteRail)?.capturePanelFocus(),
             message: unavailable ? "This location is no longer available in the index." : message,
             retry: unavailable ? null : action.retry ?? (async () =>
               (await loadFolderLocation(entry, historyAction, { action, retrying: true, anchor })) === "loaded"),
@@ -1183,7 +1198,9 @@ export function useDashboard(
     });
   }, [completionBySite, dashboard?.active_tasks, dashboard?.sites]);
 
-  const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current, coverageAction?: CoverageAction) => {
+  const selectSite = useCallback(async (
+    siteId: string, targetSiteId = targetSiteRef.current, { coverageAction, railAction }: SiteSwitchOptions = {},
+  ) => {
     const sites = dashboardRef.current?.sites ?? [];
     const target = validTarget(sites, siteId, targetSiteId);
     const current = currentNavigationEntry();
@@ -1195,6 +1212,7 @@ export function useDashboard(
       progress: `Opening ${siteName ?? "source"}…`,
       sourceSwitch: true,
       coverageAction,
+      siteRail: railAction ? { ...railAction, siteId } : undefined,
     };
     if (current?.site_id === siteId) {
       if (childrenLoadingRef.current) {
@@ -1324,17 +1342,20 @@ export function useDashboard(
     setFolderLaunchFeedback(null);
   }, []);
 
-  const openFolderExternally = useCallback(async (node: StorageNode, destination: FolderOpenDestination) => {
+  const openFolderExternally = useCallback(async (node: StorageNode, destination: FolderOpenDestination, onLaunch: () => void) => {
     const workspace = workspaceNameRef.current;
     const siteId = locationRef.current?.site_id;
     if (!workspace || !siteId) return;
+    const opening = launchFolder({ workspace_name: workspace, site_id: siteId, node_id: node.id, destination });
+    if (!opening) return;
+    onLaunch();
     const request = ++folderLaunchRequest.current;
     const application = destination === "terminal" ? "Terminal" : "the file manager";
     setNotice(null);
     setFolderLaunchFeedback(`Opening ${node.name} in ${application}…`);
     let message: string;
     try {
-      const previewMessage = await openFolderIn({ workspace_name: workspace, site_id: siteId, node_id: node.id, destination });
+      const previewMessage = await opening;
       message = previewMessage ?? `Opened ${node.name} in ${application}.`;
     } catch (error) {
       message = `Couldn’t open ${node.name} in ${application}. ${errorMessage(error)}`;
@@ -1342,7 +1363,7 @@ export function useDashboard(
     if (request === folderLaunchRequest.current && workspace === workspaceNameRef.current) {
       setFolderLaunchFeedback(message);
     }
-  }, []);
+  }, [launchFolder]);
 
   const selectNode = useCallback((node: StorageNode, {
     inspection, onGroupArrival, directoryPage,

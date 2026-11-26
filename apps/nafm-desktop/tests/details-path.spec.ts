@@ -32,6 +32,55 @@ async function openInterviewFolder(page: Page) {
   return { current, inspector, contents, details, file };
 }
 
+for (const layout of ["compact", "desktop"] as const) {
+  test(`${layout} reopening the inspector resumes the stepped file and its Contents visit`, async ({ page }) => {
+    const compact = layout === "compact";
+    await page.setViewportSize(compact ? { width: 320, height: 480 } : { width: 1280, height: 800 });
+    const { current } = await openDeepFolder(page, folders);
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const launcher = page.getByRole("button", { name: "Contents & details", exact: true });
+    const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    const close = inspector.getByRole("button", { name: "Close inspector", exact: true });
+    const back = inspector.getByRole("button", { name: "Back to Contents", exact: true });
+    await launcher.press("Enter");
+    await inspector.getByRole("grid").getByRole("button", { name: fileEntry }).press("Enter");
+    await inspector.getByRole("button", { name: "Next file", exact: true }).press("Enter");
+    const title = inspector.getByRole("heading", { name: "Transcript.txt", exact: true });
+    await expect(title).toBeVisible();
+    await expect(inspector.getByText("Item 2 of 2", { exact: true })).toBeVisible();
+
+    await close.tap();
+    await expect(inspector).toBeHidden();
+    await expect(sites).toBeVisible();
+    if (!compact) {
+      const workspace = page.getByRole("combobox", { name: "Workspace", exact: true });
+      await workspace.selectOption("Field notes");
+      await expect(page.getByText("No source selected", { exact: true })).toBeVisible();
+      await workspace.selectOption("Studio workspace");
+      await expect(current).toHaveText("Interview Selects");
+      await expect(inspector).toBeHidden();
+    }
+
+    await launcher.press("Enter");
+    await expect(back).toBeFocused();
+    await expect(back).toBeInViewport({ ratio: 0.99 });
+    await expect(title).toBeInViewport({ ratio: 0.99 });
+    await expect(inspector.getByText("Item 2 of 2", { exact: true })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Next file", exact: true })).toBeDisabled();
+    await expect(sites).toBeVisible();
+    await back.press("Enter");
+    const transcript = inspector.getByRole("grid").getByRole("button", { name: /^Transcript\.txt/ });
+    await expect(transcript).toBeFocused();
+    await close.press("Enter");
+    await launcher.press("Enter");
+    await expect(transcript).toBeFocused();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(title).toBeInViewport({ ratio: 0.99 });
+    await expect(back).toBeFocused();
+  });
+}
+
 test("revealing a nested map file names its destination and closes back to that file’s arc", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 480 });
   const { current, map } = await openDeepFolder(page, folders.slice(0, 4));

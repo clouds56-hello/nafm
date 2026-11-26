@@ -1,6 +1,7 @@
 import { useRef, useState, type MouseEvent } from "react";
 import type { AtlasToolbarExtension } from "./atlas/AtlasToolbar";
 import { WorkspaceAtlas, type AtlasWorkspaceSession } from "./atlas/WorkspaceAtlas";
+import { useFolderLaunches } from "./atlas/useFolderLaunches";
 import { useWorkspace } from "./hooks/useWorkspace";
 import { AddSiteDialog } from "./management/AddSiteDialog";
 import { ManagementCenter } from "./management/ManagementCenter";
@@ -15,6 +16,7 @@ export interface AppProps {
 
 export default function App({ toolbarExtension, browsingScope = "desktop" }: AppProps) {
   const workspace = useWorkspace();
+  const folderLaunches = useFolderLaunches();
   const atlasSessions = useRef(new Map<string, AtlasWorkspaceSession>());
   const [addingSite, setAddingSite] = useState<AddSiteRequest | null>(null);
   const [siteAddition, setSiteAddition] = useState<SiteAddition>();
@@ -37,6 +39,7 @@ export default function App({ toolbarExtension, browsingScope = "desktop" }: App
         <WorkspaceAtlas
           key={workspace.workspaceRevision}
           workspace={workspace}
+          folderLaunches={folderLaunches}
           siteAddition={addition}
           onAddSite={openAddSite}
           toolbarExtension={toolbarExtension}

@@ -65,6 +65,103 @@ test("retrying a failed source switch opens the intended site and closes Sources
   await expect(back(page)).toBeDisabled();
 });
 
+test.describe("compact persistent Sites", () => {
+  test.use({ viewport: { width: 390, height: 480 }, hasTouch: true });
+
+  async function openPanels(page: Page) {
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const studio = rail.getByRole("button", { name: "Open Studio archive in Atlas", exact: true });
+    const team = rail.getByRole("button", { name: "Open Team share in Atlas", exact: true });
+    await expect(studio).toBeFocused();
+    await page.keyboard.press("End");
+    await expect(team).toBeFocused();
+    await expect(team).toBeInViewport({ ratio: 0.99 });
+    return { rail, contents, studio, team };
+  }
+
+  for (const input of ["keyboard", "touch"] as const) {
+    test(`site switch recovery stays in its row for ${input}`, async ({ page }) => {
+      const { rail, contents, studio, team } = await openPanels(page);
+      if (input === "keyboard") await page.keyboard.press("Enter");
+      else await team.tap();
+
+      const failedSite = rail.getByRole("listitem").filter({
+        has: page.getByRole("button", { name: "Open Team share in Atlas", exact: true }),
+      });
+      const error = failedSite.getByRole("alert").filter({ hasText: teamFailure });
+      const retry = failedSite.getByRole("button", { name: "Retry", exact: true });
+      await expect(error).toContainText(readError);
+      await expect(retry).toBeFocused();
+      await expect(retry).toBeInViewport({ ratio: 0.99 });
+      await expect(studio).toHaveAttribute("aria-current", "true");
+      await expect(contents.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
+
+      if (input === "keyboard") {
+        await page.keyboard.press("Enter");
+        await expect(currentFolder(page)).toHaveText("Team share");
+        await expect(team).toHaveAttribute("aria-current", "true");
+        await expect(contents.getByRole("heading", { name: "Team share", exact: true })).toBeVisible();
+      } else {
+        await failedSite.getByRole("button", { name: "Dismiss", exact: true }).tap();
+        await expect(currentFolder(page)).toHaveText("Studio archive");
+        await expect(studio).toHaveAttribute("aria-current", "true");
+      }
+      await expect(error).toBeHidden();
+      await expect(team).toBeFocused();
+      await expect(team).toBeInViewport({ ratio: 0.99 });
+      await expect(rail).toBeVisible();
+      await expect(contents).toBeVisible();
+      await page.keyboard.press("ArrowUp");
+      await expect(rail.getByRole("button", { name: "Open Field drive in Atlas", exact: true })).toBeFocused();
+    });
+  }
+
+  test("a held site switch failure preserves a newer Contents focus", async ({ page }) => {
+    const { rail, contents, studio } = await openPanels(page);
+    const failure = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { siteId?: string }) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { pending: false, release };
+      bridge.invoke = async (command, args) => {
+        try {
+          return await invoke(command, args);
+        } catch (error) {
+          if (command === "get_storage_view_snapshot" && args.siteId === "team-share") {
+            state.pending = true;
+            await gate;
+          }
+          throw error;
+        }
+      };
+      return state;
+    });
+    const row = contents.getByRole("button", { name: /^Photo Library/ });
+    try {
+      await page.keyboard.press("Enter");
+      await expect.poll(() => failure.evaluate((state) => state.pending)).toBe(true);
+      await row.scrollIntoViewIfNeeded();
+      await row.focus();
+      await expect(row).toBeFocused();
+      await expect(row).toBeInViewport({ ratio: 0.99 });
+    } finally {
+      await failure.evaluate((state) => state.release());
+    }
+    await expect(rail.getByRole("alert").filter({ hasText: teamFailure })).toContainText(readError);
+    await expect(studio).toHaveAttribute("aria-current", "true");
+    await expect(row).toBeFocused();
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await page.keyboard.press("ArrowDown");
+    await expect(contents.locator('[aria-rowindex="3"] [data-entry-id]')).toBeFocused();
+  });
+});
+
 test("compact Sources returns focus to Workspace actions and preserves the Contents viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 620 });
   await page.goto("/mock/");

@@ -11,7 +11,8 @@ import { coverageSummary } from "./CoverageReadout";
 import { siteVerification } from "./siteVerification";
 import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
-import { restoreFolderOpenFocus } from "./FolderOpenControl";
+import { FolderOpenContext, restoreFolderOpenFocus, type FolderOpenActions } from "./FolderOpenControl";
+import { folderLaunchKey, type FolderLaunches } from "./useFolderLaunches";
 import { LocationRecovery } from "./LocationRecovery";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
@@ -19,7 +20,7 @@ import { SourceLibrary } from "./SourceLibrary";
 import { SpaceHealthFooter } from "./SpaceHealthFooter";
 import { StorageDetails } from "./StorageDetails";
 import { isCompactAtlas, revealInCompactAtlas, watchAtlasPanelReflow } from "./compactAtlasScroll";
-import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation, type CoverageAction } from "../hooks/useDashboard";
+import { useDashboard, type AnalysisInspection, type AtlasInspection, type AtlasWorkspaceLocation, type CoverageAction, type SiteSwitchOptions } from "../hooks/useDashboard";
 import { useDirectorySearch } from "./useDirectorySearch";
 import { useContentsFileStep } from "./useContentsFileStep";
 import { useFinderFileStep } from "./useFinderFileStep";
@@ -40,6 +41,7 @@ interface ContentsVisit {
   contentsKey: string;
   fileId: string;
   source: "contents" | "atlas";
+  searchText: string | null;
   rowIndex?: number;
 }
 
@@ -90,19 +92,23 @@ type Comparison = {
 function inAtlasViewport(control: HTMLElement) {
   const bounds = control.getBoundingClientRect();
   const toolbar = control.closest(".atlas-shell")?.querySelector(".atlas-toolbar");
-  const top = Math.max(0, toolbar?.getBoundingClientRect().bottom ?? 0);
-  return bounds.height > 0 && bounds.top >= top - 1 && bounds.bottom <= window.innerHeight + 1;
+  const list = control.closest(".atlas-site-rail-list")?.getBoundingClientRect();
+  const top = Math.max(0, toolbar?.getBoundingClientRect().bottom ?? 0, list?.top ?? 0);
+  const bottom = Math.min(window.innerHeight, list?.bottom ?? window.innerHeight);
+  return bounds.height > 0 && bounds.top >= top - 1 && bounds.bottom <= bottom + 1;
+}
+
+function captureVisiblePanelFocus() {
+  const active = document.activeElement;
+  if (isCompactAtlas() && active instanceof HTMLElement && active.closest("[data-atlas-panel]") && inAtlasViewport(active)) {
+    return active;
+  }
 }
 
 function coverageActionFor(origin: HTMLElement, kind: CoverageAction["kind"]): CoverageAction {
   return {
     kind, origin, surface: origin.closest(".atlas-toolbar-panel") ? "options" : "footer",
-    capturePanelFocus: () => {
-      const active = document.activeElement;
-      if (isCompactAtlas() && active instanceof HTMLElement && active.closest("[data-atlas-panel]") && inAtlasViewport(active)) {
-        return active;
-      }
-    },
+    capturePanelFocus: captureVisiblePanelFocus,
   };
 }
 
@@ -154,6 +160,7 @@ function HealthScale() {
 
 interface WorkspaceAtlasProps {
   workspace: ReturnType<typeof useWorkspace>;
+  folderLaunches: FolderLaunches;
   siteAddition?: SiteAddition;
   browsingScope: string;
   onAddSite: (event: MouseEvent<HTMLButtonElement>, workspaceName: string, origin: AddSiteOrigin) => void;
@@ -161,7 +168,7 @@ interface WorkspaceAtlasProps {
   sessions: Map<string, AtlasWorkspaceSession>;
 }
 
-export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSite, toolbarExtension, sessions }: WorkspaceAtlasProps) {
+export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsingScope, onAddSite, toolbarExtension, sessions }: WorkspaceAtlasProps) {
   const workspaceName = workspace.management?.active_workspace.name ?? null;
   const [saved] = useState(() => workspaceName ? sessions.get(workspaceName) : undefined);
   const savedInspection = saved?.location?.file?.inspection;
@@ -206,14 +213,17 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const [comparisonDialog, setComparisonDialog] = useState<{ comparison: Comparison; inspection: AnalysisInspection } | null>(null);
   const [comparisonVisits, setComparisonVisits] = useState(() => new Map<AnalysisInspection, Comparison>());
   const [mapMode, setMapMode] = useState<MapMode>(saved?.mapMode ?? "size");
-  const state = useDashboard(workspaceName, workspace.siteListRevision, browsingScope, directoryRefresh, saved?.location);
+  const state = useDashboard(workspaceName, workspace.siteListRevision, browsingScope, directoryRefresh, folderLaunches.run, saved?.location);
   const { dashboard, activeSite: site, location, selectedNode, coverageTargetSite: target } = state;
-  const openFolderExternally = useCallback<typeof state.openFolderExternally>((node, destination) => {
-    const active = document.activeElement;
-    const opener = active instanceof HTMLButtonElement && active.matches(".atlas-folder-open-trigger") ? active : null;
-    folderLaunchSource.current = { opener, inspector: Boolean(opener?.closest(".atlas-inspector")) };
-    return state.openFolderExternally(node, destination);
-  }, [state.openFolderExternally]);
+  const folderOpen: FolderOpenActions = {
+    isOpening: (node) => Boolean(workspaceName && location
+      && folderLaunches.pending.has(folderLaunchKey(workspaceName, location.site_id, node.id))),
+    open: (node, destination, opener) => {
+      void state.openFolderExternally(node, destination, () => {
+        folderLaunchSource.current = { opener, inspector: Boolean(opener?.closest(".atlas-inspector")) };
+      });
+    },
+  };
   const findWorkspace = workspace.workspaceSwitching ? null : dashboard?.workspace_name ?? null;
   const finder = finderSession?.workspace === dashboard?.workspace_name ? finderSession : null;
   const openFileFinder = useCallback(() => {
@@ -261,12 +271,15 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const folder = location?.root;
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
   const savedSearch = folderSearches.get(searchScope);
+  const rememberedContents = inspectionPane && typeof inspectionPane === "object" && inspectionPane.source === "contents"
+    && inspectionPane.fileId === selectedNode?.id ? inspectionPane : null;
+  const visitSearchText = visit === rememberedContents ? rememberedContents?.searchText : undefined;
   const revealedContentsVisit = inspection ? revealedContentsVisits.get(inspection) : undefined;
   const searchViewportId = revealedContentsVisit?.searchViewportId;
   // A reveal only pauses the search that was active when it opened.
-  const searchPaused = Boolean(savedSearch?.text.trim())
+  const searchPaused = visitSearchText == null && Boolean(savedSearch?.text.trim())
     && (state.contentsGroup || revealedContentsVisit?.pausedSearch === savedSearch);
-  const searchText = searchPaused ? null : savedSearch?.text ?? null;
+  const searchText = visitSearchText === undefined ? (searchPaused ? null : savedSearch?.text ?? null) : visitSearchText;
   const searchQuery = searchText?.trim() ?? "";
   function searchContentsKey(sort: DirectorySort, query: string) {
     return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query), searchViewportId);
@@ -375,9 +388,18 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }
   const contentsKey = search.enabled ? searchKey
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
+  function updateVisitSearch(text: string | null) {
+    if (!inspection || visit !== rememberedContents || visit?.view !== "contents") return;
+    const next = searchQuery === (text?.trim() ?? "") ? { ...visit, searchText: text } : "contents";
+    setInspectionViews((saved) => saved.get(inspection) === visit ? new Map(saved).set(inspection, next) : saved);
+  }
   function changeSearch(text: string | null) {
+    const apply = () => {
+      updateVisitSearch(text);
+      saveFolderSearch(searchScope, text);
+    };
     if (state.contentsGroup && text !== null) {
-      void state.leaveContentsGroup().then((left) => { if (left) saveFolderSearch(searchScope, text); });
+      void state.leaveContentsGroup().then((left) => { if (left) apply(); });
     } else {
       const query = text?.trim();
       if (query && query !== searchQuery) {
@@ -385,11 +407,12 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
         const pendingSort = state.locationProgress?.contents_sort;
         if (pendingSort) contentsScroll.current.delete(searchContentsKey(pendingSort, query));
       }
-      saveFolderSearch(searchScope, text);
+      apply();
     }
   }
   async function restoreSearch() {
     if (!await state.leaveContentsGroup()) return;
+    updateVisitSearch(savedSearch?.text ?? null);
     if (inspection && revealedContentsVisit?.pausedSearch) {
       setRevealedContentsVisits((saved) => saved.get(inspection) === revealedContentsVisit
         ? new Map(saved).set(inspection, { ...revealedContentsVisit, pausedSearch: undefined }) : saved);
@@ -409,8 +432,13 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     contentsScroll.current.delete(search.enabled ? searchContentsKey(sort, searchQuery) : contentsKeyFor(sort, 0));
     return state.setDirectorySort(sort, preserveFocusedContentsRow);
   }
-  const currentVisit = visit?.fileId === selected?.id && (visit?.view === "details" || visit?.contentsKey === contentsKey)
-    ? visit : null;
+  const rememberedQuery = rememberedContents?.searchText?.trim();
+  const resumableContentsKey = !inspectorOpen && rememberedContents
+    ? (rememberedQuery ? searchContentsKey(state.directorySort, rememberedQuery) : contentsKeyFor(state.directorySort, state.contentsAnchorOffset))
+    : contentsKey;
+  const resumableVisit = inspectionPane && typeof inspectionPane === "object" && inspectionPane.fileId === selected?.id
+    && (inspectionPane.view === "details" || inspectionPane.contentsKey === resumableContentsKey) ? inspectionPane : null;
+  const currentVisit = inspectorOpen ? resumableVisit : null;
   const revealedEntry = revealedRow?.key === contentsKey ? revealedRow : undefined;
   const positionPage = currentVisit?.source === "contents" && currentVisit.view === "details"
     && !state.selectedFileUnavailable && !state.childrenLoading && !(search.enabled && search.refreshing) ? directoryPage : null;
@@ -447,7 +475,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   useLayoutEffect(() => {
     if (!workspaceName || dashboard?.workspace_name !== workspaceName || (!location && dashboard.sites.length)) return;
     const canResumeFile = selected?.kind === "file" && !state.selectedFileUnavailable;
-    const contentsVisit = canResumeFile && currentVisit?.source === "contents" ? currentVisit : undefined;
+    const contentsVisit = canResumeFile && resumableVisit?.source === "contents" ? resumableVisit : undefined;
     const revealedVisit = canResumeFile ? revealedContentsVisit : undefined;
     const file = (contentsVisit || revealedVisit) && inspection && selected ? { id: selected.id, inspection } : undefined;
     sessions.set(workspaceName, {
@@ -467,7 +495,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       cursorPositions: contentsCursor.current,
       mapMode,
     });
-  }, [currentVisit, dashboard, folderSearches, inspection, inspectionPane, inspectorBySite, inspectorOpen, location, mapMode,
+  }, [dashboard, folderSearches, inspection, inspectionPane, inspectorBySite, inspectorOpen, location, mapMode, resumableVisit,
     revealedContentsVisit, selected, sessions, siteId, sitesOpen, state.contentsAnchorOffset, state.contentsGroup, state.selectedFileUnavailable, target, workspaceName]);
   const { setHealthMetric } = state;
   useLayoutEffect(() => {
@@ -504,7 +532,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     }, origin ? coverageActionFor(origin, "target") : undefined);
   };
   const swapCoverageSites = (origin: HTMLButtonElement) => {
-    if (site && target) void selectSite(target.id, site.id, coverageActionFor(origin, "swap"));
+    if (site && target) void selectSite(target.id, site.id, { coverageAction: coverageActionFor(origin, "swap") });
   };
   function verificationScanState(id: string) {
     const requestId = state.scanRequestBySite.get(id);
@@ -531,16 +559,18 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     workspace.handleActiveTaskCountChange(state.activeTaskCount);
   }, [state.activeTaskCount, workspace.handleActiveTaskCountChange]);
 
-  async function selectSite(id: string, comparisonSiteId?: string, coverageAction?: CoverageAction) {
-    if (!await state.selectSite(id, comparisonSiteId, coverageAction)) return;
+  async function selectSite(id: string, comparisonSiteId?: string, options?: SiteSwitchOptions) {
+    if (!await state.selectSite(id, comparisonSiteId, options)) return;
     setSourcesOpen(false);
   }
 
   const coverageFailure = state.locationFailure?.coverageAction;
-  const recoveryInSources = !coverageFailure && sourcesOpen && state.locationFailure?.sourceSwitch;
+  const siteRailFailure = state.locationFailure?.siteRail;
+  const recoveryInSites = siteRailFailure && sitesOpen && dashboard?.sites.some((candidate) => candidate.id === siteRailFailure.siteId);
+  const recoveryInSources = !coverageFailure && !siteRailFailure && sourcesOpen && state.locationFailure?.sourceSwitch;
   const recoveryInContents = state.locationFailure?.contentsSort;
   const recoveryInOptions = coverageFailure?.surface === "options" && coverage && mapOptionsOpen;
-  const recoveryOnMap = !recoveryInSources && !recoveryInContents && !coverageFailure
+  const recoveryOnMap = !recoveryInSources && !recoveryInSites && !recoveryInContents && !coverageFailure
     && Boolean(state.locationFailure) && !state.treeError && !state.error;
   const openingSiteId = state.locationProgress?.opening_site_id;
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
@@ -549,16 +579,16 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const atlasNotice = state.notice ?? state.folderLaunchFeedback;
 
   useLayoutEffect(() => {
-    const focus = state.locationFailure?.visibleCoverageFocus;
+    const focus = state.locationFailure?.visiblePanelFocus;
     if (focus && !recoveryInOptions && document.activeElement === focus && !inAtlasViewport(focus)) {
-      // An inline error can displace a panel that was visible when the comparison failed.
+      // An inline error can displace a control that was visible when the request failed.
       revealInCompactAtlas(focus);
     }
-  }, [recoveryInOptions, state.locationFailure]);
+  }, [recoveryInOptions, recoveryInSites, state.locationFailure]);
 
   const contentsUpOrigin = state.locationFailure?.contentsUpOrigin;
   useLayoutEffect(() => {
-    if (!recoveryOnMap || !isCompactAtlas()) return;
+    if (!recoveryOnMap || siteRailFailure || !isCompactAtlas()) return;
     const active = document.activeElement;
     if (contentsUpOrigin && active !== contentsUpOrigin) {
       // The newly inserted alert can push the user's focused control out of the viewport.
@@ -572,10 +602,30 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
         ?? recovery?.querySelector<HTMLButtonElement>(".atlas-location-dismiss");
       control?.focus({ preventScroll: true });
     }
-  }, [contentsUpOrigin, recoveryOnMap]);
+  }, [contentsUpOrigin, recoveryOnMap, siteRailFailure]);
+
+  function recoveryButtonOwnsFocus(button: HTMLButtonElement) {
+    const focus = document.activeElement;
+    // WebKit can focus the map container before dispatching a tap's click.
+    if (recoveryInSites && (focus === document.body || focus === mapRegion.current
+      || button.closest(".atlas-site-rail-item")?.contains(focus))) {
+      button.focus({ preventScroll: true });
+    }
+    return document.activeElement === button;
+  }
 
   function focusAfterRecovery(button: HTMLButtonElement, source?: Element | null) {
     if (document.activeElement !== button && document.activeElement !== document.body) return;
+    if (recoveryInSites && siteRailFailure) {
+      const control = mapRegion.current?.querySelector<HTMLButtonElement>(
+        `[data-site-id="${CSS.escape(siteRailFailure.siteId)}"] .atlas-site-rail-select`,
+      );
+      if (control) {
+        control.focus({ preventScroll: true });
+        control.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+    }
     if (recoveryInContents) {
       const sort = contentsPane.current?.querySelector<HTMLButtonElement>(".atlas-directory-sort");
       if (sort?.getClientRects().length) {
@@ -607,14 +657,14 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       onRetry={state.locationFailure.retry ? async (event) => {
         const button = event.currentTarget;
         const source = coverageFailure && button.closest(".atlas-coverage-footer, .atlas-toolbar-panel");
-        const hadFocus = document.activeElement === button;
+        const hadFocus = recoveryButtonOwnsFocus(button);
         if (!await state.retryLocation()) return;
         if (recoveryInSources) setSourcesOpen(false);
         else if (hadFocus) focusAfterRecovery(button, source);
       } : undefined}
       onDismiss={(event) => {
         const button = event.currentTarget;
-        if (document.activeElement === button) {
+        if (recoveryButtonOwnsFocus(button)) {
           focusAfterRecovery(button, coverageFailure && button.closest(".atlas-coverage-footer, .atlas-toolbar-panel"));
         }
         state.clearLocationFailure();
@@ -848,6 +898,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       openInspector({
         view: "details", fileId: node.id, contentsKey,
         source: origin ? "atlas" : "contents",
+        searchText,
         rowIndex: step?.index ?? (directoryPage && row >= 0 ? directoryPage.offset + row : undefined),
       }, nextInspection);
     } else {
@@ -877,7 +928,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     </div>
   ) : null;
 
-  return (
+  const atlas = (
     <div className="atlas-shell" data-overlay-open={sitesOpen || inspectorView ? "" : undefined}>
       <AtlasToolbar
         workspace={{
@@ -901,7 +952,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           onForward: goForward,
           onUp: goUp,
           onBreadcrumb: navigateAncestor,
-          onOpenFolder: openFolderExternally,
         }}
         map={{
           mode: mapMode,
@@ -1024,6 +1074,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
               sites={dashboard?.sites ?? []}
               activeId={site?.id ?? null}
               openingSiteId={openingSiteId}
+              switchRecovery={recoveryInSites && siteRailFailure ? { ...siteRailFailure, content: recovery } : undefined}
               addedSite={siteAddition?.origin === "sites" ? addedSite : undefined}
               scanRequests={state.scanRequestBySite}
               blockedIds={state.scanBlockedSiteIds}
@@ -1034,7 +1085,9 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
               open={sitesOpen}
               onOpen={() => { lastOpened.current = "sites"; setSitesOpen(true); }}
               onClose={() => setSitesOpen(false)}
-              onSelect={(id) => void selectSite(id)}
+              onSelect={(id, origin) => void selectSite(id, undefined, {
+                railAction: { origin, capturePanelFocus: captureVisiblePanelFocus },
+              })}
               onScan={(id) => void state.scan(id)}
               onCancel={(id) => void state.cancel(id)}
               onAdd={addSiteLauncher("sites")}
@@ -1054,6 +1107,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 view={inspectorView}
                 initialView={selected?.kind === "file" && inspectionPane !== "contents" ? "details" : "contents"}
                 origin={inspectorOrigin}
+                onOpen={(fallback) => openInspector(typeof inspectionPane === "string" ? inspectionPane : resumableVisit ?? fallback, inspection)}
                 onViewChange={changeInspectorView}
                 onEnterContents={setContentsFocusOrigin}
                 contentsRevealOrigin={revealedEntry?.origin}
@@ -1063,7 +1117,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 details={location ? (
                   <StorageDetails
                     node={selected ?? location.root}
-                    onOpenFolder={openFolderExternally}
                     parent={detailsParent}
                     revealFolderName={selected?.kind === "file" && detailsParent?.id !== folder?.id ? detailsParent?.name : undefined}
                     fileUnavailable={state.selectedFileUnavailable}
@@ -1119,7 +1172,6 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                   <>
                     <DirectoryContents
                       onGoUp={goUpFromContents}
-                      onOpenFolder={openFolderExternally}
                       location={location}
                       page={directoryPage}
                       total={search.enabled ? search.total : directoryPage?.total_children ?? 0}
@@ -1281,4 +1333,5 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       )}
     </div>
   );
+  return <FolderOpenContext value={folderOpen}>{atlas}</FolderOpenContext>;
 }

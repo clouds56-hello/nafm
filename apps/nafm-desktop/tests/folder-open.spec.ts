@@ -280,6 +280,63 @@ test("Open in reports the newest folder launch from request through completion",
   await expect(contents.getByRole("heading", { name: "Studio archive", exact: true })).toBeVisible();
 });
 
+test("a folder launch stays pending across surfaces and workspace switches", async ({ page }) => {
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  const toolbarOpener = path.getByRole("button", { name: "Open Photo Library in…", exact: true });
+  await expect(toolbarOpener).toBeEnabled();
+  const launches = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke(command: string, args?: unknown): Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requests: unknown[] = [];
+    bridge.invoke = async (command, args) => {
+      if (command !== "open_folder_in") return invoke(command, args);
+      requests.push(args);
+      await gate;
+      return invoke(command, args);
+    };
+    return { release, requests };
+  });
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  const contents = inspector.getByRole("tabpanel", { name: "Contents" });
+  const contentsOpener = contents.getByRole("button", { name: "Open Photo Library in…", exact: true });
+  const manager = page.getByRole("menuitem", { name: "File manager", exact: true });
+
+  try {
+    await toolbarOpener.press("Enter");
+    await manager.press("Enter");
+    await expect(toolbarOpener).toBeDisabled();
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    await expect(contentsOpener).toBeDisabled();
+    await contentsOpener.press("Enter");
+    await expect(manager).toBeHidden();
+
+    await inspector.getByRole("tab", { name: "Details", exact: true }).press("Enter");
+    await expect(inspector.getByRole("button", { name: "Open Photo Library in…", exact: true })).toBeDisabled();
+    await path.getByRole("button", { name: "Up to Studio archive", exact: true }).press("Enter");
+    const rootContents = inspector.getByRole("tab", { name: "Contents", exact: true });
+    await rootContents.press("Enter");
+    await expect(contentsOpener).toBeDisabled();
+    await expect(contents.getByRole("button", { name: "Open Projects in…", exact: true })).toBeEnabled();
+
+    const workspace = page.getByRole("combobox", { name: "Workspace", exact: true });
+    await workspace.selectOption({ label: "Field notes" });
+    await expect(map.getByText("No source selected")).toBeVisible();
+    await workspace.selectOption({ label: "Studio workspace" });
+    await expect(path.locator('[aria-current="location"]')).toHaveText("Studio archive");
+    await expect(contentsOpener).toBeDisabled();
+    expect(await launches.evaluate(({ requests }) => requests.length)).toBe(1);
+  } finally {
+    await launches.evaluate(({ release }) => release());
+  }
+  await expect(contentsOpener).toBeEnabled();
+});
+
 test("scrolling past an open row menu keeps keyboard focus in visible Contents", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 620 });
   await page.goto("/mock/?scenario=large");

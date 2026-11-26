@@ -27,6 +27,7 @@ interface AtlasInspectorProps {
   folderName?: string;
   detailsKey: string | null;
   origin: RefObject<SVGGElement | null>;
+  onOpen: (fallback: InspectorView) => void;
   onViewChange: (view: InspectorView) => void;
   onEnterContents: (tab: HTMLButtonElement) => void;
   contentsRevealOrigin?: Element | null;
@@ -44,7 +45,7 @@ const tabs = [
 
 export function AtlasInspector({
   view, initialView, siteId, inspection, openedFile, contentsPane, fileOpen, fileStep, stepSource, folderName, detailsKey, origin,
-  onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, folderLaunchFeedback, contents, details,
+  onOpen, onViewChange, onEnterContents, contentsRevealOrigin, onBackToContents, onClose, folderLaunchFeedback, contents, details,
 }: AtlasInspectorProps) {
   const id = useId();
   const drawer = useRef<HTMLElement>(null);
@@ -66,10 +67,10 @@ export function AtlasInspector({
   const detailsScroll = useRef({ target: detailsKey, top: 0 });
 
   useLayoutEffect(() => {
-    if (view) lastView.current = { view: screen === "file" ? "contents" : view, target: detailsKey };
+    if (view) lastView.current = { view, target: detailsKey };
     if (detailsScroll.current.target !== detailsKey) detailsScroll.current = { target: detailsKey, top: 0 };
     if (view === "details" && detailsPane.current) detailsPane.current.scrollTop = detailsScroll.current.top;
-  }, [view, screen, detailsKey]);
+  }, [view, detailsKey]);
 
   useLayoutEffect(() => {
     const previous = previousView.current;
@@ -122,7 +123,7 @@ export function AtlasInspector({
         aria-expanded={false}
         onClick={(event) => {
           enterList.current = event.detail === 0;
-          onViewChange(lastView.current?.target === detailsKey ? lastView.current.view : initialView);
+          onOpen(lastView.current?.target === detailsKey ? lastView.current.view : initialView);
         }}
       >
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
