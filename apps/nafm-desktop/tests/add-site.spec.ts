@@ -397,7 +397,7 @@ test("the source library stays open while a site is cancelled or created", async
   await expect(page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]')).toHaveText("Studio archive");
 });
 
-test("Settings selects the new site after adding an SMB root", async ({ page }) => {
+test("Settings keeps the site draft when an SMB root overlaps, then selects the corrected site", async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 480 });
   await page.goto("/mock/");
   await page.getByRole("button", { name: "Workspace actions" }).click();
@@ -412,11 +412,27 @@ test("Settings selects the new site after adding an SMB root", async ({ page }) 
   await expect(launch).toBeFocused();
 
   await launch.click();
-  await dialog.getByRole("textbox", { name: "Site name" }).fill("Print shop");
+  const name = dialog.getByRole("textbox", { name: "Site name" });
+  const url = dialog.getByRole("textbox", { name: "SMB URL" });
+  const submit = dialog.getByRole("button", { name: "Add site", exact: true });
+  await name.fill("Print shop");
   await dialog.getByRole("radio", { name: "SMB share" }).check();
-  await dialog.getByRole("textbox", { name: "SMB URL" }).fill("smb://media.example.test/Studio/Prints");
+  await url.fill("smb://media.example.test/Studio/Prints");
   await dialog.getByRole("checkbox", { name: "Include hidden files" }).uncheck();
-  await dialog.getByRole("button", { name: "Add site", exact: true }).click();
+  await submit.click();
+  const error = dialog.getByRole("alert").filter({ hasText: "overlaps" });
+  await expect(error).toContainText("in site Team share");
+  await expect(error).toBeFocused();
+  await expect(name).toHaveValue("Print shop");
+  await expect(url).toHaveValue("smb://media.example.test/Studio/Prints");
+  await expect(dialog.getByRole("checkbox", { name: "Include hidden files" })).not.toBeChecked();
+
+  await url.fill("smb://media.example.test/Prints");
+  await dialog.getByRole("textbox", { name: "Username" }).fill("sample-reader");
+  await dialog.getByRole("textbox", { name: "Password" }).fill("sample input");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(submit).toBeEnabled();
+  await submit.click();
   await expect(dialog).toBeHidden();
   const created = settings.getByRole("button", { name: /^Print shop\b/ });
   await expect(created).toBeFocused();

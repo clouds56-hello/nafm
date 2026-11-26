@@ -22,6 +22,12 @@ pub enum NafmError {
   SiteAlreadyExists(String),
   #[error("site folder not found: {0}")]
   SiteFolderNotFound(String),
+  #[error("Cannot add {path} because it overlaps {existing_path} in site {site_name}.")]
+  SiteFolderOverlap {
+    path: PathBuf,
+    existing_path: PathBuf,
+    site_name: String,
+  },
   #[error("storage node not found: {0}")]
   StorageNodeNotFound(String),
   #[error("storage node is not navigable: {0}")]
@@ -56,6 +62,14 @@ pub enum NafmError {
   FileChanged(PathBuf),
   #[error("scan was superseded by a newer inventory for site: {0}")]
   ScanSuperseded(String),
+  #[error(
+    "Cannot scan {site_name} because {path} is already indexed by {owner_name}. Remove the overlap between these sites and try again."
+  )]
+  ScanInventoryOwnershipConflict {
+    path: PathBuf,
+    site_name: String,
+    owner_name: String,
+  },
   #[error("site analysis is not ready ({pending_hashes} file hashes pending verification): {site_id}")]
   SiteHashesPending { site_id: String, pending_hashes: u64 },
   #[error("scan cancelled")]

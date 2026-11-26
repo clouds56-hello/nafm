@@ -19,6 +19,20 @@ function successfulCheck(stage: string, message: string): SetupCheck {
   return { stage, status: "passed", message, remedy: null };
 }
 
+function previewLocalPath(path: string) {
+  const root = path.replaceAll("\\", "/");
+  const parts: string[] = [];
+  for (const part of root.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part && part !== ".") parts.push(part);
+  }
+  return (root.startsWith("/") ? "/" : "") + parts.join("/");
+}
+
+function localRootContains(parent: string, child: string) {
+  return child === parent || child.startsWith(parent.endsWith("/") ? parent : parent + "/");
+}
+
 export function createManagementApi(scenario: PreviewScenario, scanning: () => boolean) {
   const startsEmpty = scenario === "empty" || scenario === "first-inventory";
   let active = makeWorkspace(PREVIEW_WORKSPACE, startsEmpty ? "empty" : scenario);
@@ -98,11 +112,28 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
     return { path: location.normalized_url, kind: "smb" as const };
   }
 
+  function checkFolder(folder: ReturnType<typeof folderInput>, siteId?: string) {
+    const remote = folder.kind === "smb" ? parseSmbLocation(folder.path) : null;
+    const localPath = remote ? null : previewLocalPath(folder.path);
+    for (const existing of active.folders.values()) {
+      if (existing.kind !== folder.kind) continue;
+      if (existing.site_id === siteId) {
+        if (existing.path === folder.path) throw new Error("This folder is already tracked.");
+        continue;
+      }
+      const overlaps = remote
+        ? smbRootContains(existing.path, remote) || smbRootContains(folder.path, parseSmbLocation(existing.path))
+        : localPath !== null && (localRootContains(previewLocalPath(existing.path), localPath)
+          || localRootContains(localPath, previewLocalPath(existing.path)));
+      if (overlaps) {
+        const owner = getSite(active, existing.site_id);
+        throw new Error(`Cannot add ${folder.path} because it overlaps ${existing.path} in site ${owner.name}.`);
+      }
+    }
+  }
+
   function addFolder(site: SiteOverview, folder: ReturnType<typeof folderInput>, hidden: unknown) {
     const hiddenPolicy: HiddenPolicy = hidden === "skip" ? "skip" : "include";
-    if ([...active.folders.values()].some((existing) => existing.path === folder.path)) {
-      throw new Error("This folder is already tracked.");
-    }
     const folderId = `preview-folder-${nextId++}`;
     const managed: ManagedSiteFolder = {
       ...folder, id: folderId, site_id: site.id, hidden_policy: hiddenPolicy, added_at: new Date().toISOString(),
@@ -123,9 +154,7 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
     const name = stringArg(args.name, "source name");
     if ([...active.sites.values()].some((site) => site.name === name)) throw new Error(`Site already exists: ${name}`);
     const folder = typeof args.folderPath === "string" && args.folderPath.trim() ? folderInput(args.folderPath.trim()) : null;
-    if (folder && [...active.folders.values()].some((existing) => existing.path === folder.path)) {
-      throw new Error("This folder is already tracked.");
-    }
+    if (folder) checkFolder(folder);
     const site: SiteOverview = {
       id: `sample-source-${nextId++}`, name, location: "No folders", kind: "local",
       connection_state: "unknown", scan_state: "idle", hash_status: "unscanned",
@@ -284,7 +313,10 @@ export function createManagementApi(scenario: PreviewScenario, scanning: () => b
     addFolder(args: CommandArgs) {
       workspace(args);
       requireIdle();
-      addFolder(getSite(active, stringArg(args.siteId, "site ID")), folderInput(stringArg(args.path, "folder path")), args.hiddenPolicy);
+      const site = getSite(active, stringArg(args.siteId, "site ID"));
+      const folder = folderInput(stringArg(args.path, "folder path"));
+      checkFolder(folder, site.id);
+      addFolder(site, folder, args.hiddenPolicy);
       return mutation();
     },
     removeFolder(args: CommandArgs) {

@@ -1759,8 +1759,12 @@ async fn storage_tree_preserves_smb_roots_and_paths() {
     .unwrap();
   let conn = rusqlite::Connection::open(repo.db_path()).unwrap();
   for (id, path) in [
-    ("file-a", "smb://nas.example.test/share/Media/Camera/A.mp4"),
-    ("file-b", "smb://nas.example.test/share/Media/Camera/B.mp4"),
+    ("file-a", "smb://nas.example.test/share/Media/Camera%20100%25/A.mp4"),
+    ("file-b", "smb://nas.example.test/share/Media/Camera%20100%25/B.mp4"),
+    (
+      "file-c",
+      "smb://nas.example.test/share/Media/Camera%20100%25%20outtakes/C.mp4",
+    ),
   ] {
     conn
       .execute(
@@ -1780,17 +1784,19 @@ async fn storage_tree_preserves_smb_roots_and_paths() {
   assert_eq!(root.kind, StorageNodeKind::SmbRoot);
   assert_eq!(root.name, "Media");
   assert_eq!(root.path, Some(PathBuf::from("smb://nas.example.test/share/Media")));
-  assert_eq!(root.children[0].name, "Camera");
+  assert_eq!(root.children[0].name, "Camera 100%");
   assert_eq!(
     root.children[0].path,
-    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera%20100%25"))
   );
   assert_eq!(
     root.children[0].children[0].path,
-    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera/A.mp4"))
+    Some(PathBuf::from(
+      "smb://nas.example.test/share/Media/Camera%20100%25/A.mp4"
+    ))
   );
-  assert_eq!(tree.root.duplicate_file_count, 2);
-  assert_eq!(tree.root.duplicate_bytes, 8);
+  assert_eq!(tree.root.duplicate_file_count, 3);
+  assert_eq!(tree.root.duplicate_bytes, 16);
 
   let camera = &root.children[0];
   let location = repo.storage_location("network", &camera.id, 1, 10).await.unwrap();
@@ -1800,13 +1806,21 @@ async fn storage_tree_preserves_smb_roots_and_paths() {
       .iter()
       .map(|node| node.name.as_str())
       .collect::<Vec<_>>(),
-    vec!["network", "Media", "Camera"]
+    vec!["network", "Media", "Camera 100%"]
   );
   assert_eq!(
     location.root.path,
-    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera"))
+    Some(PathBuf::from("smb://nas.example.test/share/Media/Camera%20100%25"))
   );
   assert_eq!(location.root.children.len(), 2);
+
+  let page = repo.storage_children("network", &camera.id, 0, 10).await.unwrap();
+  assert_eq!(page.total_children, 2);
+  assert_health(page.parent.space_health, 100.0 / 3.0);
+  assert_eq!(
+    serde_json::to_value(page.children).unwrap(),
+    serde_json::to_value(&location.root.children).unwrap()
+  );
 }
 
 #[tokio::test]
@@ -2380,6 +2394,14 @@ async fn migrates_legacy_scan_schema_into_a_verified_ready_inventory() {
     Some("2026-01-02T00:00:00Z".parse().unwrap())
   );
   assert_eq!(overview.latest_scan_at, overview.latest_inventory_at);
+
+  let page = repo
+    .storage_children("legacy", "site_folder:legacy-folder", 0, 5)
+    .await
+    .unwrap();
+  assert_eq!(page.total_children, 1);
+  assert_eq!(page.children[0].path.as_deref(), Some(canonical_file.as_path()));
+  assert_health(page.children[0].space_health, 100.0);
 
   let conn = rusqlite::Connection::open(db_path).unwrap();
   assert_eq!(
@@ -3220,6 +3242,156 @@ async fn storage_view_snapshot_revalidates_an_inspected_descendant_outside_the_v
 }
 
 #[tokio::test]
+async fn non_root_contents_preserves_site_wide_health_and_order_through_rescans() {
+  use nafm_core::{AdjacentStorageFileRequest, DirectorySortField::*, SortDirection::*};
+
+  let fixture = Fixture::new().await;
+  let source_root = fs::canonicalize(fixture.mkdir("source")).unwrap();
+  let target_root = fs::canonicalize(fixture.mkdir("target")).unwrap();
+  let folder_path = source_root.join("take_%");
+  fs::create_dir_all(folder_path.join("B proof")).unwrap();
+  fs::create_dir(source_root.join("take-archive")).unwrap();
+  let outside_copy = source_root.join("take-archive/copy.bin");
+  let target_copy = target_root.join("backup.bin");
+  fs::write(&outside_copy, b"original").unwrap();
+  fs::write(&target_copy, b"original").unwrap();
+  for (relative, bytes, modified) in [
+    ("A proof.bin", &b"original"[..], 20),
+    ("B proof/nested.bin", &b"xyz"[..], 30),
+    ("C proof.bin", &b"other"[..], 10),
+    ("notes", &b"note"[..], 40),
+  ] {
+    let path = folder_path.join(relative);
+    fs::write(&path, bytes).unwrap();
+    File::open(path)
+      .unwrap()
+      .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(modified))
+      .unwrap();
+  }
+  let source = fixture.repo.create_site("source").await.unwrap();
+  let target = fixture.repo.create_site("target").await.unwrap();
+  fixture
+    .add_site_folder(&source.id, &source_root, HiddenPolicy::Include)
+    .await;
+  fixture
+    .add_site_folder(&target.id, &target_root, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let check_contents = async || {
+    let repo = &fixture.repo;
+    let tree = repo
+      .storage_tree_with_coverage(&source.id, &target.id, 6, 16)
+      .await
+      .unwrap();
+    let folder = child_named(&tree.root.children[0], "take_%");
+    let file = child_named(folder, "A proof.bin");
+    let query = " pRoOf ";
+    let anchor = StorageDirectoryAnchor {
+      child_id: Some(file.id.clone()),
+      query: Some(query.into()),
+      inspected_file_id: None,
+    };
+    let coverage = Some(target.id.as_str());
+    let full = repo
+      .storage_children_with_coverage(&source.id, &target.id, &folder.id, 0, 16)
+      .await
+      .unwrap();
+    assert_eq!((full.total_children, full.children.len()), (4, 4));
+    assert_storage_metrics_equal(&full.parent, folder);
+    for child in &full.children {
+      let expected = child_named(folder, &child.name);
+      assert_storage_metrics_equal(child, expected);
+      assert_eq!(child.modified_unix_millis, expected.modified_unix_millis);
+      assert_eq!(child.path, expected.path);
+      assert!(child.children.is_empty());
+    }
+    for (field, direction, rank) in [
+      (Name, Asc, 0),
+      (Name, Desc, 2),
+      (Size, Asc, 2),
+      (Size, Desc, 0),
+      (Date, Asc, 1),
+      (Date, Desc, 1),
+    ] {
+      let sort = DirectorySort { field, direction };
+      let page = repo
+        .storage_children_filtered_with_anchor(
+          &source.id,
+          coverage,
+          &folder.id,
+          99,
+          1,
+          sort,
+          Some(query),
+          Some(&file.id),
+        )
+        .await
+        .unwrap();
+      assert_eq!((page.offset, page.total_children, page.children.len()), (rank, 3, 1));
+      assert_storage_metrics_equal(&page.children[0], file);
+      let snapshot = repo
+        .storage_view_snapshot_with_anchor(&source.id, coverage, &folder.id, 99, 0, 1, 1, sort, Some(&anchor))
+        .await
+        .unwrap();
+      assert_eq!(
+        serde_json::to_value(page).unwrap(),
+        serde_json::to_value(snapshot.filtered_page.unwrap()).unwrap()
+      );
+    }
+    let previous = repo
+      .adjacent_storage_file(
+        AdjacentStorageFileRequest {
+          site_id: source.id.clone(),
+          target_site_id: Some(target.id.clone()),
+          folder_id: folder.id.clone(),
+          child_id: child_named(folder, "C proof.bin").id.clone(),
+          sort: DirectorySort {
+            field: Name,
+            direction: Asc,
+          },
+          query: Some(query.into()),
+          direction: AdjacentFileDirection::Previous,
+        },
+        1,
+      )
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(
+      (previous.index, previous.page.offset, previous.page.total_children),
+      (0, 0, 3)
+    );
+    assert_storage_metrics_equal(&previous.page.parent, folder);
+    assert_storage_metrics_equal(&previous.page.children[0], file);
+    (full.parent, file.clone())
+  };
+
+  let (ready, copy) = check_contents().await;
+  assert_eq!((ready.verified_file_count, ready.coverage_covered_files), (4, 1));
+  assert_eq!((copy.duplicate_bytes, copy.duplicate_file_count), (8, 1));
+  assert_eq!((copy.space_health, copy.coverage_health), (Some(50.0), Some(100.0)));
+
+  mark_files_pending(&fixture.repo, &source.id, &[folder_path.join("B proof/nested.bin")]);
+  mark_files_pending(&fixture.repo, &target.id, std::slice::from_ref(&target_copy));
+  let (partial, copy) = check_contents().await;
+  assert_eq!((partial.verified_file_count, partial.pending_hash_count), (3, 1));
+  assert_eq!((copy.space_health, copy.coverage_health), (None, None));
+  assert_eq!(
+    (copy.estimated_space_health, copy.estimated_coverage_health),
+    (Some(50.0), Some(0.0))
+  );
+
+  fs::remove_file(outside_copy).unwrap();
+  fs::remove_file(target_copy).unwrap();
+  fixture.repo.scan_all().await.unwrap();
+  let (rescanned, copy) = check_contents().await;
+  assert_eq!((rescanned.verified_file_count, rescanned.pending_hash_count), (4, 0));
+  assert_eq!((copy.duplicate_bytes, copy.duplicate_file_count), (0, 0));
+  assert_eq!((copy.space_health, copy.coverage_health), (Some(100.0), Some(0.0)));
+}
+
+#[tokio::test]
 async fn storage_view_snapshot_preserves_coverage_in_every_response_shape() {
   let fixture = Fixture::new().await;
   let source = fixture.mkdir("snapshot-coverage-source");
@@ -3893,6 +4065,181 @@ async fn scan_deduplicates_overlapping_site_folders() {
 
   let summary = fixture.repo.scan_site("archive").await.unwrap();
   assert_eq!(summary.files_seen, 1);
+}
+
+#[tokio::test]
+async fn rejects_cross_site_nested_local_roots_in_either_registration_order() {
+  for parent_first in [true, false] {
+    let fixture = Fixture::new().await;
+    let parent = fixture.mkdir("archive");
+    let child = parent.join("nested");
+    fs::create_dir(&child).unwrap();
+    let sibling = fixture.mkdir("archive-copy");
+    fixture.create_site("existing").await;
+    fixture.create_site("incoming").await;
+
+    // Register with a canonical alias to ensure comparisons use the stored filesystem boundary.
+    let parent_alias = child.join("..");
+    let (registered, incoming) = if parent_first {
+      (&parent_alias, &child)
+    } else {
+      (&child, &parent_alias)
+    };
+    fixture
+      .add_site_folder("existing", registered, HiddenPolicy::Include)
+      .await;
+    let conflict = fixture
+      .repo
+      .add_site_folder(
+        "incoming",
+        AddSiteFolderRequest {
+          path: incoming.clone(),
+          hidden_policy: HiddenPolicy::Include,
+        },
+      )
+      .await
+      .unwrap_err();
+    assert!(matches!(
+      conflict,
+      NafmError::SiteFolderOverlap { path, existing_path, site_name }
+        if path == fs::canonicalize(incoming).unwrap()
+          && existing_path == fs::canonicalize(registered).unwrap()
+          && site_name == "existing"
+    ));
+    assert!(
+      fixture
+        .repo
+        .list_site_folders(Some("incoming"))
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    fixture
+      .add_site_folder("incoming", &sibling, HiddenPolicy::Include)
+      .await;
+  }
+}
+
+#[tokio::test]
+async fn rejects_cross_site_smb_roots_on_the_same_decoded_folder_boundary() {
+  let temp = tempfile::tempdir().unwrap();
+  let credentials = CredentialStore::new(temp.path().join("credentials"));
+  credentials
+    .save_smb_credential("smb://media.example.test/Archive", "sample-reader", "sample input")
+    .unwrap();
+  let repo = Repository::open_with_credential_store(
+    RepositoryOptions {
+      cache_path: temp.path().join("index.sqlite3"),
+      hash_algorithm: None,
+    },
+    credentials,
+  )
+  .await
+  .unwrap();
+  repo.create_site("existing").await.unwrap();
+  repo.create_site("incoming").await.unwrap();
+
+  repo
+    .add_site_folder(
+      "existing",
+      AddSiteFolderRequest {
+        path: "smb://Media.Example.Test/Archive/Video%20Assets/".into(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+  let root = "smb://media.example.test:445/archive/Video%20Assets/Nested";
+  let conflict = repo
+    .add_site_folder(
+      "incoming",
+      AddSiteFolderRequest {
+        path: root.into(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap_err();
+  assert!(matches!(conflict, NafmError::SiteFolderOverlap { site_name, .. } if site_name == "existing"));
+
+  // A similar string prefix is not a parent directory.
+  repo
+    .add_site_folder(
+      "incoming",
+      AddSiteFolderRequest {
+        path: "smb://media.example.test/archive/Video%20Assets%20Copy".into(),
+        hidden_policy: HiddenPolicy::Include,
+      },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn scan_conflicting_legacy_roots_preserve_both_inventories() {
+  let fixture = Fixture::new().await;
+  let subset_root = fixture.mkdir("a-subset");
+  let parent_root = fixture.mkdir("z-parent");
+  let nested = parent_root.join("nested");
+  fs::create_dir(&nested).unwrap();
+  let shared = nested.join("sample-shared.bin");
+  let existing = subset_root.join("sample-existing.bin");
+  let newcomer = subset_root.join("sample-new.bin");
+  fs::write(&shared, b"indexed by parent").unwrap();
+  fs::write(&existing, b"previous contents").unwrap();
+  fixture.create_site("parent").await;
+  fixture
+    .add_site_folder("parent", &parent_root, HiddenPolicy::Include)
+    .await;
+  fixture.create_site("subset").await;
+  fixture
+    .add_site_folder("subset", &subset_root, HiddenPolicy::Include)
+    .await;
+  fixture.repo.scan_all().await.unwrap();
+
+  let subset = fixture.repo.site_overview("subset").await.unwrap();
+  // Emulate a previously registered overlap, without the new registration checks.
+  let conn = rusqlite::Connection::open(fixture.repo.db_path()).unwrap();
+  conn
+    .execute(
+      "insert into site_folders (id, site_id, kind, path, hidden_policy, added_at)
+     select 'legacy-nested-root', site_id, kind, ?1, hidden_policy, added_at
+     from site_folders where id = ?2",
+      rusqlite::params![
+        fs::canonicalize(&nested).unwrap().to_string_lossy(),
+        subset.folders[0].id
+      ],
+    )
+    .unwrap();
+  drop(conn);
+
+  let old_inventory = fixture.repo.search_indexed_files("sample-", 0, 10).await.unwrap();
+  let old_sites = fixture.repo.site_overviews().await.unwrap();
+  fs::write(&existing, b"changed contents").unwrap();
+  // The normal root is ordered first, so a failure must roll back both the update and the insertion.
+  fs::write(&newcomer, b"unpublished contents").unwrap();
+  let conflict = fixture.repo.scan_site("subset").await.unwrap_err();
+  assert!(matches!(
+    conflict,
+    NafmError::ScanInventoryOwnershipConflict { path, site_name, owner_name }
+      if path == fs::canonicalize(shared).unwrap() && site_name == "subset" && owner_name == "parent"
+  ));
+  assert_eq!(
+    serde_json::to_value(fixture.repo.site_overviews().await.unwrap()).unwrap(),
+    serde_json::to_value(old_sites).unwrap(),
+  );
+  assert_eq!(
+    serde_json::to_value(fixture.repo.search_indexed_files("sample-", 0, 10).await.unwrap()).unwrap(),
+    serde_json::to_value(&old_inventory).unwrap(),
+  );
+
+  // Scan All may update the owner independently, but cannot publish the conflicting site's changes.
+  let conflict = fixture.repo.scan_all().await.unwrap_err();
+  assert!(matches!(conflict, NafmError::ScanInventoryOwnershipConflict { .. }));
+  assert_eq!(
+    serde_json::to_value(fixture.repo.search_indexed_files("sample-", 0, 10).await.unwrap()).unwrap(),
+    serde_json::to_value(old_inventory).unwrap(),
+  );
 }
 
 #[tokio::test]

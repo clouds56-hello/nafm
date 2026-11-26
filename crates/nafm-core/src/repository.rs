@@ -11,7 +11,7 @@ use tokio::task::{self, JoinSet};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::credentials::{CredentialStore, SmbLocation};
+use crate::credentials::{CredentialStore, SmbLocation, smb_location_is_ancestor};
 use crate::error::{NafmError, Result};
 use crate::hash::{HashAlgorithm, default_hash_algorithm};
 use crate::model::{
@@ -29,6 +29,7 @@ use crate::remote::{
   execute_remote_agent_cancellable, execute_remote_agent_with_handler,
 };
 
+mod directory_projection;
 mod folder_similarity;
 mod indexed_file_search;
 
@@ -115,6 +116,11 @@ struct CachedScanRecord {
 struct StorageFileRecord {
   site_folder_id: String,
   path: PathBuf,
+  metrics: StorageFileMetrics,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StorageFileMetrics {
   size_bytes: u64,
   modified_unix_nanos: Option<i64>,
   hash_verified: bool,
@@ -140,7 +146,7 @@ struct StorageContentKey {
   size_bytes: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct StorageNodeBuilder {
   id: String,
   name: String,
@@ -188,7 +194,7 @@ impl StorageNodeBuilder {
     }
   }
 
-  fn add_file_metrics(&mut self, file: &StorageFileRecord) {
+  fn add_file_metrics(&mut self, file: &StorageFileMetrics) {
     self.modified_unix_nanos = self.modified_unix_nanos.max(file.modified_unix_nanos);
     self.total_bytes = self.total_bytes.saturating_add(file.size_bytes);
     self.file_count = self.file_count.saturating_add(1);
@@ -508,6 +514,7 @@ impl Repository {
         added_at: now,
       };
       with_immediate_transaction(&conn, || {
+        ensure_site_folder_does_not_overlap(&conn, &site_folder)?;
         conn.execute(
           "insert into site_folders (id, site_id, kind, path, hidden_policy, added_at)
            values (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1050,15 +1057,14 @@ impl Repository {
           .as_deref()
           .map(|id| require_site(&conn, id))
           .transpose()?;
-        let root = build_storage_tree_root(&conn, &site, target.as_ref())?;
-        let folder = find_storage_node_builder(&root, &request.folder_id)
+        let folder = directory_projection::read(&conn, &site, target.as_ref(), &request.folder_id)?
           .ok_or_else(|| NafmError::StorageNodeNotFound(request.folder_id.clone()))?;
         if folder.kind == StorageNodeKind::File {
           return Err(NafmError::StorageNodeNotNavigable(request.folder_id));
         }
 
         let query = request.query.as_deref().and_then(normalize_directory_query);
-        let entries = ordered_directory_entries(folder, request.sort, query.as_deref());
+        let entries = ordered_directory_entries(&folder, request.sort, query.as_deref());
         let is_file = |entry: &&StorageNodeBuilder| entry.kind == StorageNodeKind::File;
         let current = directory_entry_index(&entries, &request.child_id)
           .filter(|&index| is_file(&entries[index]))
@@ -1076,7 +1082,7 @@ impl Repository {
           let page = directory_page(
             site,
             target,
-            storage_node_without_children(folder),
+            storage_node_without_children(&folder),
             &entries,
             directory_page_start(index, limit),
             limit,
@@ -2254,6 +2260,13 @@ impl Repository {
       ensure_hash_source_key_column(&conn)?;
       ensure_agent_installation_column(&conn)?;
       migrate_scan_schema(&conn)?;
+      conn.execute_batch(
+        "create index if not exists idx_file_records_folder_path on file_records(site_folder_id, path);
+         create index if not exists idx_file_records_site_revision on file_records(site_id, inventory_revision);
+         create index if not exists idx_file_records_live_content
+           on file_records(site_id, inventory_revision, hash_algorithm, content_hash, size_bytes, path)
+           where content_hash is not null and hash_revision = inventory_revision;",
+      )?;
       backfill_site_scan_state(&conn)?;
       with_immediate_transaction(&conn, || initialize_stage_history(&conn))?;
       Ok(())
@@ -2471,6 +2484,32 @@ fn resolve_site_folder_location(
     return Err(NafmError::UnsupportedLocationScheme(scheme.to_owned()));
   }
   Ok((SiteFolderKind::Local, std::fs::canonicalize(path)?))
+}
+
+fn ensure_site_folder_does_not_overlap(conn: &Connection, folder: &SiteFolder) -> Result<()> {
+  let smb = match folder.kind {
+    SiteFolderKind::Local => None,
+    SiteFolderKind::Smb => Some(SmbLocation::parse(&folder.path.to_string_lossy())?),
+  };
+  for existing in list_site_folders(conn, None)? {
+    if existing.site_id == folder.site_id || existing.kind != folder.kind {
+      continue;
+    }
+    let overlaps = if let Some(smb) = &smb {
+      let existing_smb = SmbLocation::parse(&existing.path.to_string_lossy())?;
+      smb_location_is_ancestor(smb, &existing_smb) || smb_location_is_ancestor(&existing_smb, smb)
+    } else {
+      folder.path.starts_with(&existing.path) || existing.path.starts_with(&folder.path)
+    };
+    if overlaps {
+      return Err(NafmError::SiteFolderOverlap {
+        path: folder.path.clone(),
+        existing_path: existing.path,
+        site_name: require_site(conn, &existing.site_id)?.name,
+      });
+    }
+  }
+  Ok(())
 }
 
 fn normalize_user_location(path: &Path) -> Result<(PathBuf, bool)> {
@@ -2877,13 +2916,20 @@ fn publish_inventory_atomically(
 
     for (index, file) in files.into_iter().enumerate() {
       let existing = existing_record(conn, &file.path)?;
+      if let Some(owner) = existing.as_ref().filter(|record| record.site_id != site.id) {
+        // Roll back any earlier rows from this scan. A legacy overlapping root must not take ownership.
+        return Err(NafmError::ScanInventoryOwnershipConflict {
+          path: file.path,
+          site_name: site.name.clone(),
+          owner_name: require_site(conn, &owner.site_id)?.name,
+        });
+      }
       let cached = cached_scan_record(conn, &site.id, &file, hash_algorithm)?;
       // SMB discovery uses zero when no modification timestamp is available.
       // Otherwise unchanged SMB metadata supports the same reuse policy as local files.
       let metadata_reusable = !matches!(file.source, FileSource::Smb { .. }) || file.modified_unix_nanos != 0;
       let exact_verified = existing.as_ref().is_some_and(|record| {
-        record.site_id == site.id
-          && record.hash_algorithm == hash_algorithm
+        record.hash_algorithm == hash_algorithm
           && record.content_hash.is_some()
           && record.hash_revision == Some(record.inventory_revision)
           && record.size_bytes == file.size_bytes
@@ -2906,7 +2952,7 @@ fn publish_inventory_atomically(
         (Some(cached.content_hash), Some(inventory_revision))
       } else {
         let retained_stale_hash = existing.as_ref().and_then(|record| {
-          (record.site_id == site.id && record.hash_algorithm == hash_algorithm && record.size_bytes == file.size_bytes)
+          (record.hash_algorithm == hash_algorithm && record.size_bytes == file.size_bytes)
             .then(|| record.content_hash.clone())
             .flatten()
         });
@@ -3290,7 +3336,6 @@ fn upsert_inventory_file(
     )
     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     on conflict(path) do update set
-      site_id = excluded.site_id,
       site_folder_id = excluded.site_folder_id,
       size_bytes = excluded.size_bytes,
       modified_unix_nanos = excluded.modified_unix_nanos,
@@ -4489,14 +4534,12 @@ fn storage_file_records(
         StorageFileRecord {
           site_folder_id: row.get(0)?,
           path: PathBuf::from(row.get::<_, String>(1)?),
-          size_bytes: row.get(2)?,
-          hash_verified: row.get(5)?,
-          modified_unix_nanos: row.get(6)?,
-          content_key: None,
-          source_copy_count: 0,
-          covered_by_target: None,
-          duplicate: false,
-          reclaimable: false,
+          metrics: StorageFileMetrics {
+            size_bytes: row.get(2)?,
+            hash_verified: row.get(5)?,
+            modified_unix_nanos: row.get(6)?,
+            ..StorageFileMetrics::default()
+          },
         },
         row.get::<_, String>(3)?,
         row.get::<_, Option<String>>(4)?,
@@ -4506,11 +4549,11 @@ fn storage_file_records(
 
   let mut groups = BTreeMap::<(String, String, u64), Vec<usize>>::new();
   for (index, (file, hash_algorithm, content_hash)) in rows.iter().enumerate() {
-    if file.hash_verified
+    if file.metrics.hash_verified
       && let Some(content_hash) = content_hash
     {
       groups
-        .entry((hash_algorithm.clone(), content_hash.clone(), file.size_bytes))
+        .entry((hash_algorithm.clone(), content_hash.clone(), file.metrics.size_bytes))
         .or_default()
         .push(index);
     }
@@ -4518,8 +4561,9 @@ fn storage_file_records(
   if analysis_ready {
     for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
       for (group_index, row_index) in indexes.iter().enumerate() {
-        rows[*row_index].0.duplicate = true;
-        rows[*row_index].0.reclaimable = group_index > 0;
+        let metrics = &mut rows[*row_index].0.metrics;
+        metrics.duplicate = true;
+        metrics.reclaimable = group_index > 0;
       }
     }
   }
@@ -4533,10 +4577,10 @@ fn storage_file_records(
     let covered_by_target =
       coverage_target_content_keys.map(|target_content_keys| target_content_keys.contains(&content_key));
     for row_index in indexes {
-      let file = &mut rows[*row_index].0;
-      file.content_key = Some(content_key.clone());
-      file.source_copy_count = indexes.len() as u64;
-      file.covered_by_target = covered_by_target;
+      let metrics = &mut rows[*row_index].0.metrics;
+      metrics.content_key = Some(content_key.clone());
+      metrics.source_copy_count = indexes.len() as u64;
+      metrics.covered_by_target = covered_by_target;
     }
   }
 
@@ -4555,7 +4599,18 @@ fn site_has_completed_scan(conn: &Connection, site_id: &str) -> Result<bool> {
   let Some((inventory_revision, has_inventory, has_hash_completion)) = state else {
     return Ok(false);
   };
-  Ok(has_inventory && has_hash_completion && site_analysis_pending_count(conn, site_id, inventory_revision)? == 0)
+  if !has_inventory || !has_hash_completion {
+    return Ok(false);
+  }
+  // The partial pending-hash index and the revision index can answer these probes without scanning the site.
+  Ok(conn.query_row(
+    "select not exists(select 1 from file_records where site_id = ?1 and inventory_revision < ?2)
+      and not exists(select 1 from file_records where site_id = ?1 and inventory_revision > ?2)
+      and not exists(select 1 from file_records where site_id = ?1 and inventory_revision = ?2
+                     and (content_hash is null or hash_revision is null or hash_revision <> inventory_revision))",
+    params![site_id, inventory_revision],
+    |row| row.get(0),
+  )?)
 }
 
 fn site_published_inventory_revision(conn: &Connection, site_id: &str) -> Result<Option<u64>> {
@@ -4678,7 +4733,7 @@ fn storage_tree(
     coverage_target,
     max_depth,
     max_children,
-    root: finish_storage_node(root, 0, max_depth, max_children),
+    root: finish_storage_node(&root, 0, max_depth, max_children),
   })
 }
 
@@ -4764,7 +4819,7 @@ fn storage_location(
     max_depth,
     max_children,
     breadcrumbs,
-    root: finish_storage_node((*selected).clone(), 0, max_depth, max_children),
+    root: finish_storage_node(selected, 0, max_depth, max_children),
   })
 }
 
@@ -4799,7 +4854,7 @@ fn storage_view_snapshot(
     .iter()
     .map(|node| storage_node_without_children(node))
     .collect();
-  let location_root = finish_storage_node((*selected).clone(), 0, max_depth, max_children);
+  let location_root = finish_storage_node(selected, 0, max_depth, max_children);
   let page_limit = page_limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
   let entries = ordered_directory_entries(selected, sort, None);
   let total_children = entries.len() as u64;
@@ -4840,7 +4895,7 @@ fn storage_view_snapshot(
       coverage_target: coverage_target.clone(),
       max_depth,
       max_children,
-      root: finish_storage_node(root, 0, max_depth, max_children),
+      root: finish_storage_node(&root, 0, max_depth, max_children),
     },
     location: StorageLocation {
       site,
@@ -4902,7 +4957,7 @@ fn storage_node_reveal(
       coverage_target: coverage_target.clone(),
       max_depth,
       max_children,
-      root: finish_storage_node(root.clone(), 0, max_depth, max_children),
+      root: finish_storage_node(&root, 0, max_depth, max_children),
     },
     location: StorageLocation {
       site,
@@ -4913,7 +4968,7 @@ fn storage_node_reveal(
         .iter()
         .map(|node| storage_node_without_children(node))
         .collect(),
-      root: finish_storage_node((*parent).clone(), 0, max_depth, max_children),
+      root: finish_storage_node(parent, 0, max_depth, max_children),
     },
     page,
     filtered_page,
@@ -4979,13 +5034,13 @@ fn build_storage_tree_root(
       continue;
     }
 
-    root.add_file_metrics(file);
+    root.add_file_metrics(&file.metrics);
     let folder_node = root
       .children
       .get_mut(&folder.id)
       .expect("site folder node should exist");
-    folder_node.add_file_metrics(file);
-    insert_storage_file(folder_node, folder, &segments, file)?;
+    folder_node.add_file_metrics(&file.metrics);
+    insert_storage_file(folder_node, folder, &segments, &file.metrics)?;
   }
 
   root.set_analysis_ready(analysis_ready, coverage_ready);
@@ -5005,22 +5060,17 @@ fn storage_children_page(
   query: Option<&str>,
   anchor: Option<&str>,
 ) -> Result<StorageChildrenPage> {
-  let root = build_storage_tree_root(conn, &site, coverage_target.as_ref())?;
   let limit = limit.clamp(1, MAX_STORAGE_CHILDREN_PAGE_SIZE);
 
   if let Some((retained_count, parent_id)) = parse_smaller_items_node_id(node_id) {
-    let parent_builder =
-      find_storage_node_builder(&root, parent_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
-    let mut child_builders = parent_builder.children.values().cloned().collect::<Vec<_>>();
+    let parent_builder = directory_projection::read(conn, &site, coverage_target.as_ref(), parent_id)?
+      .ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+    let mut child_builders = parent_builder.children.values().collect::<Vec<_>>();
     sort_storage_node_builders(&mut child_builders);
     if retained_count >= child_builders.len() {
       return Err(NafmError::StorageNodeNotFound(node_id.to_owned()));
     }
-    let parent = consolidate_storage_nodes(
-      parent_id,
-      retained_count,
-      child_builders.into_iter().skip(retained_count).collect(),
-    );
+    let parent = consolidate_storage_nodes(parent_id, retained_count, &child_builders[retained_count..]);
     return Ok(StorageChildrenPage {
       site,
       coverage_target,
@@ -5032,9 +5082,9 @@ fn storage_children_page(
     });
   }
 
-  let parent_builder =
-    find_storage_node_builder(&root, node_id).ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
-  let entries = ordered_directory_entries(parent_builder, sort, query);
+  let parent_builder = directory_projection::read(conn, &site, coverage_target.as_ref(), node_id)?
+    .ok_or_else(|| NafmError::StorageNodeNotFound(node_id.to_owned()))?;
+  let entries = ordered_directory_entries(&parent_builder, sort, query);
   let offset = match anchor {
     Some(anchor) => match directory_entry_index(&entries, anchor) {
       Some(index) => directory_page_start(index as u64, limit),
@@ -5045,7 +5095,7 @@ fn storage_children_page(
   Ok(directory_page(
     site,
     coverage_target,
-    storage_node_without_children(parent_builder),
+    storage_node_without_children(&parent_builder),
     &entries,
     offset,
     limit,
@@ -5213,7 +5263,7 @@ fn ordered_directory_entries<'a>(
   entries
 }
 
-fn sort_storage_node_builders(nodes: &mut [StorageNodeBuilder]) {
+fn sort_storage_node_builders(nodes: &mut [&StorageNodeBuilder]) {
   nodes.sort_by(|left, right| entry_size_order(left, right, SortDirection::Desc));
 }
 
@@ -5283,7 +5333,7 @@ fn insert_storage_file(
   folder_node: &mut StorageNodeBuilder,
   folder: &SiteFolder,
   segments: &[String],
-  file: &StorageFileRecord,
+  file: &StorageFileMetrics,
 ) -> Result<()> {
   let mut current = folder_node;
   for (index, name) in segments.iter().enumerate() {
@@ -5315,56 +5365,30 @@ fn storage_child_path(folder: &SiteFolder, segments: &[String]) -> Result<PathBu
   )
 }
 
-fn finish_storage_node(builder: StorageNodeBuilder, depth: u32, max_depth: u32, max_children: u32) -> StorageNode {
-  let space_health = builder.space_health();
-  let estimated_space_health = builder.estimated_space_health();
-  let coverage_health = builder.coverage_health();
-  let estimated_coverage_health = builder.estimated_coverage_health();
-  let (coverage_covered_files, coverage_total_files) = builder.coverage_file_counts();
-  let mut child_builders = builder.children.into_values().collect::<Vec<_>>();
-  sort_storage_node_builders(&mut child_builders);
-
-  let children = if depth >= max_depth || max_children == 0 {
-    Vec::new()
-  } else if child_builders.len() <= max_children as usize {
-    child_builders
-      .into_iter()
-      .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
-      .collect()
-  } else {
-    let retained_count = max_children.saturating_sub(1) as usize;
-    let consolidated = child_builders.split_off(retained_count);
-    let mut children = child_builders
-      .into_iter()
-      .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
-      .collect::<Vec<_>>();
-    children.push(consolidate_storage_nodes(&builder.id, retained_count, consolidated));
-    children
-  };
-
-  StorageNode {
-    id: builder.id,
-    name: builder.name,
-    path: builder.path,
-    kind: builder.kind,
-    total_bytes: builder.total_bytes,
-    modified_unix_millis: builder.modified_unix_nanos.map(|nanos| nanos.div_euclid(1_000_000)),
-    file_count: builder.file_count,
-    verified_file_count: builder.verified_file_count,
-    pending_hash_count: builder.pending_hash_count,
-    verified_bytes: builder.verified_bytes,
-    duplicate_bytes: builder.duplicate_bytes,
-    duplicate_file_count: builder.duplicate_file_count,
-    space_health,
-    estimated_space_health,
-    space_healthy_file_equivalents: builder.space_healthy_file_equivalents,
-    space_total_files: builder.space_total_files,
-    coverage_health,
-    estimated_coverage_health,
-    coverage_covered_files,
-    coverage_total_files,
-    children,
+fn finish_storage_node(builder: &StorageNodeBuilder, depth: u32, max_depth: u32, max_children: u32) -> StorageNode {
+  let mut node = storage_node_without_children(builder);
+  if depth >= max_depth || max_children == 0 {
+    return node;
   }
+
+  let mut children = builder.children.values().collect::<Vec<_>>();
+  sort_storage_node_builders(&mut children);
+  let limit = max_children as usize;
+  let retained = if children.len() > limit {
+    limit - 1
+  } else {
+    children.len()
+  };
+  node.children = children[..retained]
+    .iter()
+    .map(|child| finish_storage_node(child, depth + 1, max_depth, max_children))
+    .collect();
+  if retained < children.len() {
+    node
+      .children
+      .push(consolidate_storage_nodes(&builder.id, retained, &children[retained..]));
+  }
+  node
 }
 
 fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
@@ -5394,7 +5418,7 @@ fn storage_node_without_children(builder: &StorageNodeBuilder) -> StorageNode {
   }
 }
 
-fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<StorageNodeBuilder>) -> StorageNode {
+fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: &[&StorageNodeBuilder]) -> StorageNode {
   let analysis_ready = nodes.iter().all(|node| node.analysis_ready);
   let coverage_ready = nodes.iter().all(|node| node.coverage_ready);
   let total_bytes = nodes.iter().map(|node| node.total_bytes).sum::<u64>();
@@ -5418,7 +5442,7 @@ fn consolidate_storage_nodes(parent_id: &str, retained_count: usize, nodes: Vec<
     .then_some(estimated_space_health)
     .flatten();
   let mut coverage_groups = BTreeMap::<StorageContentKey, bool>::new();
-  for node in &nodes {
+  for node in nodes {
     for (content_key, covered) in &node.coverage_groups {
       coverage_groups
         .entry(content_key.clone())

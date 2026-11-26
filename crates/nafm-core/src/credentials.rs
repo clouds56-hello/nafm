@@ -235,7 +235,7 @@ impl SmbLocation {
   }
 }
 
-fn smb_location_is_ancestor(candidate: &SmbLocation, requested: &SmbLocation) -> bool {
+pub(crate) fn smb_location_is_ancestor(candidate: &SmbLocation, requested: &SmbLocation) -> bool {
   if candidate.server_address != requested.server_address || !candidate.share.eq_ignore_ascii_case(&requested.share) {
     return false;
   }
