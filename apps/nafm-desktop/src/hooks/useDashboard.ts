@@ -148,6 +148,7 @@ export interface SiteSwitchOptions {
 interface LocationAction {
   title: string;
   progress: string;
+  cancellable?: true;
   sourceSwitch?: boolean;
   contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
@@ -158,6 +159,7 @@ interface LocationAction {
 
 interface LocationProgress {
   message: string;
+  cancelOpening?: { origin: Element | null; cancel: () => boolean };
   opening_site_id?: string;
   contents_sort?: DirectorySort;
 }
@@ -339,6 +341,7 @@ export function useDashboard(
   const navigationOperationRef = useRef(0);
   const childrenRequestRef = useRef(0);
   const childrenLoadingRef = useRef(false);
+  const cancelFolderOpeningRef = useRef<(() => boolean) | null>(null);
   const pendingRangeRef = useRef<RowRange | null>(null);
   const childrenRetryRef = useRef<RowRange | null>(null);
   const selectionRef = useRef<AtlasSelection | null>(null);
@@ -438,6 +441,7 @@ export function useDashboard(
     navigationOperationRef.current += 1;
     navigationInProgressRef.current = false;
     childrenLoadingRef.current = false;
+    cancelFolderOpeningRef.current = null;
     pendingRangeRef.current = null;
     childrenRetryRef.current = null;
     locationRef.current = null;
@@ -539,6 +543,7 @@ export function useDashboard(
     const finish = () => {
       if (!silent && ownsRequest()) {
         childrenLoadingRef.current = false;
+        cancelFolderOpeningRef.current = null;
         setLocationProgress(null);
       }
     };
@@ -550,8 +555,22 @@ export function useDashboard(
       }
       childrenLoadingRef.current = true;
       childrenRetryRef.current = null;
+      const cancelOpening = action?.cancellable && previousEntry ? {
+        origin: document.activeElement,
+        cancel: () => {
+          if (!ownsRequest()) return false;
+          finish();
+          locationRequestRef.current += 1;
+          childrenRequestRef.current += 1;
+          navigationOperationRef.current += 1;
+          navigationInProgressRef.current = false;
+          return true;
+        },
+      } : undefined;
+      cancelFolderOpeningRef.current = cancelOpening?.cancel ?? null;
       setLocationProgress({
         message: action?.progress ?? "Reading inventory…",
+        cancelOpening,
         opening_site_id: action?.sourceSwitch ? entry.site_id : undefined,
         contents_sort: action?.contentsSort ? entry.sort : undefined,
       });
@@ -1430,6 +1449,7 @@ export function useDashboard(
         navigationOperationRef.current += 1;
         navigationInProgressRef.current = false;
         childrenLoadingRef.current = false;
+        cancelFolderOpeningRef.current = null;
         setLocationProgress(null);
       }
       const current = childrenPageRef.current;
@@ -1462,7 +1482,7 @@ export function useDashboard(
       sort: group ? DEFAULT_DIRECTORY_SORT : readSiteDirectorySort(workspaceNameRef.current, siteId),
       atlas_group: group ? true : undefined,
     }, "push", {
-      action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…` },
+      action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…`, cancellable: true },
       anchor: group && onGroupArrival ? { onArrival: onGroupArrival } : undefined,
     });
   }, [loadFolderLocation, selectLocationNode]);
@@ -1470,7 +1490,9 @@ export function useDashboard(
   const navigateHistory = useCallback(async function navigateHistory(
     direction: "back" | "forward", retrying = false,
   ): Promise<boolean> {
-    if (!selectedSiteRef.current || childrenLoadingRef.current || navigationInProgressRef.current) return false;
+    if (!selectedSiteRef.current || navigationInProgressRef.current) return false;
+    const available = direction === "back" ? backHistoryRef.current : forwardHistoryRef.current;
+    if (childrenLoadingRef.current && (!available.length || !cancelFolderOpeningRef.current?.())) return false;
     const operationId = navigationOperationRef.current + 1;
     navigationOperationRef.current = operationId;
     navigationInProgressRef.current = true;
@@ -1544,7 +1566,7 @@ export function useDashboard(
         sort,
       },
       "push",
-      { action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…`, contentsUpOrigin }, anchor },
+      { action: { title: `Couldn’t open ${node.name}`, progress: `Opening ${node.name}…`, cancellable: true, contentsUpOrigin }, anchor },
     );
   }, [loadFolderLocation]);
 
@@ -2007,8 +2029,8 @@ export function useDashboard(
     childrenLoading,
     loadingMoreChildren,
     childrenError,
-    canGoBack: !childrenLoading && backHistory.length > 0,
-    canGoForward: !childrenLoading && forwardHistory.length > 0,
+    canGoBack: (!childrenLoading || Boolean(locationProgress?.cancelOpening)) && backHistory.length > 0,
+    canGoForward: (!childrenLoading || Boolean(locationProgress?.cancelOpening)) && forwardHistory.length > 0,
     canGoUp: !childrenLoading && (location?.breadcrumbs.length ?? 0) > 1,
     goBack,
     goForward,

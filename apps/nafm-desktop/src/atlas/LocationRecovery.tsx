@@ -1,6 +1,25 @@
 import type { MouseEventHandler } from "react";
 import { CloseIcon, WarningIcon } from "../management/Icons";
 
+export interface LocationOpeningProps {
+  message: string;
+  announce: boolean;
+  onCancel?: MouseEventHandler<HTMLButtonElement>;
+}
+
+export function LocationOpening({ message, announce, onCancel }: LocationOpeningProps) {
+  return (
+    <div className="atlas-folder-opening">
+      <span role={announce ? "status" : undefined}>{message}</span>
+      {onCancel && (
+        <button type="button" onMouseDown={(event) => { if (event.button === 0) event.preventDefault(); }} onClick={onCancel}>
+          Cancel opening
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface LocationRecoveryProps {
   title: string;
   message: string;

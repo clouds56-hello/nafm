@@ -6,6 +6,7 @@ export const scenarioLabels = {
   deep: "Deep folder hierarchy",
   partial: "Partial verification",
   empty: "Empty workspace",
+  "slow-first-site": "Slow first site setup",
   "first-inventory": "First scan, slow map",
   scanning: "Scan in progress",
   "scan-failed": "Interrupted scan",

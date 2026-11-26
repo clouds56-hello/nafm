@@ -72,6 +72,48 @@ async function addSurveySite(page: Page) {
   return sites;
 }
 
+for (const surface of ["Atlas", "Sites", "Sources"] as const) {
+  test(`${surface} keeps a scan running when the start key stays held`, async ({ page }) => {
+    if (surface === "Atlas") await openMock(page, "first-inventory", "Survey archive");
+    else await openMock(page);
+    if (surface === "Sites") await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    if (surface === "Sources") {
+      await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+      await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+    }
+    const area = surface === "Atlas" ? page.getByRole("figure")
+      : page.getByRole(surface === "Sites" ? "complementary" : "dialog", { name: surface, exact: true });
+    const start = area.getByRole("button", { name: surface === "Atlas" ? "Scan this site" : `Scan ${field}`, exact: true });
+    const stop = area.getByRole("button", { name: surface === "Atlas" ? "Stop scan" : `Stop scan of ${field}`, exact: true });
+    const commands = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: unknown) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const calls: string[] = [];
+      bridge.invoke = (command, args) => {
+        if (command === "start_scan" || command === "cancel_scan") calls.push(command);
+        return invoke(command, args);
+      };
+      return calls;
+    });
+
+    await start.focus();
+    await page.keyboard.down("Enter");
+    try {
+      await expect(stop).toBeEnabled();
+      await expect(stop).toBeFocused();
+      await page.keyboard.down("Enter");
+    } finally {
+      await page.keyboard.up("Enter");
+    }
+    expect(await commands.jsonValue()).toEqual(["start_scan"]);
+    await expect(stop).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => commands.jsonValue()).toEqual(["start_scan", "cancel_scan"]);
+  });
+}
+
 test("a first scan stopped before saving inventory can be restarted from another site", async ({ page }) => {
   await openMock(page);
   await openProjects(page);

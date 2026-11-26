@@ -1,7 +1,7 @@
 import type { SiteOverview, StorageNode } from "../src/lib/types";
 
 export type PreviewScenario = "populated" | "large" | "deep" | "partial" | "empty" | "scanning"
-  | "first-inventory" | "scan-failed" | "slow" | "slow-scan-start" | "recovery" | "workspace-recovery";
+  | "first-inventory" | "slow-first-site" | "scan-failed" | "slow" | "slow-scan-start" | "recovery" | "workspace-recovery";
 
 export const PREVIEW_WORKSPACE = "Studio workspace";
 
@@ -203,7 +203,7 @@ export function createSampleTree(site: SampleSite, rootId?: string): StorageNode
 }
 
 export function createFixtures(scenario: PreviewScenario): { sites: SiteOverview[]; trees: Map<string, StorageNode> } {
-  if (scenario === "empty") return { sites: [], trees: new Map() };
+  if (scenario === "empty" || scenario === "slow-first-site") return { sites: [], trees: new Map() };
 
   const studioDirectory = "/demo/Studio Archive";
   const studio: SampleSite = {

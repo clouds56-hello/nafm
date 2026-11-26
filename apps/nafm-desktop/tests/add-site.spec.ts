@@ -10,8 +10,8 @@ async function openSources(page: Page) {
   return page.getByRole("dialog", { name: "Sources", exact: true });
 }
 
-function holdNextDashboardRefresh(page: Page) {
-  return page.evaluateHandle(() => {
+function holdNextDashboardRefresh(page: Page, failure?: string) {
+  return page.evaluateHandle((failure) => {
     const { __TAURI_INTERNALS__: bridge } = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (command: string, ...args: unknown[]) => Promise<unknown> };
     };
@@ -24,11 +24,12 @@ function holdNextDashboardRefresh(page: Page) {
       if (command === "load_dashboard" && !read.pending) {
         read.pending = true;
         await gate;
+        if (failure) throw new Error(failure);
       }
       return response;
     };
     return read;
-  });
+  }, failure);
 }
 
 test("adding or dismissing a site leaves the atlas on the folder being explored", async ({ page }) => {
@@ -238,6 +239,131 @@ test("Settings returns to Add root after explicitly connecting an SMB folder", a
   await expect(settings.getByText(share, { exact: true })).toBeVisible();
 });
 
+test.describe("compact Settings connections", () => {
+  test.use({ viewport: { width: 390, height: 500 }, hasTouch: true });
+
+  async function openConnections(page: Page) {
+    await page.goto("/mock/");
+    await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Settings", exact: true }).press("Enter");
+    const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+    await settings.getByRole("button", { name: "Connections", exact: true }).press("Enter");
+    await expect(settings.getByRole("heading", { name: "Saved SMB access", exact: true })).toBeVisible();
+    return settings;
+  }
+
+  test("verifying saved SMB access keeps the draft and makes a rejected password reachable", async ({ page }) => {
+    const settings = await openConnections(page);
+    const url = settings.getByLabel("SMB URL", { exact: true });
+    const username = settings.getByLabel("Username", { exact: true });
+    const password = settings.getByLabel("Password", { exact: true });
+    const share = "smb://archive.example.test/Field";
+    const message = "Cannot verify access to this sample share.";
+    await url.fill(share);
+    await username.fill("sample-reader");
+    await password.fill("sample input");
+    const attempts = await page.evaluateHandle((message) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const state = { calls: 0, release };
+      bridge.invoke = async (command, args) => {
+        if (command === "connect_smb" && ++state.calls === 1) {
+          await gate;
+          throw new Error(message);
+        }
+        return invoke(command, args);
+      };
+      return state;
+    }, message);
+
+    try {
+      await password.press("Enter");
+      const connecting = settings.getByRole("button", { name: "Connecting…", exact: true });
+      await expect.poll(() => attempts.evaluate((state) => state.calls)).toBe(1);
+      await expect(connecting).toBeDisabled();
+      await expect(connecting).toBeFocused();
+      await page.keyboard.press("Enter");
+      expect(await attempts.evaluate((state) => state.calls)).toBe(1);
+    } finally {
+      await attempts.evaluate((state) => state.release());
+    }
+
+    const error = settings.getByRole("alert").filter({ hasText: message });
+    await expect(error).toBeInViewport({ ratio: 0.99 });
+    await expect(password).toBeFocused();
+    await expect(password).toBeInViewport({ ratio: 0.99 });
+    await expect(password).toHaveAccessibleDescription(message);
+    await expect(url).toHaveValue(share);
+    await expect(username).toHaveValue("sample-reader");
+    await expect(password).toHaveValue("sample input");
+
+    await password.fill("updated sample input");
+    await page.keyboard.press("Enter");
+    await expect(error).toBeHidden();
+    await expect(settings.getByText(share, { exact: true })).toBeVisible();
+    await expect(settings.getByRole("status").filter({ hasText: "Connection saved." })).toBeInViewport();
+    await expect(url).toBeFocused();
+    await expect(url).toHaveValue("");
+    await expect(username).toHaveValue("");
+    await expect(password).toHaveValue("");
+  });
+
+  test("read-only path preview returns from SSH cancellation and shows evidence before Save", async ({ page }) => {
+    const settings = await openConnections(page);
+    const machine = settings.getByRole("combobox", { name: /Remote machine/ });
+    const smb = settings.getByLabel("SMB root", { exact: true });
+    const native = settings.getByLabel("Native remote root", { exact: true });
+    const preview = settings.getByRole("button", { name: "Preview path (read only)", exact: true });
+    const share = "smb://media.example.test/Studio";
+    const remote = "/srv/media/Studio";
+    await machine.selectOption({ label: "Studio server" });
+    await smb.fill(share);
+    await native.fill(remote);
+    const saves = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      const state = { count: 0 };
+      bridge.invoke = (command, args) => {
+        if (command === "add_remote_path_mapping") state.count += 1;
+        return invoke(command, args);
+      };
+      return state;
+    });
+
+    const authentication = page.getByRole("dialog", { name: "Verify SSH host fingerprint", exact: true });
+    await preview.press("Enter");
+    await expect(authentication).toBeVisible();
+    await authentication.getByRole("button", { name: "Cancel connection", exact: true }).press("Enter");
+    await expect(authentication).toBeHidden();
+    await expect(settings.getByRole("alert").filter({ hasText: "SSH connection cancelled." })).toBeInViewport({ ratio: 0.99 });
+    await expect(preview).toBeFocused();
+    await expect(smb).toHaveValue(share);
+    await expect(native).toHaveValue(remote);
+
+    await page.keyboard.press("Enter");
+    await expect(authentication).toBeVisible();
+    await authentication.getByRole("checkbox", { name: "I independently verified this fingerprint." }).check();
+    await authentication.getByRole("button", { name: "Trust fingerprint and connect", exact: true }).press("Enter");
+    await expect(authentication).toBeHidden();
+    const result = settings.getByRole("region", { name: "Path preview result", exact: true });
+    const paths = result.getByText(`${share} → ${remote}`, { exact: true });
+    await expect(result).toBeFocused();
+    await expect(paths).toBeInViewport({ ratio: 0.99 });
+    await expect(result.getByText(/The preview directory and sample files are readable/)).toBeInViewport({ ratio: 0.99 });
+    await page.keyboard.press("Tab");
+    await expect(result.getByRole("button", { name: "Confirm and save mapping", exact: true })).toBeFocused();
+    expect(await saves.evaluate((state) => state.count)).toBe(0);
+    await expect(smb).toHaveValue(share);
+    await expect(native).toHaveValue(remote);
+  });
+});
+
 test("the source library stays open while a site is cancelled or created", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 640 });
   await page.goto("/mock/");
@@ -299,6 +425,57 @@ test("Settings selects the new site after adding an SMB root", async ({ page }) 
   await expect(settings.getByRole("heading", { name: "Print shop" })).toBeVisible();
   await expect(settings.getByText("SMB · Hidden skipped")).toBeVisible();
 });
+
+for (const retry of [false, true]) {
+  test(`the first registered site ${retry ? "hands focus to its retry and then Scan" : "keeps newer focus while its map opens"}`, async ({ page }) => {
+    await page.setViewportSize(retry ? { width: 320, height: 480 } : { width: 1080, height: 700 });
+    await page.goto("/mock/?scenario=empty");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const add = map.getByRole("button", { name: "Add site", exact: true });
+    await add.press("Enter");
+    const dialog = addDialog(page);
+    const name = "Field survey archive";
+    await dialog.getByRole("textbox", { name: "Site name" }).fill(name);
+    await dialog.getByRole("textbox", { name: "Folder path" }).fill("/demo/Field survey archive");
+    const diagnostic = "The new site's dashboard could not be read.";
+    const read = await holdNextDashboardRefresh(page, retry ? diagnostic : undefined);
+    const status = map.getByRole("status").filter({ hasText: "Site added" });
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+    await dialog.getByRole("button", { name: "Add site", exact: true }).press("Enter");
+    try {
+      await expect.poll(() => read.evaluate((result) => result.pending)).toBe(true);
+      await expect(dialog).toBeHidden();
+      await expect(status.getByText(name, { exact: true })).toBeInViewport({ ratio: 0.99 });
+      await expect(status).toContainText("Opening site…");
+      await expect(status).toBeFocused();
+      await expect(add).toHaveCount(0);
+      await page.keyboard.press("Enter");
+      await expect(dialog).toBeHidden();
+      if (!retry) await actions.focus();
+    } finally {
+      await read.evaluate((result) => result.release());
+    }
+    if (retry) {
+      const failure = map.getByRole("alert").filter({ hasText: diagnostic });
+      await expect(status).toContainText("Map unavailable");
+      const again = failure.getByRole("button", { name: "Try again" });
+      await expect(again).toBeFocused();
+      const nextRead = await holdNextDashboardRefresh(page);
+      await again.press("Enter");
+      try {
+        await expect.poll(() => nextRead.evaluate((result) => result.pending)).toBe(true);
+        await expect(status).toContainText("Opening site…");
+        await expect(status).toBeFocused();
+      } finally {
+        await nextRead.evaluate((result) => result.release());
+      }
+    }
+    const scan = map.getByRole("button", { name: "Scan this site", exact: true });
+    await expect(scan).toBeEnabled();
+    await expect(status).toHaveCount(0);
+    await expect(retry ? scan : actions).toBeFocused();
+  });
+}
 
 test("an empty atlas opens Add site within a short viewport", async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 320 });

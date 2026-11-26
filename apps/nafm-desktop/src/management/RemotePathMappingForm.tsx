@@ -1,8 +1,10 @@
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, useId, useRef, useState } from "react";
 import { RemotePathInput } from "./RemotePathInput";
 import { addRemotePathMapping, previewRemotePathMapping } from "../lib/tauri";
 import type { ManagementMutationResult, MappingPreview, RemoteMachine, SavedConnection } from "../lib/types";
 import { formatBytes } from "../lib/format";
+import { errorMessage } from "./Field";
+import { focusSettingsControl, useSettingsActionFocus } from "./useSettingsActionFocus";
 
 interface Props {
   machines: RemoteMachine[];
@@ -22,6 +24,11 @@ export function RemotePathMappingForm({ machines, connections, workspaceName, bu
   const [preview, setPreview] = useState<MappingPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
+  const previewButton = useRef<HTMLButtonElement>(null);
+  const previewResult = useRef<HTMLElement>(null);
+  const previewError = useRef<HTMLParagraphElement>(null);
+  const previewFocus = useSettingsActionFocus(busy);
+  const canPreview = Boolean(machineId && smbRoot.trim() && remoteRoot.trim());
 
   function change(setter: (value: string) => void, value: string) {
     setter(value);
@@ -31,15 +38,18 @@ export function RemotePathMappingForm({ machines, connections, workspaceName, bu
 
   async function inspect(event: FormEvent) {
     event.preventDefault();
-    if (busy || !machineId || !smbRoot.trim() || !remoteRoot.trim()) return;
+    if (busy || !canPreview) return;
+    previewFocus.begin(previewButton.current);
     setBusy(true);
     setPreview(null);
     setError(null);
     setPhase("Checking remote directory and sampled reads…");
     try {
       setPreview(await previewRemotePathMapping({ workspace_name: workspaceName, machine_id: machineId, smb_root: smbRoot.trim(), remote_root: remoteRoot.trim() }));
+      previewFocus.finish(() => focusSettingsControl(previewResult.current));
     } catch (error) {
-      setError(String(error));
+      setError(errorMessage(error));
+      previewFocus.finish(() => focusSettingsControl(previewButton.current, previewError.current));
     } finally {
       setPhase(null);
       setBusy(false);
@@ -76,10 +86,11 @@ export function RemotePathMappingForm({ machines, connections, workspaceName, bu
       <datalist id={smbListId}>{[...new Set(connections.map((connection) => connection.url))].map((url) => <option key={url} value={url} />)}</datalist>
     </label>
     <RemotePathInput key={`${workspaceName}:${machineId}`} workspaceName={workspaceName} machineId={machineId} value={remoteRoot} disabled={busy} setBusy={setBusy} onChange={(value) => change(setRemoteRoot, value)} />
-    <button type="submit" className="ghost-button" disabled={busy || !machineId || !smbRoot.trim() || !remoteRoot.trim()}>Preview path (read only)</button>
+    <button ref={previewButton} type="submit" className="ghost-button" disabled={!canPreview}
+      aria-disabled={busy || undefined} aria-busy={phase ? true : undefined}>Preview path (read only)</button>
     {phase && <p role="status">{phase}</p>}
-    {error && <p role="alert" className="management-form-error">{error}</p>}
-    {preview && <div className="path-preview">
+    {error && <p ref={previewError} role="alert" className="management-form-error">{error}</p>}
+    {preview && <section className="path-preview" aria-label="Path preview result" ref={previewResult} tabIndex={-1}>
       <p>{preview.smb_root} → {preview.remote_root}</p>
       <p>{preview.check.status}: {preview.check.message}</p>
       {preview.check.remedy && <p>{preview.check.remedy}</p>}
@@ -89,8 +100,8 @@ export function RemotePathMappingForm({ machines, connections, workspaceName, bu
           : <ul>{preview.files.map((file) => <li key={file.relative_path}>{file.relative_path} · {formatBytes(file.size_bytes)}</li>)}</ul>}
         <p>{preview.truncated ? "Partial sample: " : "Sample: "}at most 5 files / 1,000 entries; one byte read per file. No file contents returned.</p>
         <p>This checks the native directory only. Confirm it corresponds to the SMB root; it does not prove they contain the same files or audit every permission.</p>
-        <button type="button" className="primary-button full-width" disabled={busy || scansActive} onClick={() => void save()}>Confirm and save mapping</button>
+        <button type="button" className="primary-button full-width" tabIndex={0} disabled={busy || scansActive} onClick={() => void save()}>Confirm and save mapping</button>
       </>}
-    </div>}
+    </section>}
   </form>;
 }

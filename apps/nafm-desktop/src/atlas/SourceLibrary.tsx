@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type MouseEvent, type ReactNode } from "react"
 import { formatBytes, formatCount } from "../lib/format";
 import { scanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView";
 import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
+import { ScanActionButton } from "./ScanActionButton";
 import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
 import "./sources.css";
 
@@ -164,16 +165,14 @@ export function SourceLibrary({
                       <span className="source-size">{hasInventory ? formatBytes(site.total_bytes) : "—"}</span>
                     </button>
                     <div className="source-row-actions">
-                      <button className="source-action" type="button" aria-label={scanActionLabel}
+                      <ScanActionButton className="source-action" aria-label={scanActionLabel}
                         aria-busy={starting || undefined} aria-describedby={starting ? inventoryId : undefined}
-                        aria-disabled={scanUnavailable || undefined} onClick={(event) => {
-                          event.currentTarget.focus({ preventScroll: true });
-                          if (scanUnavailable) return;
+                        unavailable={scanUnavailable} onActivate={() => {
                           if (requestId === undefined) onScan(site.id);
                           else onCancelScan(requestId);
                         }}>
                         {scanLabel}
-                      </button>
+                      </ScanActionButton>
                       <button className="source-action" type="button" aria-label={`Manage ${site.name}`} onClick={() => onManage(site.id)}>Manage</button>
                     </div>
                     {opening && (

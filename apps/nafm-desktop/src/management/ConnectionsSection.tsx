@@ -1,10 +1,11 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useId, useRef, useState } from "react";
 import { addRemoteMachine, connectSmb, removeRemoteMachine, removeRemotePathMapping } from "../lib/tauri";
 import type { ManagementMutationResult, ManagementSnapshot } from "../lib/types";
 import { errorMessage, Field } from "./Field";
 import { CheckIcon, NetworkIcon, TrashIcon } from "./Icons";
 import { RemoteMachineSetup } from "./RemoteMachineSetup";
 import { RemotePathMappingForm } from "./RemotePathMappingForm";
+import { focusSettingsControl, useSettingsActionFocus } from "./useSettingsActionFocus";
 
 export function ConnectionsSection({ snapshot, busy, scansActive, setBusy, onMutation }: {
   snapshot: ManagementSnapshot;
@@ -17,23 +18,36 @@ export function ConnectionsSection({ snapshot, busy, scansActive, setBusy, onMut
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [connectionSaved, setConnectionSaved] = useState(false);
+  const connectionErrorId = useId();
+  const urlInput = useRef<HTMLInputElement>(null);
+  const passwordInput = useRef<HTMLInputElement>(null);
+  const connectButton = useRef<HTMLButtonElement>(null);
+  const connectionError = useRef<HTMLParagraphElement>(null);
+  const connectFocus = useSettingsActionFocus(busy);
+  const hasCredentials = Boolean(url.trim() && username.trim() && password);
   const [remoteName, setRemoteName] = useState("");
   const [sshTarget, setSshTarget] = useState("");
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || !url.trim() || !username.trim() || !password) return;
+    if (busy || !hasCredentials) return;
+    connectFocus.begin(connectButton.current);
     setBusy(true);
     setError(null);
+    setConnectionSaved(false);
     try {
       const result = await connectSmb(url.trim(), username.trim(), password);
       setPassword("");
       setUrl("");
       setUsername("");
       onMutation(result, false);
+      setConnectionSaved(true);
+      connectFocus.finish(() => focusSettingsControl(urlInput.current));
     } catch (mutationError) {
       setError(errorMessage(mutationError));
+      connectFocus.finish(() => focusSettingsControl(passwordInput.current, connectionError.current));
     } finally {
       setBusy(false);
     }
@@ -110,15 +124,21 @@ export function ConnectionsSection({ snapshot, busy, scansActive, setBusy, onMut
             </div>
           ))}
         </div>
-        <form className="management-form-card" onSubmit={submit}>
+        <form className="management-form-card" onSubmit={submit} onChange={() => {
+          setError(null);
+          setConnectionSaved(false);
+        }}>
           <span className="eyebrow">CONNECT</span>
           <h3>Verify an SMB share</h3>
           <p>Verify access and save the credentials on this device.</p>
-          <Field label="SMB URL"><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="smb://server/share" spellCheck={false} disabled={busy} /></Field>
+          {connectionSaved && <p role="status">Connection saved.</p>}
+          <Field label="SMB URL"><input ref={urlInput} type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="smb://server/share" spellCheck={false} disabled={busy} /></Field>
           <Field label="Username"><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={busy} /></Field>
-          <Field label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" disabled={busy} /></Field>
-          {error && <p className="management-form-error" role="alert">{error}</p>}
-          <button className="primary-button full-width" type="submit" disabled={busy || !url.trim() || !username.trim() || !password}><NetworkIcon />{busy ? "Connecting…" : "Connect and save"}</button>
+          <Field label="Password"><input ref={passwordInput} type="password" value={password} onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password" aria-describedby={error ? connectionErrorId : undefined} disabled={busy} /></Field>
+          {error && <p ref={connectionError} id={connectionErrorId} className="management-form-error" role="alert">{error}</p>}
+          <button ref={connectButton} className="primary-button full-width" type="submit" disabled={!hasCredentials}
+            aria-disabled={busy || undefined} aria-busy={busy || undefined}><NetworkIcon />{busy ? "Connecting…" : "Connect and save"}</button>
         </form>
       </div>
       <header className="management-section-heading">

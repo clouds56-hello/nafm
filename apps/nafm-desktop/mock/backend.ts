@@ -103,6 +103,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
   const storage = createStorageApi(management.current);
   const slowInventorySite = scenario === "first-inventory" ? management.current().sites.keys().next().value : undefined;
   let inventoryVisibleAt: number | undefined;
+  let firstSiteRead: Promise<void> | undefined;
   let interruptWorkspaceSwitch = scenario === "workspace-recovery";
   const interruptedReads = new Map<string, "interrupt" | "recover">(scenario === "recovery" ? [
     ["site_folder:studio-archive:0", "interrupt"],
@@ -320,6 +321,10 @@ export function installPreviewBackend(scenario: PreviewScenario) {
       await new Promise((resolve) => window.setTimeout(resolve, 2_500));
     }
     const response = await handlers[command](payload === undefined ? {} : record(payload));
+    if (scenario === "slow-first-site" && command === "load_dashboard" && management.current().sites.size > 0) {
+      firstSiteRead ??= new Promise<void>((resolve) => window.setTimeout(resolve, 2_500));
+      await firstSiteRead;
+    }
     if (scenario === "slow" && ["get_storage_view_snapshot", "get_storage_children", "get_storage_node_reveal", "search_indexed_files"].includes(command)) {
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }

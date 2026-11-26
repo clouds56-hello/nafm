@@ -30,6 +30,17 @@
   flex: 1;
 }
 
+.atlas-directory-opening { display: none; }
+@media (width < 880px) {
+  .atlas-directory-opening {
+    display: block;
+    min-width: 0;
+    flex: 0 0 100%;
+    color: var(--atlas-muted);
+    font: 11px/1.4 var(--atlas-mono);
+  }
+}
+
 .atlas-directory-header h2 {
   overflow: hidden;
   margin: 0;

@@ -4,6 +4,7 @@ import { scanRecovery, scanPhaseLabel, siteHasInventory } from "../lib/scanView"
 import type { ScanInterruption, ScanProgressView, SiteOverview } from "../lib/types";
 import { CloseIcon, DriveIcon, NetworkIcon, PlusIcon, RefreshIcon } from "../management/Icons";
 import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
+import { ScanActionButton } from "./ScanActionButton";
 import { useAddedSiteRow, type AddedSiteRow } from "./useAddedSiteRow";
 import "./site-rail.css";
 
@@ -261,24 +262,21 @@ export function SiteRail({
                       title={starting || scanning ? status : interruption?.message ?? status}>{status}</span>
                   </div>
                   <div className="atlas-site-rail-actions">
-                    <button
+                    <ScanActionButton
                       className="atlas-site-rail-scan"
-                      type="button"
                       aria-label={scanActionLabel}
                       title={scanActionLabel}
                       aria-busy={starting || undefined}
-                      aria-disabled={scanUnavailable || undefined}
+                      unavailable={scanUnavailable}
                       aria-describedby={starting ? scanStartId : undefined}
-                      onClick={(event) => {
-                        event.currentTarget.focus({ preventScroll: true });
-                        if (scanUnavailable) return;
+                      onActivate={() => {
                         if (requestId === undefined) onScan(site.id);
                         else onCancel(requestId);
                       }}
                     >
                       {scanning ? <span className="atlas-site-rail-stop" aria-hidden="true" /> : <RefreshIcon />}
                       {scanLabel}
-                    </button>
+                    </ScanActionButton>
                     <button
                       className="atlas-site-rail-manage"
                       type="button"

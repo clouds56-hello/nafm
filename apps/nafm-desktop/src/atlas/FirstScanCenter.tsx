@@ -2,6 +2,7 @@ import type { RefCallback } from "react";
 import { formatCount } from "../lib/format";
 import { scanRecovery, scanPhaseLabel } from "../lib/scanView";
 import type { ScanInterruption, ScanProgressView } from "../lib/types";
+import { ScanActionButton } from "./ScanActionButton";
 
 export interface FirstScanState {
   requestId?: number;
@@ -53,20 +54,15 @@ export function FirstScanCenter({ name, scan, trackFocus }: FirstScanCenterProps
         </span>
       )}
       {(running || !scan.inventoryLoading) && (
-        <button
+        <ScanActionButton
           ref={trackFocus}
-          type="button"
           className="radial-atlas__scan-action"
           data-running={running || undefined}
-          aria-disabled={unavailable || undefined}
-          onClick={(event) => {
-            if (event.detail > 1 || unavailable) return;
-            event.currentTarget.focus({ preventScroll: true });
-            activate();
-          }}
+          unavailable={unavailable}
+          onActivate={activate}
         >
           {running ? scan.scanAll ? "Stop all scans" : "Stop scan" : recovery?.action ?? "Scan this site"}
-        </button>
+        </ScanActionButton>
       )}
     </>
   );

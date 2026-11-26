@@ -8,6 +8,7 @@ import { CloseIcon, SearchIcon } from "../management/Icons";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { DirectorySortControl, pendingSortLabel } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
+import { LocationOpening, type LocationOpeningProps } from "./LocationRecovery";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
 import { useDirectoryViewport } from "./useDirectoryViewport";
 import "./directory.css";
@@ -25,6 +26,7 @@ interface DirectoryContentsProps {
   pendingSort?: DirectorySort;
   onSort: (sort: DirectorySort) => Promise<void>;
   sortRecovery?: ReactNode;
+  folderOpening?: LocationOpeningProps & { inline: boolean };
   metric: HealthMetric | null;
   targetCompleteness: number;
   scrollPane: RefObject<HTMLDivElement | null>;
@@ -55,7 +57,7 @@ function entryTabStop(list: HTMLUListElement | null) {
 }
 
 export function DirectoryContents({
-  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, pendingSort, onSort, sortRecovery, metric, targetCompleteness,
+  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, pendingSort, onSort, sortRecovery, folderOpening, metric, targetCompleteness,
   scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   contentsFocusOrigin, onContentsFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onGoUp, onLoadRange, onRetry,
@@ -383,8 +385,9 @@ export function DirectoryContents({
     }
     event.preventDefault();
     target = Math.min(total - 1, Math.max(0, target));
-    if (target === index || loading) return;
+    if (target === index) return;
     const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${target + 1}"] [data-entry-id]`);
+    if (loading && (!folderOpening || !row)) return;
     if (row) {
       keyboardRow.current = null;
       row.focus();
@@ -482,7 +485,7 @@ export function DirectoryContents({
                 onSearchChange(event.currentTarget.value);
               }}
               onKeyDown={(event) => {
-                if (event.key !== "ArrowDown" || event.altKey || event.ctrlKey || event.metaKey || loading || error) return;
+                if (event.key !== "ArrowDown" || event.altKey || event.ctrlKey || event.metaKey || (loading && !folderOpening) || error) return;
                 const row = listRef.current?.querySelector<HTMLButtonElement>(`[aria-rowindex="${firstVisibleRow + 1}"] [data-entry-id]`);
                 if (row) {
                   event.preventDefault();
@@ -493,6 +496,7 @@ export function DirectoryContents({
             <button type="button" onClick={closeSearch} aria-label="Close search" title="Close search"><CloseIcon /></button>
           </div>
         )}
+        {folderOpening?.inline && <div className="atlas-directory-opening"><LocationOpening {...folderOpening} /></div>}
       </header>
 
       <div role="region" aria-label="Directory entries" aria-busy={loading || loadingMore || undefined}>
@@ -510,7 +514,8 @@ export function DirectoryContents({
               return (
                 <li key={node.id} style={style} role="row" data-virtual-row={index}
                   aria-rowindex={index + 1} aria-selected={isFile ? selection?.id === node.id : undefined}>
-                  <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={() => {
+                  <div role="gridcell" data-openable={canOpenFolder(node) || undefined} onFocus={(event) => {
+                    if (folderOpening?.inline) revealInCompactAtlas(event.target);
                     if (cursor === node.id) return;
                     cursorPositions.set(contentsKey, node.id);
                     setFocusedCursor({ key: contentsKey, id: node.id });

@@ -17,10 +17,124 @@ function back(page: Page) {
   return page.getByRole("button", { name: "Previous location", exact: true });
 }
 
+function holdFolderReply(page: Page, folder: string) {
+  return page.evaluateHandle((name) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: unknown) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const state = { pending: false, replied: false, release };
+    bridge.invoke = async (command, args) => {
+      const result = await invoke(command, args);
+      if (command === "get_storage_view_snapshot" && !state.pending
+        && (result as StorageViewSnapshot).location.root.name === name) {
+        state.pending = true;
+        await gate;
+        state.replied = true;
+      }
+      return result;
+    };
+    return state;
+  }, folder);
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/mock/?scenario=recovery");
   await expect(currentFolder(page)).toHaveText("Studio archive");
 });
+
+for (const action of ["Cancel opening", "Previous location"] as const) {
+  test(`${action} supersedes a held folder read without losing filtered Contents`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.goto("/mock/?scenario=large");
+    const map = atlas(page);
+    await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const search = contents.getByLabel("Find in folder", { exact: true });
+    const grid = contents.getByRole("grid");
+    const row = (rank: number) => grid.locator(`[aria-rowindex="${rank}"] [data-entry-id]`);
+    const query = "  HaRbOr SuRvEy  ";
+    await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+    await search.fill(query);
+    await expect(grid).toHaveAttribute("aria-rowcount", "666");
+    const height = await grid.evaluate((element) => Number.parseFloat(getComputedStyle(element).getPropertyValue("--directory-row-height")));
+    await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 436 * height);
+    await expect(row(440)).toBeInViewport({ ratio: 0.99 });
+    const scroll = await contents.evaluate((pane) => pane.scrollTop);
+    const hold = await holdFolderReply(page, "Reference images");
+    try {
+      await map.getByRole("button", { name: /^Reference images,/ }).press("Enter");
+      await expect.poll(() => hold.evaluate((state) => state.pending)).toBe(true);
+      await expect(map.getByRole("status").filter({ hasText: "Opening Reference images…" })).toBeVisible();
+      await expect(currentFolder(page)).toHaveText("Photo Library");
+      await row(440).press("ArrowDown");
+      await expect(row(441)).toBeFocused();
+
+      if (action === "Cancel opening") {
+        await map.getByRole("button", { name: action, exact: true }).click();
+        await expect(row(441)).toBeFocused();
+      } else {
+        await expect(back(page)).toBeEnabled();
+        await back(page).press("Enter");
+        await expect(currentFolder(page)).toHaveText("Studio archive");
+      }
+    } finally {
+      await hold.evaluate((state) => state.release());
+    }
+    await expect.poll(() => hold.evaluate((state) => state.replied)).toBe(true);
+    await expect(map.getByRole("button", { name: "Cancel opening", exact: true })).toBeHidden();
+
+    const next = page.getByRole("button", { name: "Next location", exact: true });
+    if (action === "Previous location") {
+      await expect(currentFolder(page)).toHaveText("Studio archive");
+      await next.press("Enter");
+    }
+    await expect(currentFolder(page)).toHaveText("Photo Library");
+    await expect(next).toBeDisabled();
+    await expect(search).toHaveValue(query);
+    await expect(row(441)).toBeInViewport({ ratio: 0.99 });
+    await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+  });
+}
+
+for (const source of ["Contents", "Atlas"] as const) {
+  test(`compact ${source} shows Cancel opening on the initiating surface`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 620 });
+    await page.goto("/mock/");
+    const map = atlas(page);
+    await map.getByRole("button", { name: /^Projects,/ }).press("Enter");
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+    const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+    const surface = source === "Contents" ? contents : map;
+    const folder = surface.getByRole("button", { name: source === "Contents" ? /^Brand campaign / : /^Brand campaign,/ });
+    const hold = await holdFolderReply(page, "Brand campaign");
+    try {
+      await folder.scrollIntoViewIfNeeded();
+      await folder.press("Enter");
+      await expect.poll(() => hold.evaluate((state) => state.pending)).toBe(true);
+      const status = surface.getByRole("status").filter({ hasText: "Opening Brand campaign…" });
+      const cancel = surface.getByRole("button", { name: "Cancel opening", exact: true });
+      await expect(status).toBeVisible();
+      await expect(cancel).toBeInViewport({ ratio: 0.99 });
+      await expect(page.getByRole("button", { name: "Cancel opening", exact: true })).toHaveCount(1);
+      await cancel.press("Enter");
+      await expect(folder).toBeFocused();
+    } finally {
+      await hold.evaluate((state) => state.release());
+    }
+    await expect.poll(() => hold.evaluate((state) => state.replied)).toBe(true);
+    await expect(currentFolder(page)).toHaveText("Projects");
+    await expect(surface.getByRole("button", { name: "Cancel opening", exact: true })).toBeHidden();
+    await expect(folder).toBeFocused();
+    await expect(folder).toBeInViewport({ ratio: 0.99 });
+    await expect(contents).toBeVisible();
+  });
+}
 
 test("retry opens the failed folder without adding a failed visit to Atlas history", async ({ page }) => {
   const map = atlas(page);

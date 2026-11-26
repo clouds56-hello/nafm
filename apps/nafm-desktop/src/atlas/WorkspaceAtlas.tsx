@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefCallback } from "react";
 import { ContentActions, type ComparisonKind } from "./analysis/ContentActions";
 import { FileCopiesDialog } from "./analysis/FileCopiesDialog";
 import { ReviewDrawer } from "./analysis/ReviewDrawer";
@@ -13,7 +13,7 @@ import { DirectoryContents } from "./DirectoryContents";
 import { FileFinder } from "./FileFinderDialog";
 import { FolderOpenContext, restoreFolderOpenFocus, type FolderOpenActions } from "./FolderOpenControl";
 import { folderLaunchKey, type FolderLaunches } from "./useFolderLaunches";
-import { LocationRecovery } from "./LocationRecovery";
+import { LocationOpening, LocationRecovery } from "./LocationRecovery";
 import { RadialAtlas } from "./RadialAtlas";
 import { SiteRail } from "./SiteRail";
 import { SourceLibrary } from "./SourceLibrary";
@@ -136,11 +136,17 @@ function fileParent(root: StorageNode, fileId: string): StorageNode | null {
   return null;
 }
 
-function EmptyOrbit({ label, action }: { label: string; action?: ReactNode }) {
+function EmptyOrbit({ label, action, addedSite, trackFocus }: {
+  label: string; action?: ReactNode; addedSite?: string; trackFocus?: RefCallback<HTMLElement>;
+}) {
   return (
     <div className="atlas-empty-orbit">
-      <div className="atlas-empty-orbit__center" data-action={Boolean(action) || undefined}>
-        <span role="status">{label}</span>
+      <div className="atlas-empty-orbit__center" data-action={Boolean(action || addedSite) || undefined}>
+        <span role="status" className={addedSite ? "atlas-empty-orbit__site" : undefined}
+          ref={addedSite ? trackFocus : undefined} tabIndex={addedSite ? -1 : undefined}>
+          {addedSite && <><small>Site added</small><strong title={addedSite}>{addedSite}</strong></>}
+          {label}
+        </span>
         {action}
       </div>
     </div>
@@ -187,6 +193,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
   const contentsScroll = useRef(saved?.scrollPositions ?? new Map<string, number | "end">());
   const contentsCursor = useRef(saved?.cursorPositions ?? new Map<string, string>());
   const focusFirstSite = useRef(false);
+  const [openedFirstSite, setOpenedFirstSite] = useState<SiteAddition>();
   const inspectorOrigin = useRef<SVGGElement | null>(null);
   const openedFile = useRef<AtlasInspection | null>(null);
   const pendingReveal = useRef<AbortController | null>(null);
@@ -508,19 +515,33 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
     }
   }, [currentVisit, inspection, visit]);
 
-  const emptyLauncherRef = useCallback((button: HTMLButtonElement | null) => {
-    if (button) return () => { focusFirstSite.current = document.activeElement === button; };
+  const firstAddition = siteAddition?.origin === "atlas" && siteAddition.workspaceName === workspaceName
+    && siteAddition !== openedFirstSite ? siteAddition : undefined;
+  const trackFirstSiteFocus = useCallback((element: HTMLElement | null) => {
+    if (element) return () => { if (document.activeElement === element) focusFirstSite.current = true; };
   }, []);
-
   useLayoutEffect(() => {
-    // The empty-state launcher can disappear a render before the first site's map arrives.
-    if (!focusFirstSite.current || (!folder && !state.error && !state.treeError)) return;
-    focusFirstSite.current = false;
-    if (document.activeElement !== document.body) return;
-    const next = mapRegion.current?.querySelector<HTMLButtonElement>(".atlas-site-rail-add, .radial-atlas__scan-action, .atlas-view-error button")
-      ?? mapRegion.current?.querySelector<HTMLButtonElement>(".atlas-sites-trigger");
-    next?.focus({ preventScroll: true });
-  }, [folder, state.error, state.treeError]);
+    // The successful dialog can close after its original Add site button has been replaced.
+    if (firstAddition && (document.activeElement === document.body || document.activeElement === firstAddition.opener)) {
+      focusFirstSite.current = true;
+    }
+  }, [firstAddition]);
+  useLayoutEffect(() => {
+    if (firstAddition && folder) setOpenedFirstSite(firstAddition);
+    const waiting = mapRegion.current?.querySelector<HTMLElement>(".atlas-empty-orbit__site");
+    const active = document.activeElement;
+    const ownsFocus = active === waiting || (focusFirstSite.current && active === document.body);
+    if (!ownsFocus) {
+      if (active !== document.body) focusFirstSite.current = false;
+      return;
+    }
+    const next = state.error || state.treeError ? mapRegion.current?.querySelector<HTMLButtonElement>(".atlas-view-error button")
+      : waiting ?? (folder ? mapRegion.current?.querySelector<HTMLElement>(".radial-atlas__scan-action, .atlas-site-rail-add, .atlas-sites-trigger") : null);
+    if (next) {
+      focusFirstSite.current = false;
+      if (next !== active) next.focus({ preventScroll: true });
+    }
+  }, [folder, firstAddition, state.error, state.treeError]);
   const breadcrumbs = location?.breadcrumbs ?? [];
   const metric: HealthMetric | null = mapMode === "size" ? null : mapMode;
   const targetCompleteness = siteCompleteness(target);
@@ -578,7 +599,22 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
   const sortingInContents = inspectorView === "contents" && Boolean(state.locationProgress?.contents_sort);
   const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
+  const folderOpening = state.locationProgress?.cancelOpening;
+  const openingInContents = inspectorView === "contents" && Boolean(folderOpening?.origin?.closest(".atlas-directory"));
   const atlasNotice = state.notice ?? state.folderLaunchFeedback;
+
+  function cancelFolderOpening(event: MouseEvent<HTMLButtonElement>) {
+    const active = document.activeElement;
+    if (!folderOpening?.cancel() || (active !== event.currentTarget && active !== document.body)) return;
+    const fromContents = event.currentTarget.closest(".atlas-directory");
+    const pane = contentsPane.current;
+    const cursor = fromContents ? pane?.querySelector<HTMLButtonElement>('[data-entry-id][tabindex="0"]') : null;
+    const origin = folderOpening.origin;
+    const connectedOrigin = (origin instanceof HTMLElement || origin instanceof SVGElement)
+      && origin !== document.body && origin.isConnected && origin.getClientRects().length ? origin : null;
+    const heading = mapRegion.current?.closest(".atlas-shell")?.querySelector<HTMLElement>(".atlas-toolbar-navigation h1");
+    (cursor ?? connectedOrigin ?? (fromContents ? pane : heading))?.focus({ preventScroll: true });
+  }
 
   useLayoutEffect(() => {
     const focus = state.locationFailure?.visiblePanelFocus;
@@ -1011,7 +1047,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
         >
           <div
             className="atlas-chart-well"
-            aria-busy={state.childrenLoading || state.treeLoading || undefined}
+            aria-busy={(state.childrenLoading && !folderOpening) || state.treeLoading || undefined}
           >
             {folder ? (
               <RadialAtlas
@@ -1027,11 +1063,13 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
               />
             ) : (
               <EmptyOrbit
-                label={state.loading || state.treeLoading ? "Reading inventory"
+                addedSite={firstAddition?.name} trackFocus={trackFirstSiteFocus}
+                label={firstAddition ? (state.error || state.treeError ? "Map unavailable" : "Opening site…")
+                  : state.loading || state.treeLoading ? "Reading inventory"
                   : state.treeError || state.error || state.locationFailure ? "Map unavailable" : "No source selected"}
-                action={dashboard && !site && !state.error && !state.treeError && !recoveryOnMap ? (
+                action={!firstAddition && dashboard && !site && !state.error && !state.treeError && !recoveryOnMap ? (
                   <button
-                    ref={emptyLauncherRef}
+                    ref={trackFirstSiteFocus}
                     className="atlas-empty-orbit__add"
                     type="button"
                     aria-haspopup="dialog"
@@ -1042,9 +1080,10 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
               />
             )}
             {folder && state.locationProgress && !sortingInContents && (
-              <span className="atlas-location-progress" role={openingSiteInPanel || coverageFooterVisible ? undefined : "status"}>
-                {state.locationProgress.message}
-              </span>
+              <div className="atlas-location-progress" data-contents-opening={openingInContents || undefined}>
+                <LocationOpening message={state.locationProgress.message}
+                  announce={!openingSiteInPanel && !coverageFooterVisible} onCancel={folderOpening ? cancelFolderOpening : undefined} />
+              </div>
             )}
           </div>
 
@@ -1052,7 +1091,11 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
             {state.treeError || state.error ? (
               <div className="atlas-view-error" role="alert">
                 <span>{state.treeError ?? state.error}</span>
-                <button className="atlas-text-button" type="button" onClick={() => void (state.treeError ? state.retryTree() : state.refresh())}>Try again</button>
+                <button className="atlas-text-button" type="button" ref={firstAddition ? trackFirstSiteFocus : undefined}
+                  onClick={(event) => {
+                    if (firstAddition) event.currentTarget.focus({ preventScroll: true });
+                    void (state.treeError ? state.retryTree() : state.refresh());
+                  }}>Try again</button>
               </div>
             ) : recoveryOnMap ? recovery : sourceVerification && site && folder ? (
               <CoverageFooter
@@ -1189,6 +1232,10 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
                       selection={selected}
                       sort={state.directorySort}
                       pendingSort={state.locationProgress?.contents_sort}
+                      folderOpening={folderOpening && state.locationProgress ? {
+                        message: state.locationProgress.message, announce: !coverageFooterVisible, onCancel: cancelFolderOpening,
+                        inline: openingInContents,
+                      } : undefined}
                       onSort={changeDirectorySort}
                       sortRecovery={recoveryInContents ? recovery : undefined}
                       metric={metric}
