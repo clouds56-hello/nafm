@@ -13,6 +13,7 @@ import {
   loadDashboard,
   moveCleanupToTrash,
   moveStageHistory,
+  onCleanupProgress,
   onScanTaskEvent,
   previewCleanup,
   stagePath,
@@ -35,6 +36,7 @@ import {
 import type {
   CleanupPreview,
   CleanupPreviewInvalidation,
+  CleanupProgress,
   CleanupReport,
   CancelScanMode,
   Dashboard,
@@ -329,6 +331,7 @@ export function useDashboard(
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupProgress, setCleanupProgress] = useState<CleanupProgress | null>(null);
   const [cleanupActivity, setCleanupActivity] = useState<{ workspace: string; report: CleanupReport } | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<CleanupPreviewState>({ status: "idle" });
   const preview = cleanupPreview.status === "complete" ? cleanupPreview.report : null;
@@ -1970,6 +1973,13 @@ export function useDashboard(
     try {
       return await runStageMutation(async (workspace) => {
         setReviewError(null);
+        let receivingProgress = true;
+        const unlisten = await onCleanupProgress((event) => {
+          if (receivingProgress && event.workspace_name === workspace && event.plan_id === planId
+            && workspaceNameRef.current === workspace) {
+            setCleanupProgress(event.progress);
+          }
+        }).catch(() => undefined);
         let report: CleanupReport;
         try {
           report = await moveCleanupToTrash(workspace, planId);
@@ -1979,6 +1989,9 @@ export function useDashboard(
             scheduleFinalAnalysisRefresh([]);
           }
           throw error;
+        } finally {
+          receivingProgress = false;
+          unlisten?.();
         }
         if (workspaceNameRef.current !== workspace) return;
         setCleanupActivity({ workspace, report });
@@ -1995,6 +2008,7 @@ export function useDashboard(
       });
     } finally {
       setCleanupBusy(false);
+      setCleanupProgress(null);
     }
   }, [invalidateCleanupPreview, reloadDashboard, runStageMutation, scheduleFinalAnalysisRefresh]);
 
@@ -2134,6 +2148,7 @@ export function useDashboard(
     reviewError,
     runPreview,
     cleanupBusy,
+    cleanupProgress,
     cleanupReport,
     moveStagedToTrash,
   }), [
@@ -2151,6 +2166,7 @@ export function useDashboard(
     loadingMoreChildren,
     childrenPage,
     cleanupBusy,
+    cleanupProgress,
     cleanupReport,
     clearFolderLaunchFeedback,
     completionBySite,

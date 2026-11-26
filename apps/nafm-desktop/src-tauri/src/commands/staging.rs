@@ -1,9 +1,22 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use nafm_core::{CleanupReport, StageAddReport, StageCommitDryRun, StageHistoryRequest, StageRemoveReport};
-use tauri::State;
+use nafm_core::{
+  CleanupProgress, CleanupReport, StageAddReport, StageCommitDryRun, StageHistoryRequest, StageRemoveReport,
+};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
+
+const CLEANUP_PROGRESS_EVENT: &str = "task://cleanup/progress";
+
+#[derive(Clone, Serialize)]
+struct CleanupProgressEvent<'a> {
+  workspace_name: &'a str,
+  plan_id: &'a str,
+  progress: &'a CleanupProgress,
+}
 
 #[tauri::command]
 pub async fn stage_path(
@@ -47,6 +60,7 @@ pub async fn preview_cleanup(
 
 #[tauri::command]
 pub async fn move_cleanup_to_trash(
+  app: AppHandle,
   state: State<'_, AppState>,
   expected_workspace: String,
   plan_id: String,
@@ -56,8 +70,19 @@ pub async fn move_cleanup_to_trash(
   if !state.scan_tasks.active_tasks().is_empty() {
     return Err("Wait for scans to finish before moving files to Trash.".to_owned());
   }
+  let event_plan_id = plan_id.clone();
+  let progress = Arc::new(move |progress: &CleanupProgress| {
+    let _ = app.emit(
+      CLEANUP_PROGRESS_EVENT,
+      CleanupProgressEvent {
+        workspace_name: &expected_workspace,
+        plan_id: &event_plan_id,
+        progress,
+      },
+    );
+  });
   repository
-    .move_cleanup_to_trash(&plan_id)
+    .move_cleanup_to_trash_with_progress(&plan_id, Some(progress))
     .await
     .map_err(|error| error.to_string())
 }

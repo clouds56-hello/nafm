@@ -516,6 +516,26 @@ pub enum CleanupActionBlockerReason {
   NoLocalRetainedCopy,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupProgressPhase {
+  Verifying,
+  Moving,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CleanupProgress {
+  pub phase: CleanupProgressPhase,
+  /// The number of selected files processed in this phase, including skips.
+  pub processed_files: u64,
+  /// Moving counts only the selected files that passed verification.
+  pub total_files: u64,
+  /// The file being checked or moved. Verification may show a retained copy.
+  pub current_file: Option<PathBuf>,
+  pub bytes_checked: Option<u64>,
+  pub file_size_bytes: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CleanupReport {
   pub operation_id: String,

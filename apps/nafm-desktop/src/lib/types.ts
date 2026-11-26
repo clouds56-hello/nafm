@@ -533,6 +533,21 @@ export interface CleanupReport {
   skipped_files: CleanupFailure[];
 }
 
+export interface CleanupProgress {
+  phase: "verifying" | "moving";
+  processed_files: number;
+  total_files: number;
+  current_file: string | null;
+  bytes_checked: number | null;
+  file_size_bytes: number | null;
+}
+
+export interface CleanupProgressEvent {
+  workspace_name: string;
+  plan_id: string;
+  progress: CleanupProgress;
+}
+
 export interface CleanupPreview {
   staged_files: DuplicateFile[];
   hashes_pending: number;

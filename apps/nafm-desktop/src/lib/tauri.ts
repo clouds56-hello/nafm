@@ -16,6 +16,7 @@ import type {
   CancelScanReport,
   CancelScanMode,
   CleanupPreview,
+  CleanupProgressEvent,
   CleanupReport,
   Dashboard,
   DirectoryAdjacentFile,
@@ -370,6 +371,10 @@ export function previewCleanup(expectedWorkspace: string): Promise<CleanupPrevie
 
 export function moveCleanupToTrash(expectedWorkspace: string, planId: string): Promise<CleanupReport> {
   return invoke<CleanupReport>("move_cleanup_to_trash", { expectedWorkspace, planId });
+}
+
+export function onCleanupProgress(handler: (event: CleanupProgressEvent) => void): Promise<UnlistenFn> {
+  return listen<CleanupProgressEvent>("task://cleanup/progress", ({ payload }) => handler(payload));
 }
 
 export function loadCleanupActivity(expectedWorkspace: string): Promise<CleanupReport | null> {

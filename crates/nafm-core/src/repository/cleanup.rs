@@ -1,6 +1,8 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -13,10 +15,66 @@ use super::{
   Repository, StageMutationKind, cleanup_review_snapshot, modified_unix_nanos, open_connection, record_stage_snapshot,
   with_deferred_transaction, with_immediate_transaction,
 };
-use crate::{CleanupFailure, CleanupReport, DuplicateFile, HashAlgorithm, NafmError, Result};
+use crate::{
+  CleanupFailure, CleanupProgress, CleanupProgressPhase, CleanupReport, DuplicateFile, HashAlgorithm, NafmError, Result,
+};
 
 #[cfg(test)]
 mod tests;
+
+type CleanupProgressCallback = dyn Fn(&CleanupProgress) + Send + Sync;
+
+const CLEANUP_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+struct CleanupProgressReporter<'a> {
+  callback: Option<&'a CleanupProgressCallback>,
+  phase: CleanupProgressPhase,
+  processed_files: u64,
+  total_files: u64,
+  last_update: Option<Instant>,
+}
+
+impl CleanupProgressReporter<'_> {
+  fn start_moving(&mut self, total_files: u64) {
+    self.phase = CleanupProgressPhase::Moving;
+    self.processed_files = 0;
+    self.total_files = total_files;
+    self.last_update = None;
+  }
+
+  fn report_file(&mut self, file: &DuplicateFile, bytes_checked: Option<u64>) {
+    let Some(callback) = self.callback else { return };
+    let now = Instant::now();
+    if self
+      .last_update
+      .is_some_and(|last| now.duration_since(last) < CLEANUP_PROGRESS_INTERVAL)
+    {
+      return;
+    }
+    self.last_update = Some(now);
+    callback(&CleanupProgress {
+      phase: self.phase,
+      processed_files: self.processed_files,
+      total_files: self.total_files,
+      current_file: Some(file.path.clone()),
+      bytes_checked: bytes_checked.map(|checked| checked.min(file.size_bytes)),
+      file_size_bytes: bytes_checked.map(|_| file.size_bytes),
+    });
+  }
+
+  fn finish_phase(&self) {
+    if let Some(callback) = self.callback {
+      callback(&CleanupProgress {
+        phase: self.phase,
+        processed_files: self.processed_files,
+        total_files: self.total_files,
+        current_file: None,
+        bytes_checked: None,
+        file_size_bytes: None,
+      });
+    }
+  }
+}
 
 #[derive(Serialize, Deserialize)]
 struct CleanupIntent {
@@ -62,6 +120,15 @@ impl FileVersion {
 
 impl Repository {
   pub async fn move_cleanup_to_trash(&self, plan_id: &str) -> Result<CleanupReport> {
+    self.move_cleanup_to_trash_with_progress(plan_id, None).await
+  }
+
+  /// Progress is advisory. The returned report confirms which files reached Trash.
+  pub async fn move_cleanup_to_trash_with_progress(
+    &self,
+    plan_id: &str,
+    on_progress: Option<Arc<CleanupProgressCallback>>,
+  ) -> Result<CleanupReport> {
     let path = self.db_path.clone();
     let algorithm = self.hash_algorithm.clone();
     let plan_id = plan_id.to_owned();
@@ -75,6 +142,7 @@ impl Repository {
         &plan_id,
         algorithm.as_ref(),
         move_file_to_trash,
+        on_progress.as_deref(),
       )
     })
     .await?
@@ -123,6 +191,7 @@ fn execute_cleanup(
   plan_id: &str,
   algorithm: &dyn HashAlgorithm,
   trash: impl Fn(&Path) -> Result<()>,
+  on_progress: Option<&CleanupProgressCallback>,
 ) -> Result<CleanupReport> {
   // Two different workspaces can index the same files. Hold the account lock
   // across verification and the moves so neither operation can keep the other's target.
@@ -142,7 +211,15 @@ fn execute_cleanup(
     moved_files: Vec::new(),
     skipped_files: Vec::new(),
   };
-  let groups = verify_plan(&plan, algorithm, &mut report);
+  let mut progress = CleanupProgressReporter {
+    callback: on_progress,
+    phase: CleanupProgressPhase::Verifying,
+    processed_files: 0,
+    total_files: plan.groups.iter().map(|group| group.staged.len() as u64).sum(),
+    last_update: None,
+  };
+  let groups = verify_plan(&plan, algorithm, &mut report, &mut progress);
+  progress.finish_phase();
   let targets = groups
     .iter()
     .flat_map(|group| &group.staged)
@@ -177,7 +254,7 @@ fn execute_cleanup(
 
   // Persist the intent before the OS call. A crash rolls back the index changes,
   // while the next scan or cleanup visit can reconcile the original paths.
-  with_immediate_transaction(conn, || {
+  let result = with_immediate_transaction(conn, || {
     if let Some(report) = completed_report(conn, plan_id)? {
       return Ok(report);
     }
@@ -193,18 +270,20 @@ fn execute_cleanup(
         other?;
       }
     }
+    if !journal.targets.is_empty() {
+      progress.start_moving(journal.targets.len() as u64);
+    }
     let mut removed = false;
     for group in groups {
       for (target, version) in group.staged {
+        progress.report_file(&target.file, None);
         let result = verify_unchanged(group.retained, &group.retained_version)
           .map_err(|_| "The retained copy changed. Rescan before trying again.".to_owned())
           .and_then(|()| verify_unchanged(target, &version).map_err(|error| error.to_string()))
           .and_then(|()| trash(&target.file.path).map_err(|error| error.to_string()));
         if let Err(message) = result {
           skip(&mut report, &target.file, message);
-          continue;
-        }
-        if path_is_missing(&target.file.path, &target.root) {
+        } else if path_is_missing(&target.file.path, &target.root) {
           removed |= remove_file_record(conn, &target.file, target.inventory_revision)?;
           report.moved_files.push(target.file.clone());
         } else {
@@ -214,6 +293,7 @@ fn execute_cleanup(
             "The original path is still occupied. Check Trash and rescan this site.",
           );
         }
+        progress.processed_files += 1;
       }
     }
     if removed {
@@ -221,7 +301,11 @@ fn execute_cleanup(
     }
     save_report(conn, &report)?;
     Ok(report)
-  })
+  });
+  if result.is_ok() && progress.phase == CleanupProgressPhase::Moving {
+    progress.finish_phase();
+  }
+  result
 }
 
 fn reviewed_plan(conn: &Connection, epoch: i64, plan_id: &str) -> Result<CleanupPlan> {
@@ -236,25 +320,40 @@ fn verify_plan<'a>(
   plan: &'a CleanupPlan,
   algorithm: &dyn HashAlgorithm,
   report: &mut CleanupReport,
+  progress: &mut CleanupProgressReporter<'_>,
 ) -> Vec<VerifiedGroup<'a>> {
   let mut verified = Vec::new();
   for group in &plan.groups {
-    let verify = |candidate| verify_content(candidate, algorithm, &group.hash_algorithm, &group.content_hash);
+    let verify = |candidate, progress: &mut CleanupProgressReporter<'_>| {
+      verify_content(
+        candidate,
+        algorithm,
+        &group.hash_algorithm,
+        &group.content_hash,
+        progress,
+      )
+    };
     let mut staged = Vec::new();
-    for target in &group.staged {
-      match verify(target) {
+    for (index, target) in group.staged.iter().enumerate() {
+      match verify(target, progress) {
         Ok(version) => staged.push((target, version)),
         Err(error) => skip(report, &target.file, error.to_string()),
       }
+      // Count the last selected file in this group only after checking for a retained copy.
+      if index + 1 < group.staged.len() {
+        progress.processed_files += 1;
+      }
     }
     if staged.is_empty() {
+      progress.processed_files += 1;
       continue;
     }
     let retained = group.retained.iter().find_map(|candidate| {
-      let version = verify(candidate).ok()?;
+      let version = verify(candidate, progress).ok()?;
       // Aliases (including bind mounts and hard links) do not prove an independent copy.
       (!staged.iter().any(|(_, staged)| staged.identity == version.identity)).then_some((candidate, version))
     });
+    progress.processed_files += 1;
     let Some((retained, retained_version)) = retained else {
       for (target, _) in staged {
         skip(
@@ -274,7 +373,14 @@ fn verify_plan<'a>(
   verified
 }
 
-fn verify_content(file: &CleanupFile, algorithm: &dyn HashAlgorithm, name: &str, digest: &str) -> Result<FileVersion> {
+fn verify_content(
+  file: &CleanupFile,
+  algorithm: &dyn HashAlgorithm,
+  name: &str,
+  digest: &str,
+  progress: &mut CleanupProgressReporter<'_>,
+) -> Result<FileVersion> {
+  progress.report_file(&file.file, Some(0));
   if algorithm.name() != name {
     return Err(NafmError::CleanupFileChanged);
   }
@@ -286,12 +392,15 @@ fn verify_content(file: &CleanupFile, algorithm: &dyn HashAlgorithm, name: &str,
   }
   let mut hasher = algorithm.new_hasher();
   let mut buffer = [0; 64 * 1024];
+  let mut bytes_checked = 0;
   loop {
     let size = handle.read(&mut buffer)?;
     if size == 0 {
       break;
     }
     hasher.update(&buffer[..size]);
+    bytes_checked += size as u64;
+    progress.report_file(&file.file, Some(bytes_checked));
   }
   if hasher.finalize() != digest || !version.matches(&FileVersion::read(&handle)?) {
     return Err(NafmError::CleanupFileChanged);

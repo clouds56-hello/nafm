@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { CleanupPreview, CleanupReport } from "../src/lib/types";
+import type { CleanupPreview, CleanupProgress, CleanupProgressEvent, CleanupReport } from "../src/lib/types";
 
 const fileName = "Trailer master.mov";
 const sourcePath = "/demo/Studio Archive/Projects/Brand campaign/Trailer master.mov";
@@ -552,25 +552,39 @@ test("cleanup review verifies the potential retained copy in place before a fres
 test.describe("compact cleanup review inspection", () => {
   test.use({ viewport: { width: 390, height: 580 }, hasTouch: true });
 
-  test("moving to Trash requires confirmation and reports the result", async ({ page }) => {
+  test("moving to Trash requires confirmation, reports progress, and shows the result", async ({ page }) => {
     await stageCopy(page, "Backup campaign");
     const request = await page.evaluateHandle(() => {
       type MoveRequest = { expectedWorkspace: string; planId: string };
       const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-        __TAURI_INTERNALS__: { invoke: (command: string, args: MoveRequest) => Promise<unknown> };
+        __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
       };
       let release!: () => void;
       const waiting = new Promise<void>((resolve) => { release = resolve; });
       const calls: MoveRequest[] = [];
+      const emitted: CleanupProgressEvent[] = [];
       const invoke = bridge.invoke.bind(bridge);
       bridge.invoke = async (command, args) => {
         if (command === "move_cleanup_to_trash") {
-          calls.push(args);
+          calls.push({ expectedWorkspace: String(args.expectedWorkspace), planId: String(args.planId) });
           await waiting;
+        }
+        if (command === "plugin:event|emit" && args.event === "task://cleanup/progress") {
+          emitted.push(args.payload as CleanupProgressEvent);
         }
         return invoke(command, args);
       };
-      return { calls, release };
+      return {
+        calls,
+        emitted,
+        release,
+        emitProgress(progress: CleanupProgress, target?: Partial<MoveRequest>) {
+          const { expectedWorkspace, planId } = { ...calls[0], ...target };
+          return invoke("plugin:event|emit", {
+            event: "task://cleanup/progress", payload: { workspace_name: expectedWorkspace, plan_id: planId, progress },
+          });
+        },
+      };
     });
 
     await inspector(page).getByRole("button", { name: "Open review", exact: true }).tap();
@@ -609,10 +623,38 @@ test.describe("compact cleanup review inspection", () => {
     expect(await request.evaluate(({ calls }) => calls)).toEqual([{
       expectedWorkspace: "Studio workspace", planId: expect.any(String),
     }]);
+
+    await expect(confirmation.getByText("Checking file contents", { exact: true })).toBeVisible();
+    await request.evaluate(({ emitProgress }, progress) => emitProgress(progress), {
+      phase: "verifying", processed_files: 1, total_files: 2, current_file: backupPath,
+      bytes_checked: 46 * 1024 ** 3, file_size_bytes: 92 * 1024 ** 3,
+    });
+    await expect(confirmation.getByText("1 of 2 copies checked", { exact: true })).toBeVisible();
+    await expect(confirmation.getByText(fileName, { exact: true })).toBeVisible();
+    const verifying = confirmation.getByRole("progressbar", { name: "Current file verification" });
+    await expect(verifying).toHaveAttribute("aria-valuetext", "46 GB of 92 GB");
+    const movingProgress = {
+      phase: "moving", processed_files: 0, total_files: 1, current_file: backupPath, bytes_checked: null, file_size_bytes: null,
+    } satisfies CleanupProgress;
+    await request.evaluate(async ({ emitProgress }, progress) => {
+      await emitProgress(progress, { planId: "different-plan" });
+      await emitProgress(progress, { expectedWorkspace: "Other workspace" });
+    }, movingProgress);
+    await expect(verifying).toBeVisible();
+    await request.evaluate(({ emitProgress }, progress) => emitProgress(progress), movingProgress);
+    await expect(confirmation.getByText("Moving verified copies", { exact: true })).toBeVisible();
+    await expect(confirmation.getByRole("progressbar", { name: "Cleanup progress" })).toBeInViewport();
+    await expect(moving).toBeFocused();
     await request.evaluate(({ release }) => release());
 
     const receipt = dialog.getByRole("region", { name: "Cleanup result", exact: true });
     await expect(receipt).toBeFocused();
+    const emitted = await request.evaluate(({ emitted }) => emitted);
+    expect(emitted.map(({ progress }) => progress.phase)).toEqual(["verifying", "moving"]);
+    for (const event of emitted) {
+      expect(event).toMatchObject({ workspace_name: "Studio workspace", plan_id: expect.any(String) });
+    }
+    expect(emitted[0].progress).toMatchObject({ current_file: backupPath, total_files: 1, bytes_checked: 46 * 1024 ** 3 });
     await expect(receipt.getByText("Moved to Trash", { exact: true }).locator("..").locator("dd")).toHaveText("1");
     await expect(receipt.getByText("Skipped", { exact: true }).locator("..").locator("dd")).toHaveText("0");
     await expect(receipt).toContainText("restore them from the system Trash or Recycle Bin");

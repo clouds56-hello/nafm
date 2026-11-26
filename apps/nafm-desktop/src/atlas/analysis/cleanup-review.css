@@ -160,6 +160,44 @@
   gap: 6px;
 }
 
+.atlas-review-progress {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--atlas-border);
+  border-radius: 6px;
+  background: #181a29;
+}
+
+.atlas-review-progress-status,
+.atlas-review-progress-file {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.atlas-review-progress-status { flex-wrap: wrap; }
+.atlas-review-progress-status strong { color: var(--atlas-ink); }
+.atlas-review-progress-status span,
+.atlas-review-progress-bytes { font-size: 11px; }
+
+.atlas-review-progress-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atlas-review-progress-bytes { flex-shrink: 0; margin-inline-start: auto; }
+
+.atlas-review-progress progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--atlas-accent);
+}
+
 .atlas-review-receipt:focus-visible { outline-offset: -2px; }
 
 .atlas-review-receipt summary { color: var(--atlas-accent); cursor: pointer; }

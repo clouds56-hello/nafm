@@ -2,7 +2,7 @@ import type { InvokeArgs, InvokeOptions } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
-  CancelScanReport, Dashboard, ScanPhase, ScanSelector, ScanSummary, ScanTask, ScanTaskEvent, ScanTaskSiteState,
+  CancelScanReport, CleanupProgress, CleanupProgressEvent, Dashboard, ScanPhase, ScanSelector, ScanSummary, ScanTask, ScanTaskEvent, ScanTaskSiteState,
   SiteOverview, StorageNode,
 } from "../src/lib/types";
 import { buildFolder, createSampleTree, type PreviewScenario } from "./fixtures";
@@ -11,6 +11,7 @@ import { createStorageApi } from "./storage";
 import { checkWorkspace, getSite, getTree, numberArg, record, setTree, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
 
 const SCAN_EVENT = "task://scan/events";
+const CLEANUP_PROGRESS_EVENT = "task://cleanup/progress";
 const SCAN_STEPS: ReadonlyArray<readonly [ScanPhase, number]> = [
   ["discovering", 0], ["discovering", 0.35], ["publishing_metadata", 1],
   ["hashing", 0.25], ["hashing", 0.65], ["finalizing", 1],
@@ -98,6 +99,7 @@ function notify(
 
 export function installPreviewBackend(scenario: PreviewScenario) {
   const scans = new Map<number, PreviewScan>();
+  let cleanupRunning = false;
   let nextRequest = 1;
   const management = createManagementApi(scenario, () => scans.size > 0);
   const storage = createStorageApi(management.current);
@@ -307,10 +309,38 @@ export function installPreviewBackend(scenario: PreviewScenario) {
       checkWorkspace(management.current(), args.expectedWorkspace);
       return storage.cleanup();
     },
-    move_cleanup_to_trash(args) {
-      checkWorkspace(management.current(), args.expectedWorkspace);
+    async move_cleanup_to_trash(args) {
+      const workspace = management.current();
+      checkWorkspace(workspace, args.expectedWorkspace);
       if (scans.size) throw new Error("Finish the current scan, then preview cleanup again.");
-      return storage.moveCleanupToTrash(args);
+      if (cleanupRunning) throw new Error("Wait for the current cleanup to finish.");
+      const planId = stringArg(args.planId, "cleanup plan");
+      const prior = workspace.cleanup_operations.get(planId);
+      if (prior) return prior;
+      const preview = storage.cleanup(workspace);
+      if (preview.action.plan_id !== planId) return storage.moveCleanupToTrash(args);
+      const staged = preview.staged_files[0];
+      const total = preview.staged_files.length;
+      const progress = (value: CleanupProgress) => emit<CleanupProgressEvent>(CLEANUP_PROGRESS_EVENT, {
+        workspace_name: workspace.name, plan_id: planId, progress: value,
+      });
+      const pause = () => new Promise<void>((resolve) => window.setTimeout(resolve, 180));
+      cleanupRunning = true;
+      try {
+        await progress({
+          phase: "verifying", processed_files: 0, total_files: total,
+          current_file: staged.path, bytes_checked: Math.floor(staged.size_bytes / 2), file_size_bytes: staged.size_bytes,
+        });
+        await pause();
+        await progress({
+          phase: "moving", processed_files: 0, total_files: total,
+          current_file: staged.path, bytes_checked: null, file_size_bytes: null,
+        });
+        await pause();
+        return storage.moveCleanupToTrash(args);
+      } finally {
+        cleanupRunning = false;
+      }
     },
     load_cleanup_activity(args) {
       const workspace = management.current();
@@ -319,6 +349,7 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     },
     start_scan(args) {
       checkWorkspace(management.current(), args.expectedWorkspace);
+      if (cleanupRunning) throw new Error("Wait for the current cleanup to finish.");
       const selector = record(args.selector);
       return startScan(selector.all === true ? { all: true } : { site_id: stringArg(selector.site_id, "source ID") });
     },

@@ -1375,6 +1375,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
           error={state.reviewError}
           stagingBusy={state.stagingBusy}
           cleanupBusy={state.cleanupBusy}
+          cleanupProgress={state.cleanupProgress}
           cleanupScansActive={state.activeTaskCount > 0}
           cleanupReport={state.cleanupReport}
           onMoveToTrash={state.moveStagedToTrash}

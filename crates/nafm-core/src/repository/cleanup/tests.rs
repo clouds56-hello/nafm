@@ -1,4 +1,5 @@
 use std::fs::FileTimes;
+use std::sync::Mutex;
 
 use super::*;
 use crate::{AddSiteFolderRequest, Blake3HashAlgorithm, HiddenPolicy, RepositoryOptions};
@@ -56,18 +57,70 @@ impl Fixture {
   }
 
   fn execute(&self, plan: &str, trash: impl Fn(&Path) -> Result<()>) -> Result<CleanupReport> {
+    self.execute_with_progress(plan, trash, None)
+  }
+
+  fn execute_with_progress(
+    &self,
+    plan: &str,
+    trash: impl Fn(&Path) -> Result<()>,
+    on_progress: Option<&CleanupProgressCallback>,
+  ) -> Result<CleanupReport> {
     execute_cleanup(
       &self.connection(),
       &self._temporary.path().join("account.lock"),
       plan,
       &Blake3HashAlgorithm,
       trash,
+      on_progress,
     )
   }
 
   fn fake_trash(&self, from: &Path) -> Result<()> {
     fs::rename(from, self._temporary.path().join("trashed.bin"))?;
     Ok(())
+  }
+}
+
+#[tokio::test]
+async fn progress_checks_each_selected_file_before_attempting_the_move() {
+  use CleanupProgressPhase::{Moving, Verifying};
+
+  let fixture = Fixture::new().await;
+  let plan = fixture.plan().await;
+  let events = Arc::new(Mutex::new(Vec::<CleanupProgress>::new()));
+  let received = events.clone();
+  let on_progress = move |state: &CleanupProgress| received.lock().unwrap().push(state.clone());
+
+  let receipt = fixture
+    .execute_with_progress(
+      &plan,
+      |path| {
+        let latest = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(latest.phase, Moving);
+        assert_eq!(latest.processed_files, 0);
+        assert_eq!(latest.current_file.as_deref(), Some(path));
+        assert_eq!(latest.bytes_checked, None);
+        fixture.fake_trash(path)
+      },
+      Some(&on_progress),
+    )
+    .unwrap();
+  assert_eq!(receipt.moved_files.len(), 1);
+
+  let events = events.lock().unwrap();
+  let initial = events.first().unwrap();
+  assert_eq!(initial.phase, Verifying);
+  assert_eq!(initial.processed_files, 0);
+  assert_eq!(initial.current_file.as_deref(), Some(fixture.staged.as_path()));
+  assert_eq!(initial.bytes_checked, Some(0));
+  assert_eq!(initial.file_size_bytes, Some(b"same bytes".len() as u64));
+  let (verification, movement) = events.split_at(events.iter().position(|event| event.phase == Moving).unwrap());
+  for (phase, steps) in [(Verifying, verification), (Moving, movement)] {
+    assert!(steps.iter().all(|step| step.phase == phase && step.total_files == 1));
+    let completed = steps.last().unwrap();
+    assert_eq!(completed.processed_files, 1);
+    assert_eq!(completed.current_file, None);
   }
 }
 
@@ -235,7 +288,8 @@ async fn a_live_intent_is_left_alone_and_another_workspace_cannot_move_files() {
       &account_lock,
       &other_plan,
       &Blake3HashAlgorithm,
-      |_| panic!("overlapping cleanup")
+      |_| panic!("overlapping cleanup"),
+      None,
     ),
     Err(NafmError::CleanupInProgress)
   ));

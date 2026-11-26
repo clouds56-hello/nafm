@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefCallback, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type {
-  CleanupActionBlocker, CleanupPreview, CleanupPreviewInvalidation, CleanupReport, DuplicateFile, ReviewPosition, SiteOverview,
-  StageHistoryDirection, StageHistoryRequest, StageHistoryState,
+  CleanupActionBlocker, CleanupPreview, CleanupPreviewInvalidation, CleanupProgress, CleanupReport, DuplicateFile,
+  ReviewPosition, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
   StageVerificationBlocker, StageWarning, StageWarningReason,
 } from "../../lib/types";
 import type { ScanSite, SiteVerification } from "../siteVerification";
@@ -26,6 +26,7 @@ interface ReviewDrawerProps {
   loadingPreview: boolean;
   stagingBusy?: boolean;
   cleanupBusy: boolean;
+  cleanupProgress: CleanupProgress | null;
   cleanupScansActive?: boolean;
   cleanupReport: CleanupReport | null;
   error: string | null;
@@ -63,6 +64,43 @@ interface TrashConfirmation {
   planId: string;
   fileCount: number;
   bytes: number;
+}
+
+function cleanupPhaseLabel(progress: CleanupProgress | null) {
+  return progress?.phase === "moving" ? "Moving verified copies" : "Checking file contents";
+}
+
+function CleanupMoveProgress({ progress }: { progress: CleanupProgress | null }) {
+  const phase = cleanupPhaseLabel(progress);
+  const files = progress && `${formatCount(progress.processed_files)} of ${formatCount(progress.total_files)} ${
+    progress.total_files === 1 ? "copy" : "copies"
+  } ${progress.phase === "verifying" ? "checked" : "processed"}`;
+  const bytes = progress?.phase === "verifying" && progress.bytes_checked !== null && progress.file_size_bytes !== null
+    ? { checked: progress.bytes_checked, total: progress.file_size_bytes }
+    : null;
+  const byteCount = bytes && `${formatBytes(bytes.checked)} of ${formatBytes(bytes.total)}`;
+  return (
+    <div className="atlas-review-progress">
+      <div className="atlas-review-progress-status">
+        <strong>{phase}</strong>
+        {files && <span>{files}</span>}
+      </div>
+      {(progress?.current_file || byteCount) && (
+        <div className="atlas-review-progress-file">
+          {progress?.current_file && (
+            <span className="atlas-review-progress-path" title={progress.current_file}>{fileName(progress.current_file)}</span>
+          )}
+          {byteCount && <span className="atlas-review-progress-bytes">{byteCount}</span>}
+        </div>
+      )}
+      <progress
+        aria-label={bytes ? "Current file verification" : "Cleanup progress"}
+        aria-valuetext={byteCount ?? files ?? phase}
+        max={bytes ? Math.max(1, bytes.total) : progress?.total_files || 1}
+        value={bytes ? (bytes.total === 0 ? 1 : bytes.checked) : progress?.processed_files}
+      />
+    </div>
+  );
 }
 
 interface ReviewFileProps {
@@ -173,6 +211,7 @@ function OpenReviewDrawer({
   loadingPreview,
   stagingBusy,
   cleanupBusy,
+  cleanupProgress,
   cleanupScansActive = false,
   cleanupReport,
   error,
@@ -481,8 +520,9 @@ function OpenReviewDrawer({
               aria-labelledby={confirmationHeadingId} aria-busy={cleanupBusy || undefined}>
               <div>
                 <h3 id={confirmationHeadingId}>Move {formatCount(confirmation.fileCount)} {confirmation.fileCount === 1 ? "copy" : "copies"} to Trash?</h3>
-                <p>{formatBytes(confirmation.bytes)}. The retained copies will stay in place. Restore moved files through the system Trash or Recycle Bin.</p>
+                {!cleanupBusy && <p>{formatBytes(confirmation.bytes)}. The retained copies will stay in place. Restore moved files through the system Trash or Recycle Bin.</p>}
               </div>
+              {cleanupBusy && <CleanupMoveProgress progress={cleanupProgress} />}
               <div className="atlas-review-confirmation-actions">
                 <button ref={cancelMoveButton} type="button" aria-disabled={cleanupBusy || undefined}
                   onClick={() => { if (!cleanupBusy && !moving.current) dismissConfirmation("move"); }}>Cancel</button>
@@ -502,6 +542,7 @@ function OpenReviewDrawer({
                 aria-disabled={busy || !redoSnapshot || undefined} onClick={() => void stepHistory("redo")}>Redo</button>
             </div>
           )}
+          <span className="atlas-scan-announcement" role="status">{cleanupBusy ? cleanupPhaseLabel(cleanupProgress) : ""}</span>
           <span className="atlas-scan-announcement" role="status">{historyAnnouncement}</span>
           <button
             type="button" className={planId ? undefined : "atlas-analysis-primary"} ref={previewButton} hidden={Boolean(confirmation)}
