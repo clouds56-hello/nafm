@@ -611,4 +611,5 @@ export interface FolderSimilarityRequest {
   node_id: string;
   offset: number;
   limit: number;
+  anchor?: Pick<FolderContentSummary, "site_id" | "node_id">;
 }

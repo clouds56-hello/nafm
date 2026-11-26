@@ -332,6 +332,7 @@ export function getFileContentMatches(
   offset: number,
   limit: number,
   expectedWorkspace: string,
+  anchor?: string,
 ): Promise<FileContentMatchesPage> {
   return invoke<FileContentMatchesPage>("get_file_content_matches", {
     siteId,
@@ -339,6 +340,7 @@ export function getFileContentMatches(
     offset,
     limit,
     expectedWorkspace,
+    anchor,
   });
 }
 

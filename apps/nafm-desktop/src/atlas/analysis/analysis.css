@@ -193,6 +193,10 @@
 }
 
 .atlas-analysis-pagination > span { flex: 1 0 auto; }
+.atlas-analysis-pagination > .atlas-analysis-error {
+  flex: 1 0 100%;
+  font-family: var(--atlas-sans, system-ui);
+}
 
 .atlas-comparison-details {
   display: grid;

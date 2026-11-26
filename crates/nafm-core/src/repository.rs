@@ -1944,13 +1944,29 @@ impl Repository {
     offset: u64,
     limit: u64,
   ) -> Result<FileContentMatchesPage> {
+    self
+      .file_content_matches_with_anchor(site_selector, path, offset, limit, None)
+      .await
+  }
+
+  pub async fn file_content_matches_with_anchor(
+    &self,
+    site_selector: &str,
+    path: &Path,
+    offset: u64,
+    limit: u64,
+    anchor_file_id: Option<&str>,
+  ) -> Result<FileContentMatchesPage> {
     let db_path = self.db_path.clone();
     let site_selector = site_selector.to_owned();
     let path = path.to_path_buf();
+    let anchor_file_id = anchor_file_id.map(str::to_owned);
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
-      let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
-      file_content_matches_page(&conn, &site.id, &path, offset, limit)
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &site_selector)?.ok_or_else(|| NafmError::SiteNotFound(site_selector))?;
+        file_content_matches_page(&conn, &site.id, &path, offset, limit, anchor_file_id.as_deref())
+      })
     })
     .await?
   }
@@ -1998,13 +2014,27 @@ impl Repository {
     offset: u64,
     limit: u64,
   ) -> Result<crate::FolderSimilarityPage> {
+    self
+      .folder_similarity_with_anchor(site_id, node_id, offset, limit, None)
+      .await
+  }
+
+  pub async fn folder_similarity_with_anchor(
+    &self,
+    site_id: &str,
+    node_id: &str,
+    offset: u64,
+    limit: u64,
+    anchor: Option<&crate::FolderSimilarityAnchor>,
+  ) -> Result<crate::FolderSimilarityPage> {
     let db_path = self.db_path.clone();
     let site_id = site_id.to_owned();
     let node_id = node_id.to_owned();
+    let anchor = anchor.cloned();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
       with_deferred_transaction(&conn, || {
-        folder_similarity::search(&conn, &site_id, &node_id, offset, limit)
+        folder_similarity::search(&conn, &site_id, &node_id, offset, limit, anchor.as_ref())
       })
     })
     .await?
@@ -3450,6 +3480,7 @@ fn file_content_matches_page(
   path: &Path,
   offset: u64,
   limit: u64,
+  anchor_file_id: Option<&str>,
 ) -> Result<FileContentMatchesPage> {
   let limit = limit.clamp(1, MAX_FILE_CONTENT_MATCHES_PAGE_SIZE);
   let selected_site_ready = site_has_completed_scan(conn, source_site_id)?;
@@ -3518,39 +3549,69 @@ fn file_content_matches_page(
     });
   }
 
-  let total_matches = conn.query_row(
-    "select count(*)
-     from file_records file
+  const VERIFIED_MATCHES: &str = "from file_records file
+     join sites site on site.id = file.site_id
+     join site_folders folder on folder.id = file.site_folder_id
      join site_scan_state state on state.site_id = file.site_id
      where file.hash_algorithm = ?1 and file.content_hash = ?2 and file.size_bytes = ?3
        and file.hash_revision = file.inventory_revision
        and state.inventory_completed_at is not null
        and state.hash_completed_at is not null
-       and state.inventory_revision = file.inventory_revision",
-    params![hash_algorithm, content_hash, selected_match.size_bytes],
-    |row| row.get::<_, u64>(0),
-  )?;
+       and state.inventory_revision = file.inventory_revision";
+  const MATCH_ORDER: &str =
+    "case when file.id = ?4 then 0 when file.site_id = ?5 then 1 else 2 end, site.name, file.path, file.id";
+  let anchor_key: Option<(u32, String, String, String)> = match anchor_file_id {
+    Some(anchor) => conn
+      .query_row(
+        &format!("select {MATCH_ORDER} {VERIFIED_MATCHES} and file.id = ?6"),
+        params![
+          hash_algorithm,
+          content_hash,
+          selected_match.size_bytes,
+          selected_match.file_id,
+          source_site_id,
+          anchor
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+      )
+      .optional()?,
+    None => None,
+  };
+  let (total_matches, offset) = match anchor_key {
+    Some((group_rank, site_name, path, file_id)) => {
+      let (total, index) = conn.query_row(
+        &format!("select count(*), count(case when ({MATCH_ORDER}) < (?6, ?7, ?8, ?9) then 1 end) {VERIFIED_MATCHES}"),
+        params![
+          hash_algorithm,
+          content_hash,
+          selected_match.size_bytes,
+          selected_match.file_id,
+          source_site_id,
+          group_rank,
+          site_name,
+          path,
+          file_id
+        ],
+        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+      )?;
+      (total, index / limit * limit)
+    }
+    None => (
+      conn.query_row(
+        &format!("select count(*) {VERIFIED_MATCHES}"),
+        params![hash_algorithm, content_hash, selected_match.size_bytes],
+        |row| row.get::<_, u64>(0),
+      )?,
+      offset,
+    ),
+  };
   let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
-  let mut stmt = conn.prepare(
+  let mut stmt = conn.prepare(&format!(
     "select file.id, file.site_id, site.name, file.site_folder_id, folder.kind, file.path, file.size_bytes
-     from file_records file
-     join sites site on site.id = file.site_id
-     join site_folders folder on folder.id = file.site_folder_id
-     join site_scan_state state on state.site_id = file.site_id
-     where file.hash_algorithm = ?1
-       and file.content_hash = ?2
-       and file.size_bytes = ?3
-       and file.hash_revision = file.inventory_revision
-       and state.inventory_completed_at is not null
-       and state.hash_completed_at is not null
-       and state.inventory_revision = file.inventory_revision
-     order by
-       case when file.id = ?4 then 0 when file.site_id = ?5 then 1 else 2 end,
-       site.name,
-       file.path,
-       file.id
-     limit ?6 offset ?7",
-  )?;
+     {VERIFIED_MATCHES}
+     order by {MATCH_ORDER}
+     limit ?6 offset ?7"
+  ))?;
   let matches = stmt
     .query_map(
       params![

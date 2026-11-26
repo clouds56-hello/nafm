@@ -127,6 +127,31 @@ test("Atlas history keeps the source and matching folder’s inspector tabs inde
   await expect(folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true })).toBeVisible();
 });
 
+test("switching folders shows the match and both coverage directions on a short screen", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  const dialog = await openComparison(page, {
+    url: "/mock/?scenario=partial", folders: ["Projects"], path: "/demo/Studio Archive/Projects",
+  });
+  const picker = dialog.getByRole("combobox", { name: "Compare with", exact: true });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const source = dialog.getByRole("region", { name: "Selected folder", exact: true });
+  const matchCoverage = match.getByText("Size also in selected folder", { exact: true }).locator("..");
+  const sourceCoverage = match.getByText("Selected folder size in match", { exact: true }).locator("..");
+
+  await expect(matchCoverage).toContainText("≈100%");
+  await picker.selectOption({ label: "Studio · Team share · ≈55%" });
+  await expect(match.getByRole("heading", { name: "Studio", exact: true })).toBeInViewport({ ratio: 0.99 });
+  await expect(match.getByText("Team share", { exact: true })).toBeInViewport({ ratio: 0.99 });
+  await expect(matchCoverage).toContainText("≈80%");
+  await expect(sourceCoverage).toContainText("≈64%");
+  for (const evidence of [matchCoverage, sourceCoverage]) {
+    await expect(evidence).toBeInViewport({ ratio: 0.99 });
+  }
+  await expect(dialog.getByRole("img", { name: "Full coverage" })).toHaveCount(0);
+  expect((await match.boundingBox())!.y).toBeLessThan((await source.boundingBox())!.y);
+  expect(await dialog.locator(".atlas-analysis-body").evaluate((body) => body.scrollTop)).toBe(0);
+});
+
 test("the compact comparison restores the chosen folder and scroll position after inspection", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 580 });
   const dialog = await openComparison(page);
@@ -456,6 +481,96 @@ test("a compact folder jump keeps its match when an index refresh removes it fro
   await expect(show).toBeEnabled();
 });
 
+test("Back to comparison follows the matching folder onto its new page after a scan", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 680 });
+  await inspectSource(page, { ...defaultSource, url: "/mock/?scenario=large" });
+  const reads = await page.evaluateHandle((mirrorPath) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { request?: FolderSimilarityRequest }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    type Anchor = NonNullable<FolderSimilarityRequest["anchor"]>;
+    const state = { selected: null as Anchor | null, calls: [] as Array<{ offset: number; anchor: Anchor | null; delivered: number }> };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "find_similar_folders" && args.request) {
+        const page = response as FolderSimilarityPage;
+        const selected = page.matches.find(({ folder }) => folder.path === mirrorPath)?.folder;
+        if (selected && !state.selected) state.selected = { site_id: selected.site_id, node_id: selected.node_id };
+        state.calls.push({ offset: args.request.offset, anchor: args.request.anchor ?? null, delivered: page.offset });
+      }
+      return response;
+    };
+    return state;
+  }, mirrorPath);
+
+  await similarFoldersButton(page).press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Similar folders", exact: true });
+  const mirror = dialog.getByRole("button", { description: mirrorPath });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  await expect(mirror).toHaveAttribute("aria-pressed", "true");
+  const selected = await reads.evaluate((state) => state.selected);
+  expect(selected).toBeTruthy();
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Campaign mirror");
+  await expect(folderDetails(page)).toContainText(mirrorPath);
+
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  await page.evaluate(async () => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    for (let number = 1; number <= 11; number += 1) {
+      await bridge.invoke("add_site_folder", {
+        siteId: "team-share", workspaceName: "Studio workspace",
+        path: `smb://media.example.test/Studio/Archive ${String(number).padStart(2, "0")}`,
+      });
+    }
+  });
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const scan = sites.getByRole("button", { name: "Scan Team share", exact: true });
+  await scan.press("Enter");
+  await expect(sites.getByRole("button", { name: "Stop scan of Team share", exact: true })).toBeEnabled();
+  await page.clock.runFor(6_200);
+  await expect(scan).toBeEnabled();
+
+  await folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  const pages = dialog.getByRole("group", { name: "Result pages", exact: true });
+  await expect(pages).toContainText("11–20 of 25");
+  await expect(mirror).toHaveAttribute("aria-pressed", "true");
+  await expect(match).toContainText(mirrorPath);
+  await expect(show).toBeEnabled();
+  await expect(show).toBeFocused();
+  expect(await reads.evaluate((state) => state.calls)).toEqual([
+    { offset: 0, anchor: null, delivered: 0 },
+    { offset: 0, anchor: selected, delivered: 10 },
+  ]);
+
+  const refresh = dialog.getByRole("button", { name: "Refresh results", exact: true });
+  await refresh.press("Enter");
+  await page.clock.runFor(20);
+  await expect(refresh).toBeEnabled();
+  await expect(mirror).toHaveAttribute("aria-pressed", "true");
+  await pages.getByRole("button", { name: "Previous", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  await expect(pages).toContainText("1–10 of 25");
+  await pages.getByRole("button", { name: "Next", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  await expect(pages).toContainText("11–20 of 25");
+  await expect(mirror).toHaveAttribute("aria-pressed", "false");
+  await expect(match).toContainText("smb://media.example.test/Studio/Archive%2011/Campaign mirror");
+  expect(await reads.evaluate((state) => state.calls.slice(2))).toEqual([
+    { offset: 10, anchor: selected, delivered: 10 },
+    { offset: 0, anchor: null, delivered: 0 },
+    { offset: 10, anchor: null, delivered: 10 },
+  ]);
+});
+
 test("refreshing and reopening a comparison keep the same result page", async ({ page }) => {
   await inspectSource(page);
   const comparisonReads = await page.evaluateHandle((paths) => {
@@ -545,6 +660,63 @@ test("retrying a failed folder comparison refresh preserves focus and the select
   await expect(backup).toHaveAttribute("aria-pressed", "true");
 });
 
+test("a failed Similar folders page keeps Retry within reach of the focused paginator", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 380 });
+  await inspectSource(page);
+  const reads = await page.evaluateHandle((paths) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { request?: FolderSimilarityRequest }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const offsets: number[] = [];
+    let failed = false;
+    bridge.invoke = async (command, args) => {
+      if (command !== "find_similar_folders" || !args.request) return invoke(command, args);
+      const offset = args.request.offset;
+      offsets.push(offset);
+      const result = await invoke(command, { request: { ...args.request, offset: 0 } }) as FolderSimilarityPage;
+      if (offset === 1 && !failed) {
+        failed = true;
+        throw new Error("Could not read the next folder page.");
+      }
+      // Paginate the real matches so the retried folder remains openable in Atlas.
+      const matches = result.matches.filter(({ folder }) => paths.includes(folder.path));
+      return { ...result, offset, limit: 1, total_matches: matches.length, matches: matches.slice(offset, offset + 1) };
+    };
+    return offsets;
+  }, [mirrorPath, backupPath]);
+
+  await similarFoldersButton(page).press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Similar folders", exact: true });
+  const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+  const pages = dialog.getByRole("group", { name: "Result pages", exact: true });
+  const next = pages.getByRole("button", { name: "Next", exact: true });
+  const previous = pages.getByRole("button", { name: "Previous", exact: true });
+  const alert = pages.getByRole("alert").filter({ hasText: "Could not read the next folder page." });
+  const retry = alert.getByRole("button", { name: "Retry", exact: true });
+  await expect(match).toContainText(mirrorPath);
+  await next.press("Enter");
+  await expect(retry).toBeFocused();
+  await expect(retry).toBeInViewport({ ratio: 0.99 });
+  await expect(match).toContainText(mirrorPath);
+  await page.keyboard.press("Enter");
+  await expect(alert).toBeHidden();
+  await expect(match).toContainText(backupPath);
+  await expect(next).toBeDisabled();
+  await expect(previous).toBeFocused();
+  await expect(previous).toBeInViewport({ ratio: 0.99 });
+
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Backup campaign");
+  await folderDetails(page).getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await expect(match).toContainText(backupPath);
+  await expect(pages).toContainText("2–2 of 2");
+  await expect(show).toBeFocused();
+  expect(await reads.jsonValue()).toEqual([0, 1, 1]);
+});
+
 test("a failed folder jump keeps the chosen comparison open for retry", async ({ page }) => {
   const dialog = await openComparison(page);
   await page.evaluate((message) => {
@@ -574,41 +746,59 @@ test("a failed folder jump keeps the chosen comparison open for retry", async ({
   await expect(folderDetails(page)).toContainText(mirrorPath);
 });
 
-test("closing Similar folders cancels an in-flight navigation", async ({ page }) => {
-  const dialog = await openComparison(page);
-  const request = await page.evaluateHandle(() => {
-    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
-    };
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const read = { pending: false, replied: false, release };
-    const invoke = bridge.invoke.bind(bridge);
-    bridge.invoke = async (command, args) => {
-      const response = await invoke(command, args);
-      if (command === "get_storage_view_snapshot" && args.nodeId?.endsWith("/Campaign mirror")) {
-        read.pending = true;
-        await gate;
-        read.replied = true;
-      }
-      return response;
-    };
-    return read;
-  });
+for (const action of ["Escape", "Cancel opening"] as const) {
+  const name = action === "Escape" ? "closing Similar folders cancels an in-flight navigation"
+    : "cancelling a folder opening keeps the selected comparison";
+  test(name, async ({ page }) => {
+    const dialog = await openComparison(page);
+    const request = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: { nodeId?: string }) => Promise<unknown> };
+      };
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = { pending: false, replied: false, release };
+      const invoke = bridge.invoke.bind(bridge);
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_view_snapshot" && args.nodeId?.endsWith("/Campaign mirror")) {
+          read.pending = true;
+          await gate;
+          read.replied = true;
+        }
+        return response;
+      };
+      return read;
+    });
 
-  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).click();
-  try {
-    await expect.poll(() => request.evaluate((read) => read.pending)).toBe(true);
-    await expect(dialog).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(dialog).toBeHidden();
-  } finally {
-    await request.evaluate((read) => read.release());
-  }
-  await expect.poll(() => request.evaluate((read) => read.replied)).toBe(true);
-  await expect(currentFolder(page)).toHaveText("Brand campaign");
-  await expect(folderDetails(page)).toContainText(sourcePath);
-  await expect(similarFoldersButton(page)).toBeFocused();
-  await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
-  await expect(currentFolder(page)).toHaveText("Projects");
-});
+    const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+    const match = dialog.getByRole("region", { name: "Matching folder", exact: true });
+    try {
+      await show.press("Enter");
+      await expect.poll(() => request.evaluate((read) => read.pending)).toBe(true);
+      if (action === "Escape") {
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+      } else {
+        const cancel = dialog.getByRole("button", { name: action, exact: true });
+        await expect(cancel).toBeInViewport();
+        await cancel.press("Enter");
+        await expect(show).toBeEnabled();
+        await expect(show).toBeFocused();
+        await expect(match.getByRole("heading")).toHaveText("Campaign mirror");
+      }
+    } finally {
+      await request.evaluate((read) => read.release());
+    }
+    await expect.poll(() => request.evaluate((read) => read.replied)).toBe(true);
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(folderDetails(page)).toContainText(sourcePath);
+    if (action === "Cancel opening") {
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+    await expect(similarFoldersButton(page)).toBeFocused();
+    await folderPath(page).getByRole("button", { name: "Previous location", exact: true }).click();
+    await expect(currentFolder(page)).toHaveText("Projects");
+  });
+}

@@ -171,6 +171,12 @@ pub struct FolderSimilarityPage {
   pub generated_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct FolderSimilarityAnchor {
+  pub site_id: String,
+  pub node_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectorySortField {

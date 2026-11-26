@@ -17,6 +17,7 @@
 .atlas-folder-overlap h3 { margin: 0; font-size: 13px; font-weight: 650; }
 .atlas-folder-overlap p { font-size: 11px; }
 .atlas-folder-coverage { display: grid; gap: 4px; min-width: 0; margin-block-start: 4px; }
+.atlas-folder-coverage[data-compact-only] { display: none; }
 
 .atlas-folder-coverage > div:first-child {
   display: flex;
@@ -40,3 +41,10 @@
 .atlas-folder-coverage-track > span { display: block; height: 100%; border-radius: inherit; background: var(--atlas-accent); }
 .atlas-folder-breakdown dd { font-size: 12px; }
 .atlas-folder-refresh { margin-inline-start: auto; }
+
+@media (max-width: 540px) {
+  .atlas-folder-comparison .atlas-analysis-entity { grid-template-rows: none; }
+  .atlas-folder-comparison[data-comparing] .atlas-analysis-entity:not([data-match]) > .atlas-folder-coverage { display: none; }
+  .atlas-folder-coverage[data-compact-only] { display: grid; }
+  .atlas-folder-comparison [data-match] > :is(code, .atlas-folder-evidence) { order: 1; }
+}

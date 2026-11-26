@@ -1,6 +1,25 @@
-import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefCallback, type RefObject } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, type ReactNode, type RefCallback, type RefObject } from "react";
 import { OpenInIcon } from "../../management/Icons";
 import "./analysis-comparison.css";
+
+export function comparisonFolderLabel(path: string, alternatives: readonly string[], includesFile = false) {
+  function folders(value: string) {
+    if (/^smb:\/\//i.test(value)) {
+      try { value = decodeURI(value); } catch { /* Keep the indexed spelling of malformed escapes. */ }
+    } else if (!value.startsWith("/")) {
+      value = value.replaceAll("\\", "/");
+    }
+    const parts = value.split("/").filter(Boolean);
+    return includesFile ? parts.slice(0, -1) : parts;
+  }
+  const parts = folders(path);
+  const others = alternatives.filter((other) => other !== path).map(folders);
+  for (let depth = 1; depth < parts.length; depth++) {
+    const label = parts.slice(-depth).join("/");
+    if (!others.some((peer) => peer.slice(-depth).join("/") === label)) return label;
+  }
+  return parts.join("/") || (path.startsWith("/") ? "/" : "");
+}
 
 interface AnalysisLocationProps {
   label: string;
@@ -8,13 +27,14 @@ interface AnalysisLocationProps {
   site: string;
   path?: string | null;
   detail?: ReactNode;
+  match?: boolean;
   unavailable?: boolean;
   children?: ReactNode;
 }
 
-export function AnalysisLocation({ label, name, site, path, detail, unavailable, children }: AnalysisLocationProps) {
+export function AnalysisLocation({ label, name, site, path, detail, match, unavailable, children }: AnalysisLocationProps) {
   return (
-    <section className="atlas-analysis-entity" aria-label={label} data-unavailable={unavailable || undefined}>
+    <section className="atlas-analysis-entity" aria-label={label} data-match={match || undefined} data-unavailable={unavailable || undefined}>
       <p>{label}</p>
       <h3>{name}</h3>
       <div className="atlas-analysis-entity-meta">
@@ -32,21 +52,26 @@ interface ComparisonPickerProps<Match> {
   selected?: Match;
   unavailable?: Match;
   busy: boolean;
+  summary?: string;
   identify: (match: Match) => string;
   label: (match: Match, unavailable?: boolean) => string;
   onChoose: (match: Match) => void;
   focusRef: RefCallback<HTMLSelectElement>;
 }
 
-export function ComparisonPicker<Match>({ matches, selected, unavailable, busy, identify, label, onChoose, focusRef }: ComparisonPickerProps<Match>) {
+export function ComparisonPicker<Match>({ matches, selected, unavailable, busy, summary, identify, label, onChoose, focusRef }: ComparisonPickerProps<Match>) {
+  const labelId = useId();
   const displayed = selected ?? unavailable;
   if (!displayed) return null;
   const disabled = busy || matches.length === 0;
   return (
     <label className="atlas-comparison-picker">
-      Compare with
+      <span className="atlas-comparison-picker-heading">
+        <span className="atlas-comparison-picker-label" id={labelId}>Compare with</span>
+        {summary && <small role="status">{summary}</small>}
+      </span>
       <select
-        ref={focusRef} data-comparison-choice aria-disabled={disabled || undefined} value={identify(displayed)}
+        ref={focusRef} data-comparison-choice aria-labelledby={labelId} aria-disabled={disabled || undefined} value={identify(displayed)}
         onPointerDown={disabled ? (event) => event.preventDefault() : undefined}
         onKeyDown={disabled ? (event) => { if (event.key !== "Tab" && event.key !== "Escape") event.preventDefault(); } : undefined}
         onChange={disabled ? undefined : (event) => {
@@ -67,12 +92,15 @@ interface AnalysisNavigationFooterProps {
   disabled: boolean;
   pendingLabel: string;
   onShow?: () => void;
+  onCancel: () => void;
   buttonRef: RefObject<HTMLButtonElement | null>;
   showWhenUnavailable?: boolean;
   describedBy?: string;
 }
 
-export function AnalysisNavigationFooter({ error, opening, disabled, pendingLabel, onShow, buttonRef, showWhenUnavailable, describedBy }: AnalysisNavigationFooterProps) {
+export function AnalysisNavigationFooter({
+  error, opening, disabled, pendingLabel, onShow, onCancel, buttonRef, showWhenUnavailable, describedBy,
+}: AnalysisNavigationFooterProps) {
   const canShow = Boolean(onShow) && !disabled && !opening;
   return (
     <>
@@ -87,6 +115,12 @@ export function AnalysisNavigationFooter({ error, opening, disabled, pendingLabe
         >
           {opening ? pendingLabel : "Show in Atlas"} <OpenInIcon />
         </button>
+      )}
+      {opening && (
+        <button className="atlas-analysis-cancel-opening" type="button" onClick={() => {
+          onCancel();
+          buttonRef.current?.focus({ preventScroll: true });
+        }}>Cancel opening</button>
       )}
     </>
   );

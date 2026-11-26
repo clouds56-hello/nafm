@@ -1,4 +1,6 @@
-use nafm_core::{AddSiteFolderRequest, FolderSimilarityPage, HiddenPolicy, Repository, RepositoryOptions};
+use nafm_core::{
+  AddSiteFolderRequest, FolderSimilarityAnchor, FolderSimilarityPage, HiddenPolicy, Repository, RepositoryOptions,
+};
 use rusqlite::params;
 use std::{fs, path::PathBuf};
 
@@ -161,6 +163,45 @@ async fn pagination_is_bounded_stable_and_rejects_file_nodes() {
   assert_eq!(first.total_matches, 3);
   assert_eq!(first.matches[0].folder.node_id, all.matches[0].folder.node_id);
   assert_eq!(second.matches[0].folder.node_id, all.matches[1].folder.node_id);
+
+  let intended = &second.matches[0].folder;
+  let anchor = FolderSimilarityAnchor {
+    site_id: intended.site_id.clone(),
+    node_id: intended.node_id.clone(),
+  };
+  let anchored = fixture
+    .repo
+    .folder_similarity_with_anchor(&source.0, &source.1, 0, 1, Some(&anchor))
+    .await
+    .unwrap();
+  assert_eq!(
+    (anchored.offset, &anchored.matches[0].folder.node_id),
+    (1, &intended.node_id)
+  );
+
+  fs::write(intended.path.join("unique"), b"unmatched contents").unwrap();
+  fixture.repo.scan_site(&intended.site_id).await.unwrap();
+  let moved = fixture
+    .repo
+    .folder_similarity_with_anchor(&source.0, &source.1, 1, 1, Some(&anchor))
+    .await
+    .unwrap();
+  assert_eq!((moved.offset, &moved.matches[0].folder.node_id), (2, &intended.node_id));
+
+  let wrong_site = FolderSimilarityAnchor {
+    site_id: source.0.clone(),
+    ..anchor
+  };
+  let missing = fixture
+    .repo
+    .folder_similarity_with_anchor(&source.0, &source.1, 0, 1, Some(&wrong_site))
+    .await
+    .unwrap();
+  assert_eq!(
+    (missing.offset, &missing.matches[0].folder.node_id),
+    (0, &first.matches[0].folder.node_id)
+  );
+
   let beyond = fixture
     .repo
     .folder_similarity(&source.0, &source.1, u64::MAX, u64::MAX)

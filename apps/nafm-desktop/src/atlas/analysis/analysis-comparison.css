@@ -17,7 +17,7 @@
   background: #181a29;
 }
 
-.atlas-analysis-entity + .atlas-analysis-entity { border-color: #4d527a; background: #20233a; }
+.atlas-analysis-entity[data-match] { border-color: #4d527a; background: #20233a; }
 .atlas-analysis-entity[data-unavailable] { border-color: var(--atlas-border); border-style: dashed; background: #181a29; }
 .atlas-analysis-entity h3 { margin: 0; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
 .atlas-analysis-entity > p { color: var(--atlas-accent); font-size: 11px; }
@@ -62,11 +62,15 @@
 }
 
 .atlas-analysis-reveal-button[aria-disabled="true"] { opacity: .65; }
+.atlas-analysis-cancel-opening { flex: none; }
 .atlas-analysis-reveal-error { margin: 0; color: #f3b2ba; line-height: 1.4; overflow-wrap: anywhere; }
-.atlas-comparison-picker { display: none; }
+.atlas-comparison-picker, .atlas-comparison-picker-heading { display: contents; }
+.atlas-comparison-picker-label, .atlas-comparison-picker select { display: none; }
+.atlas-comparison-picker-heading small { font-size: 13px; }
 
 @media (max-width: 540px) {
   .atlas-analysis-comparison[data-comparing] { grid-template-columns: minmax(0, 1fr); }
+  .atlas-analysis-comparison[data-comparing] > [data-match] { order: -1; }
   .atlas-analysis-reveal-error { flex: 1 0 100%; }
   .atlas-analysis-footer:has(.atlas-analysis-reveal-button) { flex-wrap: wrap; gap: 7px; }
   .atlas-analysis-choices { display: none; }
@@ -79,6 +83,9 @@
     color: var(--atlas-muted);
     font-size: 12px;
   }
+  .atlas-comparison-picker-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .atlas-comparison-picker-heading small { font: 11px/1.3 var(--atlas-mono); }
+  .atlas-comparison-picker-label, .atlas-comparison-picker select { display: block; }
   .atlas-comparison-picker select {
     appearance: none;
     width: 100%;
@@ -107,5 +114,5 @@
 }
 
 @media (pointer: coarse) {
-  .atlas-analysis-dialog button.atlas-analysis-reveal-button { min-height: 44px; }
+  .atlas-analysis-dialog :is(.atlas-analysis-reveal-button, .atlas-analysis-cancel-opening) { min-height: 44px; }
 }

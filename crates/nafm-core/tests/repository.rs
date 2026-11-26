@@ -186,6 +186,40 @@ async fn file_content_matches_orders_same_site_first_and_pages_six_at_a_time() {
     "same-site matches should be path ordered before alphabetically earlier sites"
   );
   assert!(second_page.matches.iter().all(|item| !item.is_current));
+
+  let anchor_id = &second_page.matches.last().unwrap().file_id;
+  let anchored = fixture
+    .repo
+    .file_content_matches_with_anchor(&source_site.id, &selected_path, 0, 6, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!(anchored.offset, second_page.offset);
+  assert!(
+    anchored
+      .matches
+      .iter()
+      .map(|item| &item.file_id)
+      .eq(second_page.matches.iter().map(|item| &item.file_id))
+  );
+
+  for index in 7..11 {
+    fs::write(source_root.join(format!("copy-{index}.bin")), b"shared-content").unwrap();
+  }
+  fixture.repo.scan_site(&source_site.id).await.unwrap();
+  let moved = fixture
+    .repo
+    .file_content_matches_with_anchor(&source_site.id, &selected_path, 6, 6, Some(anchor_id))
+    .await
+    .unwrap();
+  assert_eq!((moved.offset, moved.total_matches), (12, 14));
+  assert_eq!(moved.matches.last().map(|item| &item.file_id), Some(anchor_id));
+
+  let missing = fixture
+    .repo
+    .file_content_matches_with_anchor(&source_site.id, &selected_path, 6, 6, Some("missing-copy"))
+    .await
+    .unwrap();
+  assert_eq!((missing.offset, missing.matches.len()), (6, 6));
 }
 
 #[tokio::test]

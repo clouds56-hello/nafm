@@ -16,13 +16,13 @@ pub use installer::AgentInstallation;
 pub use model::{
   AddSiteFolderRequest, AdjacentFileDirection, AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort,
   DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus, FileContentMatchesPage,
-  FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage, HiddenPolicy, IndexedFileMatch,
-  IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase, ScanProgress,
-  ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview, SortDirection,
-  StageAddReport, StageCommitDryRun, StageHistoryDirection, StageHistoryReport, StageHistoryRequest, StageHistoryState,
-  StageRemoveReport, StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning, StageWarningReason,
-  StorageChildrenPage, StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode,
-  StorageNodeKind, StorageTree, StorageViewSnapshot,
+  FolderContentSummary, FolderSimilarityAnchor, FolderSimilarityMatch, FolderSimilarityPage, HiddenPolicy,
+  IndexedFileMatch, IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
+  ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,
+  SortDirection, StageAddReport, StageCommitDryRun, StageHistoryDirection, StageHistoryReport, StageHistoryRequest,
+  StageHistoryState, StageRemoveReport, StageResetReport, StageReviewGroup, StageVerificationBlocker, StageWarning,
+  StageWarningReason, StorageChildrenPage, StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal,
+  StorageLocation, StorageNode, StorageNodeKind, StorageTree, StorageViewSnapshot,
 };
 pub use onboarding::{CheckStatus, MappingPreview, PathCompletion, PreflightReport, SetupCheck};
 pub use remote::{REMOTE_AGENT_PROTOCOL_VERSION, RemoteAgentRequest, RemoteAgentResponse, RemoteFileMetadata};

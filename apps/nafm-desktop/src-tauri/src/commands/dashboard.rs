@@ -404,11 +404,12 @@ pub async fn get_file_content_matches(
   path: PathBuf,
   offset: u64,
   limit: u64,
+  anchor: Option<String>,
 ) -> Result<FileContentMatchesPage, String> {
   state
     .repository_for(&expected_workspace)
     .await?
-    .file_content_matches(&site_id, &path, offset, limit)
+    .file_content_matches_with_anchor(&site_id, &path, offset, limit, anchor.as_deref())
     .await
     .map_err(|error| error.to_string())
 }

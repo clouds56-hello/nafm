@@ -1,11 +1,11 @@
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import { getFileContentMatches } from "../../lib/tauri";
 import type { FileContentMatch, FileContentMatchesPage } from "../../lib/types";
 import { CheckIcon } from "../../management/Icons";
 import type { ScanSite, SiteVerification } from "../siteVerification";
 import { VerificationScanButton } from "../VerificationScanButton";
-import { AnalysisLocation, AnalysisNavigationFooter, ComparisonPicker, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
+import { AnalysisLocation, AnalysisNavigationFooter, ComparisonPicker, comparisonFolderLabel, useComparisonScroll, useRemovedComparisonFocus } from "./AnalysisComparison";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { AnalysisError, AnalysisPageControls, VerificationNote } from "./AnalysisPageControls";
 import { useAnalysisPage, type AnalysisPosition } from "./useAnalysisPage";
@@ -34,10 +34,6 @@ interface FileCopiesDialogProps {
   onShown: (match: FileContentMatch, position: AnalysisPosition<FileContentMatchesPage>) => void;
 }
 
-function containingFolder(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).at(-2);
-}
-
 function copyId(match: FileContentMatch) {
   return match.file_id;
 }
@@ -48,11 +44,12 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
   const verificationNoteId = useId();
   const availabilityId = useId();
   const [scanError, setScanError] = useState<string | null>(null);
+  const retainedCopyId = useRef(position?.selected_id);
   const load = useCallback(
-    (offset: number) => getFileContentMatches(siteId, path, offset, COPY_PAGE_SIZE, workspaceName),
+    (offset: number) => getFileContentMatches(siteId, path, offset, COPY_PAGE_SIZE, workspaceName, retainedCopyId.current),
     [workspaceName, siteId, path],
   );
-  const { page, pageSequence, loading, error, goTo, retry } = useAnalysisPage(load, contentRevision, position?.page.offset,
+  const { page, pageSequence, loading, error, pageRequest, goTo, retry } = useAnalysisPage(load, contentRevision, position?.page.offset,
     position?.revision === contentRevision ? position.page : undefined);
   const ready = Boolean(page && !loading && !error);
   const { results, showButton, readScroll } = useComparisonScroll(position?.scroll_top, ready);
@@ -67,18 +64,26 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
   const displayed = selected ?? unavailable;
   const showAvailability = Boolean(page && unavailable);
   const copyCount = page?.status === "ready" ? Math.max(0, page.total_matches - 1) : 0;
+  const copySummary = copyCount ? `${formatCount(copyCount)} verified ${copyCount === 1 ? "copy" : "copies"}` : undefined;
   const needsVerification = page && page.status !== "ready";
   const scan = needsVerification ? verification?.action : undefined;
   const scanFailure = needsVerification && verification?.tone !== "active" ? scanError ?? verification?.failure : null;
 
+  useLayoutEffect(() => {
+    if (ready) retainedCopyId.current = displayed?.file_id;
+  }, [displayed, ready]);
+
   function chooseCopy(match: FileContentMatch) {
+    retainedCopyId.current = match.file_id;
     choose(match);
     navigation.clearError();
   }
 
-  function copyLabel(match: FileContentMatch) {
+  function copyFolder(match: FileContentMatch) {
     const name = fileName(match.path);
-    return [containingFolder(match.path), name !== source.name && name, match.site_name].filter(Boolean).join(" · ");
+    const choices = unavailable ? [...matches, unavailable] : matches;
+    const peers = choices.filter((other) => other.site_name === match.site_name && fileName(other.path) === name);
+    return comparisonFolderLabel(match.path, peers.map((other) => other.path), true);
   }
 
   return (
@@ -91,6 +96,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
           <AnalysisNavigationFooter
             error={navigation.error} opening={navigation.opening} disabled={loading || Boolean(error)}
             pendingLabel="Opening copy…" buttonRef={showButton} onShow={selected ? () => void navigation.show(selected) : undefined}
+            onCancel={navigation.cancel}
             showWhenUnavailable={Boolean(unavailable)} describedBy={showAvailability ? availabilityId : undefined}
           />
           {!selected && !navigation.opening && scan && (
@@ -103,12 +109,10 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
     >
       <section className="atlas-analysis-results" ref={results} aria-busy={loading}>
         {page && <ComparisonPicker
-          matches={matches} selected={selected} unavailable={unavailable} busy={busy} identify={copyId}
+          matches={matches} selected={selected} unavailable={unavailable} busy={busy} identify={copyId} summary={copySummary}
           label={(match) => {
-            const label = copyLabel(match);
-            const choices = unavailable ? [...matches, unavailable] : matches;
-            return choices.some((other) => other.file_id !== match.file_id && copyLabel(other) === label)
-              ? `${match.path} · ${match.site_name}` : label;
+            const name = fileName(match.path);
+            return [copyFolder(match), name !== source.name && name, match.site_name].filter(Boolean).join(" · ");
           }}
           onChoose={chooseCopy} focusRef={rememberFocus}
         />}
@@ -116,7 +120,7 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
           <AnalysisLocation label="Selected file" name={source.name} site={source.site} path={source.path} detail={formatBytes(source.size)} />
           {displayed && (
             <AnalysisLocation
-              label="Matching copy" name={fileName(displayed.path)} site={displayed.site_name}
+              match label="Matching copy" name={fileName(displayed.path)} site={displayed.site_name}
               path={displayed.path} detail={selected ? formatBytes(selected.size_bytes) : undefined}
               unavailable={showAvailability}
             >
@@ -127,8 +131,8 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
           )}
         </div>
         {loading && !page && <p role="status">Finding exact copies…</p>}
-        {loading && page && <p role="status">Refreshing exact copies…</p>}
-        {error && <AnalysisError error={error} retry={retry} focusTarget={closeButton} />}
+        {loading && page && !pageRequest && <p role="status">Refreshing exact copies…</p>}
+        {error && !pageRequest && <AnalysisError error={error} retry={retry} focusTarget={closeButton} />}
         {page && (
           <>
             {page.status !== "ready" && (
@@ -137,19 +141,15 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
                 : "Finish verifying this site to see all copies."}</p>
             )}
             {scanFailure && <p className="atlas-analysis-warning" role="alert">{scanFailure}</p>}
-            {page.status === "ready" && (
-              <p role="status">
-                {copyCount > 0
-                  ? `${formatCount(copyCount)} verified ${copyCount === 1 ? "copy" : "copies"}`
-                  : "No other verified copies were found."}
-              </p>
+            {page.status === "ready" && !(displayed && copySummary) && (
+              <p role="status">{copySummary ?? "No other verified copies were found."}</p>
             )}
             <VerificationNote pending={page.workspace_pending_hash_count} incomplete={page.workspace_incomplete_site_count} />
             {matches.length > 0 && (
               <ul className="atlas-analysis-list atlas-analysis-choices" aria-label="Matching files">
                 {matches.map((match) => {
                   const name = fileName(match.path);
-                  const folder = containingFolder(match.path);
+                  const folder = copyFolder(match);
                   return (
                     <li key={match.file_id}>
                       <button
@@ -174,8 +174,9 @@ export function FileCopiesDialog({ workspaceName, siteId, source, contentRevisio
             )}
             {page.total_matches > page.limit && (
               <AnalysisPageControls
-                page={page} loading={busy} pageNumbers focusRef={rememberFocus}
+                page={page} loading={busy} pageNumbers focusRef={rememberFocus} request={pageRequest}
                 goTo={(offset) => {
+                  retainedCopyId.current = undefined;
                   navigation.clearError();
                   goTo(offset);
                 }}

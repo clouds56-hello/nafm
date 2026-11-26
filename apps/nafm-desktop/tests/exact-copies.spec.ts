@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { FileContentMatchesPage } from "../src/lib/types";
 
 const fileName = "Trailer master.mov";
 const sourcePath = "/demo/Studio Archive/Projects/Brand campaign/Trailer master.mov";
@@ -142,6 +143,21 @@ test("compare exact copies in place, then inspect their destination and return",
 test.describe("compact Exact copies", () => {
   test.use({ viewport: { width: 390, height: 580 }, hasTouch: true });
 
+  test("the chosen copy and verified count are readable together on a short screen", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 480 });
+    await inspectOriginalFile(page);
+    const dialog = await openExactCopies(page);
+    const picker = compareWith(dialog);
+    const original = dialog.getByRole("region", { name: "Selected file", exact: true });
+    const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
+    await picker.selectOption({ label: sharedChoice });
+    await expect(picker.locator("..").getByText("2 verified copies", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(match.getByText("Team share", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(match.getByText(sharedPath, { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(original).toContainText(sourcePath);
+    expect((await match.boundingBox())!.y).toBeLessThan((await original.boundingBox())!.y);
+  });
+
   test("each Atlas visit keeps its comparison when choosing copies from the touch picker", async ({ page }) => {
     await inspectOriginalFile(page);
     const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
@@ -270,6 +286,64 @@ test("retrying unavailable exact copies keeps keyboard focus in the dialog", asy
   await expect(dialog.getByRole("button", { name: "Close exact copies" })).toBeFocused();
 });
 
+test("a failed Previous copy page respects newer focus and can be retried in place", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 380 });
+  await inspectOriginalFile(page);
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { offset?: number }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const offsets: number[] = [];
+    const read = { offsets, pending: false, release };
+    bridge.invoke = async (command, args) => {
+      if (command !== "get_file_content_matches") return invoke(command, args);
+      const offset = args.offset ?? 0;
+      offsets.push(offset);
+      const result = await invoke(command, { ...args, offset: 0 }) as FileContentMatchesPage;
+      if (offset === 0 && offsets.length === 3) {
+        read.pending = true;
+        await gate;
+        throw new Error("Could not read the previous copy page.");
+      }
+      const matches = [...result.matches].sort((left, right) => Number(left.is_current) - Number(right.is_current));
+      return { ...result, offset, limit: 1, total_matches: matches.length, matches: matches.slice(offset, offset + 1) };
+    };
+    return read;
+  });
+
+  const dialog = await openExactCopies(page);
+  const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
+  const pages = dialog.getByRole("group", { name: "Result pages", exact: true });
+  const previous = pages.getByRole("button", { name: "Previous", exact: true });
+  const next = pages.getByRole("button", { name: "Next", exact: true });
+  const close = dialog.getByRole("button", { name: "Close exact copies", exact: true });
+  await next.press("Enter");
+  await expect(match).toContainText(sharedPath);
+  try {
+    await previous.press("Enter");
+    await expect.poll(() => reads.evaluate((read) => read.pending)).toBe(true);
+    await close.focus();
+    await expect(close).toBeFocused();
+  } finally {
+    await reads.evaluate((read) => read.release());
+  }
+  const alert = pages.getByRole("alert").filter({ hasText: "Could not read the previous copy page." });
+  await expect(alert).toBeVisible();
+  await expect(close).toBeFocused();
+  await expect(match).toContainText(sharedPath);
+  await previous.focus();
+  await alert.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(match).toContainText(backupPath);
+  await expect(alert).toBeHidden();
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeFocused();
+  await expect(next).toBeInViewport({ ratio: 0.99 });
+  expect(await reads.evaluate((read) => read.offsets)).toEqual([0, 1, 0, 0]);
+});
+
 test("an exact-copy jump that fails keeps the comparison available to retry", async ({ page }) => {
   await inspectOriginalFile(page);
   const dialog = await openExactCopies(page);
@@ -341,6 +415,93 @@ test("Atlas history retains the original filtered Contents visit across an exact
   await expect(currentFolder(page)).toHaveText("Backup campaign");
   await expect(inspector(page)).toContainText(backupPath);
   await expect(inspector(page).getByRole("button", { name: "Back to comparison", exact: true })).toBeVisible();
+});
+
+test("Back to comparison follows a copy onto its new page after a scan", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 680 });
+  await page.goto("/mock/?scenario=large");
+  await inspectOriginalFile(page);
+  const reads = await page.evaluateHandle(({ sourcePath, sharedPath }) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { path?: string; offset?: number; anchor?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const state = { selectedId: "", calls: [] as Array<{ offset: number; anchor: string | null; delivered: number }> };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "get_file_content_matches" && args.path === sourcePath) {
+        const page = response as FileContentMatchesPage;
+        state.selectedId ||= page.matches.find((match) => match.path === sharedPath)?.file_id ?? "";
+        state.calls.push({ offset: args.offset ?? 0, anchor: args.anchor ?? null, delivered: page.offset });
+      }
+      return response;
+    };
+    return state;
+  }, { sourcePath, sharedPath });
+
+  const dialog = await openExactCopies(page);
+  const shared = dialog.getByRole("button", { description: sharedPath });
+  const match = dialog.getByRole("region", { name: "Matching copy", exact: true });
+  const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+  await shared.press("Enter");
+  await expect(shared).toHaveAttribute("aria-pressed", "true");
+  const selectedId = await reads.evaluate((state) => state.selectedId);
+  expect(selectedId).toBeTruthy();
+  await show.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(currentFolder(page)).toHaveText("Campaign mirror");
+  const details = inspector(page).getByRole("region", { name: "Storage details", exact: true });
+  await expect(details).toContainText(sharedPath);
+
+  await page.clock.install({ time: new Date("2025-11-04T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
+  await page.evaluate(async () => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    for (let number = 1; number <= 11; number += 1) {
+      await bridge.invoke("add_site_folder", {
+        siteId: "team-share", workspaceName: "Studio workspace",
+        path: `smb://media.example.test/Studio/Archive ${String(number).padStart(2, "0")}`,
+      });
+    }
+  });
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const scan = sites.getByRole("button", { name: "Scan Team share", exact: true });
+  await scan.press("Enter");
+  await expect(sites.getByRole("button", { name: "Stop scan of Team share", exact: true })).toBeEnabled();
+  await page.clock.runFor(6_200);
+  await expect(scan).toBeEnabled();
+
+  await details.getByRole("button", { name: "Back to comparison", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  await expect(dialog.getByText("Page 2 of 2", { exact: true })).toBeVisible();
+  await expect(shared).toHaveAttribute("aria-pressed", "true");
+  await expect(match).toContainText(sharedPath);
+  await expect(show).toBeEnabled();
+  await expect(show).toBeFocused();
+  expect(await reads.evaluate((state) => state.calls)).toEqual([
+    { offset: 0, anchor: null, delivered: 0 },
+    { offset: 0, anchor: selectedId, delivered: 10 },
+  ]);
+
+  const paging = dialog.getByRole("group", { name: "Result pages", exact: true });
+  await paging.getByRole("button", { name: "Previous", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  await expect(dialog.getByText("Page 1 of 2", { exact: true })).toBeVisible();
+  await expect(match).toContainText(backupPath);
+  await paging.getByRole("button", { name: "Next", exact: true }).press("Enter");
+  await page.clock.runFor(20);
+  await expect(dialog.getByText("Page 2 of 2", { exact: true })).toBeVisible();
+  const archive = "smb://media.example.test/Studio/Archive%2009/Campaign mirror/Trailer master.mov";
+  const archivedCopy = dialog.getByRole("button", { name: /Archive 09.*Campaign mirror/, description: archive });
+  await expect(archivedCopy).toHaveAttribute("aria-pressed", "true");
+  await expect(shared).toHaveAttribute("aria-pressed", "false");
+  expect(await reads.evaluate((state) => state.calls.slice(2))).toEqual([
+    { offset: 0, anchor: null, delivered: 0 },
+    { offset: 10, anchor: null, delivered: 10 },
+  ]);
 });
 
 for (const scanSite of ["Field drive", "Studio archive"]) {
@@ -512,38 +673,62 @@ for (const chooseBackup of [false, true]) {
   });
 }
 
-test("dismissing an exact-copy comparison cancels its pending navigation", async ({ page }) => {
-  await inspectOriginalFile(page);
-  const dialog = await openExactCopies(page);
-  await expect(dialog).toContainText(backupPath);
+for (const action of ["Escape", "Cancel opening"] as const) {
+  const name = action === "Escape" ? "dismissing an exact-copy comparison cancels its pending navigation"
+    : "cancelling an exact-copy opening keeps the comparison and selected copy";
+  test(name, async ({ page }) => {
+    await inspectOriginalFile(page);
+    const dialog = await openExactCopies(page);
+    await expect(dialog).toContainText(backupPath);
 
-  const request = await page.evaluateHandle(() => {
-    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
-    };
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const read = { pending: false, replied: false, release };
-    const invoke = bridge.invoke.bind(bridge);
-    bridge.invoke = async (command, args) => {
-      const response = await invoke(command, args);
-      if (command === "get_storage_file_reveal") {
-        read.pending = true;
-        await gate;
-        read.replied = true;
+    const request = await page.evaluateHandle(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+      };
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = { pending: false, replied: false, release };
+      const invoke = bridge.invoke.bind(bridge);
+      bridge.invoke = async (command, args) => {
+        const response = await invoke(command, args);
+        if (command === "get_storage_file_reveal") {
+          read.pending = true;
+          await gate;
+          read.replied = true;
+        }
+        return response;
+      };
+      return read;
+    });
+
+    const show = dialog.getByRole("button", { name: "Show in Atlas", exact: true });
+    const copy = dialog.getByRole("region", { name: "Matching copy", exact: true });
+    const path = await copy.locator("code").innerText();
+    try {
+      await show.press("Enter");
+      await expect.poll(() => request.evaluate((read) => read.pending)).toBe(true);
+      if (action === "Escape") {
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+      } else {
+        const cancel = dialog.getByRole("button", { name: action, exact: true });
+        await expect(cancel).toBeInViewport();
+        await cancel.press("Enter");
+        await expect(show).toBeEnabled();
+        await expect(show).toBeFocused();
+        await expect(copy.locator("code")).toHaveText(path);
       }
-      return response;
-    };
-    return read;
+    } finally {
+      await request.evaluate((read) => read.release());
+    }
+    await expect.poll(() => request.evaluate((read) => read.replied)).toBe(true);
+    await expect(currentFolder(page)).toHaveText("Brand campaign");
+    await expect(inspector(page)).toContainText(sourcePath);
+    if (action === "Cancel opening") {
+      await expect(dialog).toBeVisible();
+      await show.press("Enter");
+      await expect(dialog).toBeHidden();
+      await expect(inspector(page)).toContainText(path);
+    }
   });
-
-  await dialog.getByRole("button", { name: "Show in Atlas", exact: true }).click();
-  await expect.poll(() => request.evaluate((read) => read.pending)).toBe(true);
-  await expect(dialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await request.evaluate((read) => read.release());
-  await expect.poll(() => request.evaluate((read) => read.replied)).toBe(true);
-  await expect(currentFolder(page)).toHaveText("Brand campaign");
-  await expect(inspector(page)).toContainText(sourcePath);
-});
+}

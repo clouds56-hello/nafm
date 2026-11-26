@@ -1,5 +1,5 @@
 use super::*;
-use crate::{FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage};
+use crate::{FolderContentSummary, FolderSimilarityAnchor, FolderSimilarityMatch, FolderSimilarityPage};
 use std::time::Instant;
 
 struct Bucket {
@@ -51,6 +51,7 @@ pub(super) fn search(
   node_id: &str,
   offset: u64,
   limit: u64,
+  anchor: Option<&FolderSimilarityAnchor>,
 ) -> Result<FolderSimilarityPage> {
   let started = Instant::now();
   let mut memberships = 0;
@@ -164,6 +165,13 @@ pub(super) fn search(
   });
   let total_matches = matches.len() as u64;
   let limit = limit.clamp(1, 50);
+  let offset = anchor
+    .and_then(|anchor| {
+      matches
+        .iter()
+        .position(|item| item.folder.site_id == anchor.site_id && item.folder.node_id == anchor.node_id)
+    })
+    .map_or(offset, |index| index as u64 / limit * limit);
   Ok(FolderSimilarityPage {
     source: source.summary.clone(),
     matches: matches

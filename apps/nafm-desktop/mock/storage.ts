@@ -446,14 +446,19 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     checkWorkspace(workspace, args.expectedWorkspace);
     const siteId = stringArg(args.siteId, "source ID");
     const path = stringArg(args.path, "file path");
-    const { offset, limit } = paging(args);
+    const { offset: requestedOffset, limit } = paging(args);
+    const anchor = args.anchor == null ? undefined : stringArg(args.anchor, "copy ID");
     const files = indexedFiles(workspace);
     const file = files.find((entry) => entry.site_id === siteId && entry.path === path);
     if (!file) throw new Error("The preview file is no longer tracked.");
     const status = !file.verified ? "not_hashed" : getSite(workspace, siteId).hash_status === "ready" ? "ready" : "needs_verification";
     const group = status === "ready" ? byContent(readyFiles(workspace, files)).get(file.content) ?? [] : [file];
     const rank = (entry: IndexedFile) => entry.file_id === file.file_id ? 0 : entry.site_id === siteId ? 1 : 2;
-    const ordered = [...group].sort((a, b) => rank(a) - rank(b) || compareText(a.path, b.path));
+    const ordered = [...group].sort((a, b) => rank(a) - rank(b)
+      || compareText(getSite(workspace, a.site_id).name, getSite(workspace, b.site_id).name)
+      || compareText(a.path, b.path) || compareText(a.file_id, b.file_id));
+    const anchorIndex = status === "ready" && anchor ? ordered.findIndex((entry) => entry.file_id === anchor) : -1;
+    const offset = anchorIndex >= 0 ? Math.floor(anchorIndex / limit) * limit : requestedOffset;
     return {
       status, ...verification(workspace), offset, limit,
       total_matches: ordered.length,
@@ -469,7 +474,10 @@ export function createStorageApi(current: () => PreviewWorkspace) {
     checkWorkspace(workspace, args.workspace_name);
     const siteId = stringArg(args.site_id, "source ID");
     const { node: source } = nodePath(getTree(workspace, siteId), { nodeId: args.node_id });
-    const { offset, limit } = paging(args);
+    const { offset: requestedOffset, limit } = paging(args);
+    const anchor = args.anchor == null ? null : record(args.anchor);
+    const anchorSiteId = anchor ? stringArg(anchor.site_id, "matching site ID") : undefined;
+    const anchorNodeId = anchor ? stringArg(anchor.node_id, "matching folder ID") : undefined;
     const allFiles = indexedFiles(workspace);
 
     function summarize(site: SiteOverview, node: StorageNode) {
@@ -513,6 +521,8 @@ export function createStorageApi(current: () => PreviewWorkspace) {
 
     for (const site of workspace.sites.values()) visit(site, getTree(workspace, site.id));
     matches.sort((a, b) => b.similarity - a.similarity || compareText(a.folder.path, b.folder.path));
+    const anchorIndex = anchor ? matches.findIndex(({ folder }) => folder.site_id === anchorSiteId && folder.node_id === anchorNodeId) : -1;
+    const offset = anchorIndex >= 0 ? Math.floor(anchorIndex / limit) * limit : requestedOffset;
     return {
       source: original.summary, matches: matches.slice(offset, offset + limit), total_matches: matches.length,
       offset, limit, ...verification(workspace, true), generated_at: new Date().toISOString(),

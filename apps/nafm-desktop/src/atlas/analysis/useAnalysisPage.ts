@@ -14,6 +14,12 @@ export interface AnalysisPosition<Page> {
   revision: number;
 }
 
+export interface AnalysisPageRequest {
+  offset: number;
+  error: string | null;
+  retry: () => void;
+}
+
 export function useAnalysisPage<Page extends AnalysisPage>(
   load: (offset: number) => Promise<Page>, revision: number, initialOffset = 0, cachedPage?: Page,
 ) {
@@ -42,7 +48,9 @@ export function useAnalysisPage<Page extends AnalysisPage>(
           setRequest((current) => current === request ? { ...current, offset } : current);
           return;
         }
-        setResult({ request, revision, page: next });
+        const received = next.offset === request.offset ? request : { ...request, offset: next.offset };
+        if (received !== request) setRequest(received);
+        setResult({ request: received, revision, page: next });
       } catch (error) {
         if (active) setFailure({ request, revision, message: error instanceof Error ? error.message : String(error) });
       }
@@ -53,12 +61,16 @@ export function useAnalysisPage<Page extends AnalysisPage>(
     };
   }, [load, loading, request, revision]);
 
+  const retry = () => setRequest((current) => ({ ...current }));
+  const pageRequest: AnalysisPageRequest | undefined = result && request.sequence !== result.request.sequence
+    ? { offset: request.offset, error, retry } : undefined;
   return {
     page,
     pageSequence: result?.request.sequence ?? 0,
     loading,
     error,
+    pageRequest,
     goTo: (offset: number) => setRequest((current) => ({ offset, sequence: current.sequence + 1 })),
-    retry: () => setRequest((current) => ({ ...current })),
+    retry,
   };
 }
