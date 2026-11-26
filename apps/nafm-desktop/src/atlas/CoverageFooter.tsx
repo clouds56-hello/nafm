@@ -1,9 +1,9 @@
 import { useCallback, useId, useLayoutEffect, useRef, type MouseEventHandler, type ReactNode } from "react";
-import type { HealthPresentation } from "../lib/health";
 import type { SiteOverview } from "../lib/types";
 import { PlusIcon } from "../management/Icons";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
 import { CoverageScanActions } from "./CoverageScanActions";
+import { CoverageReadout, type CoverageSummary } from "./CoverageReadout";
 import type { SiteVerification } from "./siteVerification";
 import "./coverage-footer.css";
 
@@ -11,47 +11,24 @@ interface CoverageFooterProps {
   source: SiteOverview;
   target: SiteOverview | null;
   targets: readonly SiteOverview[];
-  coverage: HealthPresentation | null;
-  hasFolderContent: boolean;
+  summary: CoverageSummary | null;
   sourceVerification: SiteVerification;
   targetVerification: SiteVerification | null;
   navigationBusy?: boolean;
   navigationProgress?: string;
   announceProgress?: boolean;
-  onTargetChange: (id: string) => void;
-  onSwap: () => void;
+  onTargetChange: (id: string, origin: HTMLSelectElement) => void;
+  onSwap: (origin: HTMLButtonElement) => void;
   onScanSite: (siteId: string) => Promise<void>;
   onAddSite?: MouseEventHandler<HTMLButtonElement>;
   addedTarget?: { id: string; opener: HTMLButtonElement };
+  recovery?: ReactNode;
   children?: ReactNode;
 }
 
-function comparisonResult(
-  target: SiteOverview | null,
-  coverage: HealthPresentation | null,
-  hasFolderContent: boolean,
-) {
-  if (!target || !hasFolderContent) return { text: "Coverage unavailable", tone: "unavailable" };
-  if (coverage?.state === "exact") return { text: "Coverage ready", tone: "ready" };
-  if (coverage?.state === "partial") return { text: "Estimated coverage", tone: "estimate" };
-  return { text: "Coverage unavailable", tone: "unavailable" };
-}
-
-function unavailableReason(
-  source: SiteVerification,
-  target: SiteVerification,
-  hasFolderContent: boolean,
-) {
-  if (!hasFolderContent && source.tone === "ready") return "No content in this folder to compare.";
-  if (source.needsVerification && target.needsVerification) return "Both sites need verification.";
-  if (source.needsVerification) return "Source verification is pending.";
-  if (target.needsVerification) return "Target verification is pending.";
-  return hasFolderContent ? "Verified inventories can’t be compared." : null;
-}
-
 export function CoverageFooter({
-  source, target, targets, coverage, hasFolderContent, sourceVerification, targetVerification, navigationBusy,
-  navigationProgress, announceProgress = true, onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, children,
+  source, target, targets, summary, sourceVerification, targetVerification, navigationBusy,
+  navigationProgress, announceProgress = true, onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, recovery, children,
 }: CoverageFooterProps) {
   const sourceStatusId = useId();
   const targetStatusId = useId();
@@ -76,10 +53,6 @@ export function CoverageFooter({
     targetPicker.current?.focus({ preventScroll: true });
   }, [addedTarget, targets]);
 
-  const result = comparisonResult(target, coverage, hasFolderContent);
-  const reason = !navigationBusy && target && targetVerification && result.tone === "unavailable"
-    ? unavailableReason(sourceVerification, targetVerification, hasFolderContent) : null;
-
   return (
     <section className="atlas-coverage-footer" aria-label="Coverage comparison">
       <div className="atlas-coverage-main">
@@ -97,11 +70,12 @@ export function CoverageFooter({
             {targets.length > 0 ? (
               <select
                 ref={targetPicker}
+                data-coverage-control="target"
                 value={target?.id ?? ""}
                 aria-label="Comparison target"
                 aria-describedby={targetVerification ? targetStatusId : undefined}
                 title={target?.name ?? "Choose a comparison target"}
-                onChange={(event) => onTargetChange(event.currentTarget.value)}
+                onChange={(event) => onTargetChange(event.currentTarget.value, event.currentTarget)}
               >
                 {!target && <option value="" disabled>Choose a site</option>}
                 {targets.map((site) => <option value={site.id} key={site.id}>{site.name}</option>)}
@@ -114,10 +88,10 @@ export function CoverageFooter({
         </div>
         {target && (
           <button
-            className="atlas-coverage-swap" type="button" aria-label="Swap source and target" title="Swap source and target"
+            className="atlas-coverage-swap" type="button" data-coverage-control="swap" aria-label="Swap source and target" title="Swap source and target"
             aria-disabled={navigationBusy || undefined} onClick={navigationBusy ? undefined : (event) => {
               event.currentTarget.focus({ preventScroll: true });
-              onSwap();
+              onSwap(event.currentTarget);
             }}
           >
             <svg width="17" height="17" viewBox="0 0 20 20" fill="none"
@@ -129,12 +103,8 @@ export function CoverageFooter({
         )}
       </div>
       <div className="atlas-coverage-info">
-        <div className="atlas-coverage-status" role={navigationBusy && !announceProgress ? undefined : "status"}>
-          <span data-tone={navigationBusy ? "active" : result.tone}>
-            {navigationBusy ? navigationProgress ?? "Updating comparison…" : result.text}
-          </span>
-          {reason && <span>{reason}</span>}
-        </div>
+        <CoverageReadout summary={summary} progress={navigationBusy ? navigationProgress ?? "Updating comparison…" : undefined}
+          announce={!navigationBusy || announceProgress} />
         {target && (
           <CoverageScanActions actions={[sourceVerification.action, targetVerification?.action]}
             onScanSite={onScanSite} focusTarget={targetPicker} className="atlas-coverage-actions"
@@ -147,6 +117,7 @@ export function CoverageFooter({
         )}
         {children}
       </div>
+      {recovery}
     </section>
   );
 }

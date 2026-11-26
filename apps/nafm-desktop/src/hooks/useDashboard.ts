@@ -127,12 +127,20 @@ interface RowRange {
 
 type LocationLoadResult = "loaded" | "unavailable" | "failed" | "superseded";
 
+export interface CoverageAction {
+  kind: "target" | "swap";
+  origin: HTMLElement;
+  surface: "footer" | "options";
+  capturePanelFocus: () => HTMLElement | undefined;
+}
+
 interface LocationAction {
   title: string;
   progress: string;
   sourceSwitch?: boolean;
   contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
+  coverageAction?: CoverageAction;
   retry?: () => Promise<boolean>;
 }
 
@@ -149,6 +157,8 @@ interface LocationFailure {
   sourceSwitch?: boolean;
   contentsSort?: true;
   contentsUpOrigin?: HTMLElement;
+  coverageAction?: CoverageAction;
+  visibleCoverageFocus?: HTMLElement;
   retry: (() => Promise<boolean>) | null;
 }
 
@@ -615,6 +625,8 @@ export function useDashboard(
             sourceSwitch: action.sourceSwitch,
             contentsSort: action.contentsSort,
             contentsUpOrigin: action.contentsUpOrigin,
+            coverageAction: action.coverageAction,
+            visibleCoverageFocus: action.coverageAction?.capturePanelFocus(),
             message: unavailable ? "This location is no longer available in the index." : message,
             retry: unavailable ? null : action.retry ?? (async () =>
               (await loadFolderLocation(entry, historyAction, { action, retrying: true, anchor })) === "loaded"),
@@ -1171,7 +1183,7 @@ export function useDashboard(
     });
   }, [completionBySite, dashboard?.active_tasks, dashboard?.sites]);
 
-  const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current) => {
+  const selectSite = useCallback(async (siteId: string, targetSiteId = targetSiteRef.current, coverageAction?: CoverageAction) => {
     const sites = dashboardRef.current?.sites ?? [];
     const target = validTarget(sites, siteId, targetSiteId);
     const current = currentNavigationEntry();
@@ -1182,6 +1194,7 @@ export function useDashboard(
       title: `Couldn’t open ${siteName ?? "this source"}`,
       progress: `Opening ${siteName ?? "source"}…`,
       sourceSwitch: true,
+      coverageAction,
     };
     if (current?.site_id === siteId) {
       if (childrenLoadingRef.current) {
@@ -1198,17 +1211,21 @@ export function useDashboard(
     return (await loadFolderLocation(destination, "switch", { action })) === "loaded";
   }, [browsingScope, currentNavigationEntry, loadFolderLocation]);
 
-  const selectCoverageTarget = useCallback(async (targetSiteId: string, preservePageOffset: boolean) => {
+  const selectCoverageTarget = useCallback(async (
+    targetSiteId: string, preservePageOffset: boolean, onArrival?: DirectoryAnchorLoad["onArrival"], coverageAction?: CoverageAction,
+  ) => {
     const current = currentNavigationEntry();
     if (!current || current.site_id === targetSiteId
       || (current.target_site_id === targetSiteId && !childrenLoadingRef.current)) return;
     const targetName = dashboardRef.current?.sites.find((site) => site.id === targetSiteId)?.name;
+    const fileAnchor = current.selected_file ? inspectFileAnchor(current.selected_file.id, preservePageOffset) : undefined;
     await loadFolderLocation({ ...current, target_site_id: targetSiteId }, "push", {
       action: {
         title: targetName ? `Couldn’t compare with ${targetName}` : "Couldn’t change the comparison target",
         progress: targetName ? `Comparing with ${targetName}…` : "Changing comparison target…",
+        coverageAction,
       },
-      anchor: current.selected_file ? inspectFileAnchor(current.selected_file.id, preservePageOffset) : undefined,
+      anchor: { ...fileAnchor, onArrival },
     });
   }, [currentNavigationEntry, loadFolderLocation]);
 

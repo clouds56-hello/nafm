@@ -254,13 +254,6 @@
   white-space: nowrap;
 }
 
-.atlas-toolbar-comparison-progress {
-  padding-inline: 5px;
-  color: var(--atlas-accent);
-  font: 11px/1.4 var(--atlas-mono);
-  overflow-wrap: anywhere;
-}
-
 .atlas-toolbar-comparison select {
   min-width: 0;
   min-height: 29px;
@@ -269,6 +262,13 @@
   background: #151724;
   color: var(--atlas-ink);
   font-size: 12px;
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .atlas-toolbar-comparison select {
+    height: 44px;
+    text-overflow: ellipsis;
+  }
 }
 
 .atlas-toolbar-compact-history { display: none; }

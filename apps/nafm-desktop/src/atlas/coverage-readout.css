@@ -1,0 +1,32 @@
+.atlas-coverage-status {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.atlas-coverage-status > span:first-child { font-weight: 650; }
+.atlas-coverage-status [data-tone="active"] { min-width: 0; color: var(--atlas-accent); overflow-wrap: anywhere; }
+.atlas-coverage-status [data-tone="estimate"] { color: #e7ba94; }
+.atlas-coverage-score {
+  display: inline-flex;
+  align-items: baseline;
+  color: var(--atlas-ink);
+  font-variant-numeric: tabular-nums;
+}
+.atlas-coverage-score-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.atlas-toolbar-comparison > .atlas-coverage-status {
+  margin-inline: 5px;
+  padding-block: 4px;
+  color: var(--atlas-muted);
+  font-size: 11px;
+}

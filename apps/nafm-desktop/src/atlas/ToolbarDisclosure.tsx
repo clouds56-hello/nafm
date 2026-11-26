@@ -9,10 +9,11 @@ interface ToolbarDisclosureProps {
   summary?: ReactNode;
   initialFocusSelector?: string;
   triggerRef?: RefObject<HTMLButtonElement | null>;
+  onOpenChange?: (open: boolean) => void;
   children: (close: () => void) => ReactNode;
 }
 
-export function ToolbarDisclosure({ label, className, description, icon, summary, initialFocusSelector, triggerRef, children }: ToolbarDisclosureProps) {
+export function ToolbarDisclosure({ label, className, description, icon, summary, initialFocusSelector, triggerRef, onOpenChange, children }: ToolbarDisclosureProps) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -24,6 +25,10 @@ export function ToolbarDisclosure({ label, className, description, icon, summary
     setOpen(false);
     trigger.current?.focus({ preventScroll: true });
   }
+
+  useLayoutEffect(() => {
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
 
   useLayoutEffect(() => {
     if (!open) return;

@@ -10,6 +10,7 @@ import { FolderBreadcrumbs } from "./FolderBreadcrumbs";
 import { LocationRecovery } from "./LocationRecovery";
 import { ScanActivity, type ScanActivityProps } from "./ScanActivity";
 import { CoverageScanActions } from "./CoverageScanActions";
+import { CoverageReadout, type CoverageSummary } from "./CoverageReadout";
 import type { SiteVerification } from "./siteVerification";
 import { VerificationScanButton } from "./VerificationScanButton";
 import "./atlas-toolbar.css";
@@ -62,8 +63,11 @@ export interface AtlasToolbarProps {
     spaceVerification: SiteVerification | null;
     sourceVerification: SiteVerification | null;
     targetVerification: SiteVerification | null;
-    onTargetChange: (id: string) => void;
-    onSwap: () => void;
+    coverageReadout: CoverageSummary | null;
+    recovery?: ReactNode;
+    onOptionsOpenChange?: (open: boolean) => void;
+    onTargetChange: (id: string, origin: HTMLSelectElement) => void;
+    onSwap: (origin: HTMLButtonElement) => void;
     onScanSite: (siteId: string) => Promise<void>;
   };
   actions: {
@@ -142,7 +146,8 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
   const picker = useRef<HTMLSelectElement>(null);
   const spaceMetric = useRef<HTMLButtonElement>(null);
   const progressId = useId();
-  const progress = map.navigationBusy ? map.navigationProgress ?? "Updating comparison…" : null;
+  const progress = map.navigationBusy ? map.navigationProgress ?? "Updating comparison…" : undefined;
+  const hasReadout = Boolean(progress || map.coverageReadout);
   const canSwap = map.target !== null && !map.navigationBusy;
   return (
     <ToolbarDisclosure
@@ -151,6 +156,7 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
       summary={map.mode === "coverage_health" && map.target
         ? <>{mode}<span className="atlas-toolbar-coverage-target" title={map.target.name}>→ {map.target.name}</span></>
         : mode}
+      onOpenChange={map.onOptionsOpenChange}
       icon={<ToolbarIcon><path d="M4 6h12M4 10h12M4 14h12" /><path d="M7 4v4m6 0v4m-5 0v4" /></ToolbarIcon>}
     >
       {(close) => (
@@ -186,25 +192,27 @@ function MapOptions({ map, sourceName }: Pick<AtlasToolbarProps, "map"> & { sour
                 <span>Compare with</span>
                 <select
                   ref={picker}
+                  data-coverage-control="target"
                   value={map.target?.id ?? ""}
                   disabled={map.targets.length === 0}
-                  aria-describedby={progress ? progressId : undefined}
-                  onChange={(event) => map.onTargetChange(event.target.value)}
+                  aria-describedby={hasReadout ? progressId : undefined}
+                  onChange={(event) => map.onTargetChange(event.currentTarget.value, event.currentTarget)}
                 >
                   {!map.target && <option value="">{map.targets.length ? "Choose a source" : "No other source"}</option>}
                   {map.targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
                 </select>
               </label>
-              {progress && <span className="atlas-toolbar-comparison-progress" id={progressId}>{progress}</span>}
-              <button className="atlas-toolbar-panel-action" type="button"
+              {hasReadout && <CoverageReadout summary={map.coverageReadout} progress={progress} id={progressId} />}
+              <button className="atlas-toolbar-panel-action" type="button" data-coverage-control="swap"
                 aria-describedby={progress ? progressId : undefined}
                 aria-disabled={!canSwap || undefined} onClick={canSwap ? (event) => {
                   event.currentTarget.focus({ preventScroll: true });
-                  map.onSwap();
+                  map.onSwap(event.currentTarget);
                 } : undefined}>
                 <ToolbarIcon><path d="M4 7h12m-3-3 3 3-3 3M16 13H4m3-3-3 3 3 3" /></ToolbarIcon>
                 Swap source and target
               </button>
+              {map.recovery}
               {map.target && (
                 <CoverageScanActions
                   actions={[map.sourceVerification?.action, map.targetVerification?.action]}
