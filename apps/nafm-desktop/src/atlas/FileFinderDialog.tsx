@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { formatBytes, formatCount } from "../lib/format";
 import type { FinderPosition, IndexedFileSearchResult } from "../lib/types";
-import { OpenInIcon, SearchIcon } from "../management/Icons";
+import { FolderIcon, OpenInIcon, SearchIcon } from "../management/Icons";
 import { AnalysisDialog } from "./analysis/AnalysisDialog";
 import { AnalysisError } from "./analysis/AnalysisPageControls";
 import { useAnalysisNavigation } from "./analysis/useAnalysisNavigation";
@@ -23,6 +23,22 @@ interface FileFinderProps {
 interface FinderChoice {
   file: IndexedFileSearchResult;
   position: FinderPosition;
+}
+
+function FinderResultPath({ path }: { path: string }) {
+  // Use the original characters for display, including drive roots and SMB URLs.
+  const separators = path.startsWith("/") || path.includes("://") ? path : path.replaceAll("\\", "/");
+  const end = separators.lastIndexOf("/");
+  const start = end > 0 ? separators.lastIndexOf("/", end - 1) + 1 : 0;
+  const ancestors = path.slice(0, start);
+  const folder = start ? path.slice(start, end) : path.slice(0, end + 1);
+  return (
+    <small className="atlas-finder-path" title={path}>
+      <span className="atlas-finder-full-path">{path}</span>
+      <span className="atlas-finder-folder" aria-hidden="true">{folder && <FolderIcon />}<span>{folder || path}</span></span>
+      {ancestors && <span className="atlas-finder-ancestors" aria-hidden="true"><bdi dir="ltr">{ancestors}</bdi></span>}
+    </small>
+  );
 }
 
 export function FileFinder({ open, ...props }: FileFinderProps) {
@@ -64,9 +80,9 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     rowHeightProperty: "--finder-row-height",
     reveal: refreshReveal?.key === search.key ? refreshReveal : undefined,
   });
-  const { listRef, first, start, end, ready, capacity } = viewport;
+  const { listRef, first, start, end, ready, capacity, focusStart, focusEnd } = viewport;
   const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null);
-  const pendingFocus = useRef<{ key: string; index: number | null; scrollTop: number | null } | null>(null);
+  const pendingFocus = useRef<{ key: string; index: number | null; scrollTop: number | null; requireVisible?: boolean } | null>(null);
   const restoring = useRef<FinderPosition | null>(null);
   const navigation = useAnalysisNavigation(
     ({ file, position }: FinderChoice, signal) => onOpen(file, signal, position),
@@ -124,6 +140,10 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     }
     if (!ready) return;
     const target = pending.index ?? first;
+    if (pending.requireVisible && (target < focusStart || target >= focusEnd)) {
+      pendingFocus.current = null;
+      return;
+    }
     if (target < start || target >= end) {
       if (pending.scrollTop !== null && scrollPane.current?.scrollTop !== pending.scrollTop) pendingFocus.current = null;
       return;
@@ -133,7 +153,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
       pendingFocus.current = null;
       row.focus({ preventScroll: true });
     }
-  }, [ready, first, start, end, search.key, search.fileAt, listRef]);
+  }, [ready, first, start, end, focusStart, focusEnd, search.key, search.fileAt, listRef]);
 
   function receiveRefresh({ key, previousIndex, index, previousTotal, total, missingFile }: FinderRefresh) {
     const list = listRef.current;
@@ -180,19 +200,28 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     file && cursor?.key === search.key && cursor.index === index && index >= first && index < first + capacity,
   )?.index ?? entries.find(({ index, file }) => file && index >= first)?.index;
 
-  function focusResult(index: number) {
+  function focusResult(index: number, { keepViewport = false } = {}) {
     if (!total || navigation.opening) return;
     restoring.current = null;
     const target = Math.min(total - 1, Math.max(0, index));
     const row = listRef.current?.querySelector<HTMLButtonElement>(`[data-virtual-row="${target}"] button`);
     if (row) {
       pendingFocus.current = null;
-      row.focus();
+      row.focus({ preventScroll: keepViewport });
     } else {
       listRef.current?.focus({ preventScroll: true });
-      viewport.scrollToRow(target);
-      pendingFocus.current = { key: search.key, index: target, scrollTop: scrollPane.current?.scrollTop ?? 0 };
+      if (!keepViewport) viewport.scrollToRow(target);
+      pendingFocus.current = {
+        key: search.key, index: target, scrollTop: scrollPane.current?.scrollTop ?? 0, requireVisible: keepViewport,
+      };
     }
+  }
+
+  function enterVisibleResults() {
+    const firstVisible = ready && focusStart < focusEnd ? focusStart : first;
+    const visibleCursor = ready && cursor?.key === search.key && cursor.index >= focusStart && cursor.index < focusEnd
+      ? cursor.index : firstVisible;
+    focusResult(visibleCursor, { keepViewport: true });
   }
 
   function moveResult(event: KeyboardEvent<HTMLElement>, index?: number) {
@@ -232,6 +261,24 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
     });
   }
 
+  function cancelOpen() {
+    const choice = navigation.match;
+    navigation.cancel();
+    if (!choice) return;
+    const index = choice.position.row_index;
+    const visibleChoice = index >= viewport.focusStart && index < viewport.focusEnd
+      && search.fileAt(index)?.file_id === choice.file.file_id;
+    const target = visibleChoice ? index : viewport.focusStart;
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLButtonElement>(`[data-virtual-row="${target}"] button`);
+    (row ?? list ?? input.current)?.focus({ preventScroll: true });
+  }
+
+  function keepSearchFocus() {
+    // The saved result can still load while the user edits its search.
+    restoring.current = null;
+  }
+
   function retrySearch() {
     const list = listRef.current;
     if (total && list) {
@@ -260,8 +307,10 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
             <input
               ref={input} type="search" aria-label="File name" autoComplete="off" spellCheck={false}
               placeholder="Search by file name" value={search.query} readOnly={navigation.opening}
+              onPointerDown={keepSearchFocus}
+              onCompositionStart={keepSearchFocus}
               onChange={(event) => {
-                restoring.current = null;
+                keepSearchFocus();
                 const text = event.currentTarget.value;
                 setMissingRefreshKey(null);
                 if (text.trim() !== search.name || search.locatingFile) {
@@ -274,6 +323,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
               }}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
+                keepSearchFocus();
                 if (event.key === "Escape") {
                   event.preventDefault();
                   event.stopPropagation();
@@ -283,7 +333,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
                 if (!total || navigation.opening || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
-                  focusResult(0);
+                  enterVisibleResults();
                 } else if (event.key === "Enter") {
                   event.preventDefault();
                   const top = search.fileAt(0);
@@ -302,7 +352,17 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
           </div>}
         </div>
       }
-      footer={navigation.error && <p className="atlas-finder-error" role="alert">{navigation.error}</p>}
+      footer={navigation.match && (
+        <div className="atlas-finder-open-feedback">
+          <div role={navigation.error ? "alert" : undefined}>
+            <strong title={navigation.match.file.name}>{navigation.match.file.name}</strong>
+            {navigation.error && <p className="atlas-finder-error">{navigation.error}</p>}
+          </div>
+          <button type="button" onClick={navigation.opening ? cancelOpen : navigation.retry}>
+            {navigation.opening ? "Cancel opening" : "Retry opening"}
+          </button>
+        </div>
+      )}
     >
       <section className="atlas-analysis-results" aria-label="File search results" aria-busy={search.loading || undefined}>
         {!search.name && <p>Search indexed files across all sites in this workspace.</p>}
@@ -336,7 +396,7 @@ function FileFinderDialog({ workspace, contentRevision, session, position, cache
                     <span className="atlas-finder-location">
                       <strong title={file.name}>{file.name}</strong>
                       <span className="atlas-finder-site" title={file.site_name}>{file.site_name}</span>
-                      <small title={file.path}>{file.path}</small>
+                      <FinderResultPath path={file.path} />
                     </span>
                     <span className="atlas-finder-file-info">
                       <span>{formatBytes(file.size_bytes)}</span>

@@ -5,8 +5,7 @@ export function useAnalysisNavigation<Match>(
   onClose: () => void,
   onOpened: (match: Match) => void = onClose,
 ) {
-  const [opening, setOpening] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [current, setCurrent] = useState<{ match: Match; error: string | null } | null>(null);
   const attempt = useRef<AbortController | null>(null);
 
   useLayoutEffect(() => () => {
@@ -14,8 +13,16 @@ export function useAnalysisNavigation<Match>(
     attempt.current = null;
   }, []);
 
+  function cancel() {
+    const request = attempt.current;
+    if (!request) return;
+    attempt.current = null;
+    request.abort();
+    setCurrent(null);
+  }
+
   function close() {
-    attempt.current?.abort();
+    cancel();
     onClose();
   }
 
@@ -23,20 +30,26 @@ export function useAnalysisNavigation<Match>(
     if (attempt.current) return;
     const request = new AbortController();
     attempt.current = request;
-    setOpening(true);
-    setError(null);
+    setCurrent({ match, error: null });
     try {
       const failure = await onJump(match, request.signal);
       if (request.signal.aborted) return;
       if (failure === null) onOpened(match);
-      else setError(failure);
+      else setCurrent({ match, error: failure });
     } finally {
       if (attempt.current === request) {
         attempt.current = null;
-        setOpening(false);
+        setCurrent((previous) => previous?.error === null ? null : previous);
       }
     }
   }
 
-  return { opening, error, close, show, clearError: () => setError(null) };
+  return {
+    opening: current !== null && current.error === null,
+    error: current?.error ?? null,
+    match: current?.match ?? null,
+    close, show, cancel,
+    retry: () => { if (current?.error != null) void show(current.match); },
+    clearError: () => setCurrent((previous) => previous?.error != null ? null : previous),
+  };
 }

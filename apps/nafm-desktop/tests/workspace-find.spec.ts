@@ -95,6 +95,46 @@ test("Find files distinguishes same names across sites and Back restores the sta
   await expect(currentFolder(page)).toHaveText("Projects");
 });
 
+test("compact Finder results distinguish duplicate names by their containing folders", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/mock/?scenario=deep");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+  const dialog = finder(page);
+  await query(dialog).fill("Contact sheet.pdf");
+  const copies = result(dialog, /^Contact sheet\.pdf/);
+  for (const month of ["April", "August", "December"]) {
+    const folder = "2024 " + month;
+    const path = "/demo/Studio Archive/Projects/" + folder + "/Contact sheet.pdf";
+    const row = copies.filter({ hasText: path });
+    const label = row.getByText(folder, { exact: true });
+    await expect(label).toBeInViewport({ ratio: 0.99 });
+    expect(await label.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    await expect(row).toHaveAccessibleName(new RegExp(path.replaceAll(".", "\\.")));
+    await expect(row.locator("small[title]")).toHaveAttribute("title", path);
+  }
+
+  await query(dialog).fill("Day 03 interview");
+  const deep = result(dialog, /^Day 03 interview\.mxf/);
+  await expect(deep.getByText("Interview Selects", { exact: true })).toBeInViewport({ ratio: 0.99 });
+  const ancestry = deep.locator(".atlas-finder-ancestors");
+  const nearestParentIsVisible = await ancestry.evaluate((el) => {
+    const text = el.querySelector("bdi")!.firstChild!;
+    const tail = "Second Unit/";
+    const end = text.textContent!.length;
+    const range = document.createRange();
+    range.setStart(text, end - tail.length);
+    range.setEnd(text, end);
+    const word = range.getBoundingClientRect();
+    const line = el.getBoundingClientRect();
+    return range.toString() === tail && word.left >= line.left - 1 && word.right <= line.right + 1;
+  });
+  expect(nearestParentIsVisible).toBe(true);
+  await deep.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Interview Selects");
+  await expect(details(page)).toContainText("/Second Unit/Interview Selects/Day 03 interview.mxf");
+});
+
 test("Details steps through same-named Finder results without adding Atlas history entries", async ({ page }) => {
   await page.goto("/mock/");
   await page.getByRole("region", { name: "Circular storage map" })
@@ -245,6 +285,79 @@ test("closing Details cancels a pending Finder result reveal", async ({ page }) 
   await page.keyboard.press("ControlOrMeta+f");
   await expect(query(dialog)).toHaveValue(search);
   await expect(trailers.first()).toBeFocused();
+});
+
+test("Finder can cancel a slow open and retry the same result without leaving its list", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  const reads = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { fileId?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const log = { opened: [] as string[], firstReplied: false, releaseFirst };
+    bridge.invoke = async (command, args) => {
+      if (command !== "get_storage_file_reveal") return invoke(command, args);
+      log.opened.push(args.fileId ?? "");
+      if (log.opened.length === 1) {
+        const response = await invoke(command, args);
+        await first;
+        log.firstReplied = true;
+        return response;
+      }
+      if (log.opened.length === 2) throw new Error("The directory index was busy.");
+      return invoke(command, args);
+    };
+    return log;
+  });
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+  const dialog = finder(page);
+  const input = query(dialog);
+  const text = "  .tIf  ";
+  await input.fill(text);
+  const firstResult = result(dialog, /^Botanical study 0016\.tif/);
+  await firstResult.press("End");
+  const selected = result(dialog, /^Print masters\.tif/);
+  await expect(selected).toBeFocused();
+  const resultsPane = dialog.locator(".atlas-analysis-body");
+  const scroll = await resultsPane.evaluate((pane) => pane.scrollTop);
+  expect(scroll).toBeGreaterThan(1000);
+
+  try {
+    await selected.press("Enter");
+    await expect.poll(() => reads.evaluate((log) => log.opened.length)).toBe(1);
+    const cancel = dialog.getByRole("button", { name: "Cancel opening", exact: true });
+    await expect(cancel).toBeInViewport();
+    await cancel.press("Enter");
+    await expect(cancel).toBeHidden();
+    await expect(selected).toBeFocused();
+    await expect(input).toHaveValue(text);
+    await expect.poll(() => resultsPane.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+  } finally {
+    await reads.evaluate((log) => log.releaseFirst());
+  }
+  await expect.poll(() => reads.evaluate((log) => log.firstReplied)).toBe(true);
+  await expect(dialog).toBeVisible();
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+
+  await selected.press("Enter");
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toContainText("Print masters.tif");
+  await expect(alert).toContainText("The directory index was busy.");
+  await dialog.getByRole("button", { name: "Retry opening", exact: true }).press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page).getByRole("heading", { name: "Print masters.tif", exact: true })).toBeVisible();
+  const opened = await reads.evaluate((log) => log.opened);
+  expect(opened).toHaveLength(3);
+  expect(opened[0]).not.toBe("");
+  expect(opened).toEqual([opened[0], opened[0], opened[0]]);
+  await backToResults(page).press("Enter");
+  await expect(input).toHaveValue(text);
+  await expect(selected).toBeFocused();
+  await expect.poll(() => resultsPane.evaluate((pane) => pane.scrollTop)).toBe(scroll);
 });
 
 for (const phase of ["lookup", "reveal"] as const) {
@@ -495,6 +608,11 @@ test("Find files can seek across hundreds of matches and return to the inspected
   await expect(last).toBeInViewport({ ratio: 0.99 });
   expect(await pane.evaluate((body) => body.scrollTop)).toBeCloseTo(savedScroll, 0);
 
+  await input.evaluate((field) => field.focus({ preventScroll: true }));
+  await page.keyboard.press("ArrowDown");
+  await expect(last).toBeFocused();
+  expect(await pane.evaluate((body) => body.scrollTop)).toBeCloseTo(savedScroll, 0);
+
   await last.evaluate((button) => {
     const body = button.closest<HTMLElement>(".atlas-analysis-body")!;
     body.scrollTop -= body.getBoundingClientRect().bottom - button.getBoundingClientRect().top - 12;
@@ -509,6 +627,58 @@ test("Find files can seek across hundreds of matches and return to the inspected
   await expect(last).toBeInViewport({ ratio: 0.99 });
   await page.keyboard.press("ArrowUp");
   await expect(previous).toBeFocused();
+});
+
+test("ArrowDown from File name enters the visible Finder window while it loads", async ({ page }) => {
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("button", { name: "Find files", exact: true }).press("Enter");
+  const dialog = finder(page);
+  const input = query(dialog);
+  const pane = dialog.locator(".atlas-analysis-body");
+  const matches = dialog.getByRole("list", { name: "Matching files", exact: true });
+  await input.fill("  .tIf  ");
+  await expect(result(dialog, /^Botanical study 0016\.tif/)).toBeInViewport();
+  const rowHeight = await matches.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--finder-row-height")));
+
+  const read = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { query?: string; offset?: number }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "search_indexed_files" && args.query?.toLowerCase() === ".tif" && args.offset === 432) {
+        read.pending = true;
+        await gate;
+      }
+      return response;
+    };
+    return read;
+  });
+
+  const scrollTop = () => pane.evaluate((body) => body.scrollTop);
+  await pane.evaluate((body, top) => { body.scrollTop = top; }, 459.5 * rowHeight);
+  const savedScroll = await scrollTop();
+  const visible = matches.locator('[aria-posinset="461"] button');
+  try {
+    await expect.poll(() => read.evaluate((pending) => pending.pending)).toBe(true);
+    await expect(input).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(matches).toBeFocused();
+    await expect(visible).toHaveCount(0);
+    expect(await scrollTop()).toBe(savedScroll);
+  } finally {
+    await read.evaluate((pending) => pending.release());
+  }
+
+  await expect(visible).toBeFocused();
+  await expect(visible).toBeInViewport({ ratio: 0.99 });
+  expect(await scrollTop()).toBe(savedScroll);
+  await page.keyboard.press("ArrowDown");
+  await expect(matches.locator('[aria-posinset="462"] button')).toBeFocused();
 });
 
 test("Home supersedes a pending Finder End jump without losing focus", async ({ page }) => {
@@ -645,6 +815,78 @@ test("Back to results follows the same file after its search rank changes", asyn
   expect(restoredReads.filter(({ anchor_file_id, offset }) => !anchor_file_id && offset >= 96)).toEqual([]);
   await page.keyboard.press("ArrowDown");
   await expect(dialog.locator('[aria-posinset="13"] button')).toBeFocused();
+});
+
+test("Back to results keeps an active search edit during a delayed Finder restore", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await page.keyboard.press("ControlOrMeta+f");
+
+  const dialog = finder(page);
+  const input = query(dialog);
+  const proof = result(dialog, /^Proof 002\.jpg/);
+  const searchText = "  pRoOf 00  ";
+  await input.fill(searchText);
+  await expect(result(dialog, /^Proof 001\.jpg/)).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect(proof).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(details(page).getByRole("heading", { name: "Proof 002.jpg", exact: true })).toBeVisible();
+
+  // A new index revision makes the Finder locate this result again on return.
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("complementary", { name: "Sites", exact: true })
+    .getByRole("button", { name: "Scan Field drive", exact: true }).click();
+  await page.getByRole("button", { name: "Scan activity", exact: true }).click();
+  const activity = page.getByRole("group", { name: "Scan activity", exact: true });
+  await expect(activity.getByRole("region", { name: "Latest scan result" })
+    .getByText("Scan finished", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await expect(activity).toBeHidden();
+
+  const restore = await page.evaluateHandle(() => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { anchor_file_id?: string }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, release };
+    bridge.invoke = async (command, args) => {
+      const response = await invoke(command, args);
+      if (command === "search_indexed_files" && args.anchor_file_id) {
+        read.pending = true;
+        await gate;
+      }
+      return response;
+    };
+    return read;
+  });
+
+  const selectionLength = () => input.evaluate((field: HTMLInputElement) =>
+    (field.selectionEnd ?? 0) - (field.selectionStart ?? 0));
+  try {
+    await backToResults(page).press("Enter");
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue(searchText);
+    await expect.poll(() => restore.evaluate((read) => read.pending)).toBe(true);
+    await page.keyboard.press("ControlOrMeta+a");
+    await expect.poll(selectionLength).toBe(searchText.length);
+  } finally {
+    await restore.evaluate((read) => read.release());
+  }
+  await expect(proof).toHaveAttribute("aria-current", "true");
+  await expect(input).toBeFocused();
+  expect(await selectionLength()).toBe(searchText.length);
+  await page.keyboard.type("trailer");
+  await expect(input).toHaveValue("trailer");
+  const firstTrailer = result(dialog, /^Trailer master\.mov/).first();
+  await expect(firstTrailer).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await expect(firstTrailer).toBeFocused();
 });
 
 test("an index refresh keeps a distant Finder result focused while the dialog is open", async ({ page }) => {

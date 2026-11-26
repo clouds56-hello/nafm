@@ -109,17 +109,48 @@
   overflow-wrap: anywhere;
 }
 
-.atlas-finder-location small {
-  display: -webkit-box;
-  overflow: hidden;
-  white-space: pre-wrap;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.atlas-finder-path {
+  position: relative;
+  display: grid;
+  min-width: 0;
 }
+.atlas-finder-full-path {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.atlas-finder-folder { display: flex; min-width: 0; align-items: center; gap: 5px; color: var(--atlas-ink); }
+.atlas-finder-folder svg { width: 13px; height: 13px; flex: none; color: var(--atlas-muted); }
+.atlas-finder-folder > span, .atlas-finder-ancestors {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+.atlas-finder-ancestors { direction: rtl; text-align: left; }
 .atlas-finder-file-info { justify-items: end; text-align: end; }
 .atlas-finder-file-info small { font-size: 10px; }
 .atlas-finder-file-info [data-verified] { color: #c6d99b; }
 .atlas-finder-error { margin: 0; color: #f3b2ba; overflow-wrap: anywhere; }
+.atlas-finder-open-feedback {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.atlas-finder-open-feedback strong {
+  display: block;
+  overflow: hidden;
+  color: var(--atlas-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.atlas-finder-open-feedback p { max-height: min(80px, 20dvh); overflow-y: auto; }
+.atlas-file-finder:has(.atlas-finder-open-feedback) .atlas-analysis-footer { padding: 9px 12px; }
 .atlas-finder-feedback { flex: 0 0 100%; }
 .atlas-finder-feedback .atlas-analysis-error { margin: 0; color: #f3b2ba; }
 .atlas-file-finder .atlas-analysis-results > p { padding-block: 17px; }
@@ -139,7 +170,7 @@
 }
 
 @media (pointer: coarse) {
-  .atlas-finder-field input { min-height: 44px; }
+  .atlas-finder-field input, .atlas-file-finder .atlas-finder-open-feedback button { min-height: 44px; }
 }
 .atlas-analysis-dialog.atlas-file-finder { height: min(640px, calc(100dvh - 36px)); }
 .atlas-file-finder .atlas-analysis-panel { height: 100%; }
