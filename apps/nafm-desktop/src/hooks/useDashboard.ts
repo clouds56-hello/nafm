@@ -317,6 +317,7 @@ export function useDashboard(
   const [completionBySite, setCompletionBySite] = useState<Map<string, ScanCompletionView>>(new Map());
   const [activeRequestIds, setActiveRequestIds] = useState<Set<number>>(new Set());
   const [activeScanTasks, setActiveScanTasks] = useState<Map<number, ScanTask>>(new Map());
+  const [pendingScanStarts, setPendingScanStarts] = useState<ReadonlySet<string | null>>(() => new Set());
   const [lastScanResult, setLastScanResult] = useState<ScanActivityResult | null>(null);
   const [scanInterruptions, setScanInterruptions] = useState<ReadonlyMap<string, ScanInterruption>>(new Map());
   const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
@@ -349,6 +350,8 @@ export function useDashboard(
   const completionBySiteRef = useRef<Map<string, ScanCompletionView>>(new Map());
   const currentSiteIdsRef = useRef<Set<string>>(new Set());
   const terminalRequestIdsRef = useRef<Set<number>>(new Set());
+  const activeScanTasksRef = useRef(activeScanTasks);
+  const pendingScanStartsRef = useRef(new Map<string | null, symbol>());
   const cancelRequestsInFlightRef = useRef<Set<number>>(new Set());
   const publishedInventoryKeysRef = useRef<Set<string>>(new Set());
   const analysisRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -363,6 +366,20 @@ export function useDashboard(
   const workspaceNameRef = useRef(expectedWorkspace);
   const previousSiteListRevision = useRef(siteListRevision);
   const startupLocation = useRef(resumeLocation);
+
+  const updateActiveScanTasks = useCallback((update: (current: Map<number, ScanTask>) => Map<number, ScanTask>) => {
+    const current = activeScanTasksRef.current;
+    const next = update(current);
+    if (next === current) return;
+    activeScanTasksRef.current = next;
+    setActiveScanTasks(next);
+  }, []);
+
+  const clearPendingScanStarts = useCallback(() => {
+    if (pendingScanStartsRef.current.size === 0) return;
+    pendingScanStartsRef.current.clear();
+    setPendingScanStarts(new Set());
+  }, []);
 
   const updateCompletionBySite = useCallback((
     update: (current: Map<string, ScanCompletionView>) => Map<string, ScanCompletionView>,
@@ -445,6 +462,7 @@ export function useDashboard(
       const dashboardMatchesWorkspace = dashboardRef.current?.workspace_name === expectedWorkspace;
       clearAnalysisRefreshes();
       clearLocation();
+      clearPendingScanStarts();
       lastLocationBySite.current.clear();
       if (!dashboardMatchesWorkspace) {
         invalidateCleanupPreview(null);
@@ -452,7 +470,7 @@ export function useDashboard(
         setProgressBySite(new Map());
         updateCompletionBySite(() => new Map());
         setActiveRequestIds(new Set());
-        setActiveScanTasks(new Map());
+        updateActiveScanTasks(() => new Map());
         setLastScanResult(null);
         setScanInterruptions(new Map());
         setCancellingRequestIds(new Set());
@@ -463,7 +481,8 @@ export function useDashboard(
       }
     }
     workspaceNameRef.current = expectedWorkspace;
-  }, [clearAnalysisRefreshes, clearLocation, expectedWorkspace, invalidateCleanupPreview, updateCompletionBySite]);
+  }, [clearAnalysisRefreshes, clearLocation, clearPendingScanStarts, expectedWorkspace, invalidateCleanupPreview,
+    updateActiveScanTasks, updateCompletionBySite]);
 
   const workspaceName = dashboard?.workspace_name;
   const locationSite = location?.site_id;
@@ -749,6 +768,7 @@ export function useDashboard(
     const stagingChanged = previous?.stage_history.snapshot_id !== next.stage_history.snapshot_id;
     if (workspaceChanged) {
       clearAnalysisRefreshes();
+      clearPendingScanStarts();
       lastLocationBySite.current.clear();
       terminalRequestIdsRef.current.clear();
       cancelRequestsInFlightRef.current.clear();
@@ -786,7 +806,7 @@ export function useDashboard(
     });
     invalidateCleanupPreview(workspaceChanged ? null : stagingChanged ? "staging" : "inventory");
     setActiveRequestIds(activeIds);
-    setActiveScanTasks(new Map(activeTasks.map((task) => [task.request_id, task])));
+    updateActiveScanTasks(() => new Map(activeTasks.map((task) => [task.request_id, task])));
     setCancellingRequestIds((current) => {
       const nextCancelling = new Set(
         activeTasks
@@ -803,7 +823,7 @@ export function useDashboard(
       next.sites,
       activeTasks,
     ));
-  }, [clearAnalysisRefreshes, invalidateCleanupPreview, updateCompletionBySite]);
+  }, [clearAnalysisRefreshes, clearPendingScanStarts, invalidateCleanupPreview, updateActiveScanTasks, updateCompletionBySite]);
 
   const refresh = useCallback(async (siteListChanged = false) => {
     const requestId = dashboardRequestRef.current + 1;
@@ -981,7 +1001,7 @@ export function useDashboard(
       && !terminalRequestIdsRef.current.has(event.request_id)) {
       setActiveRequestIds((current) => new Set(current).add(event.request_id));
       setCancellingRequestIds((current) => new Set(current).add(event.request_id));
-      setActiveScanTasks((current) => {
+      updateActiveScanTasks((current) => {
         const task = current.get(event.request_id);
         if (!task || (task.status === "cancelling" && !event.site_states)) return current;
         return new Map(current).set(event.request_id, {
@@ -1107,7 +1127,7 @@ export function useDashboard(
         next.delete(event.request_id);
         return next;
       });
-      setActiveScanTasks((current) => {
+      updateActiveScanTasks((current) => {
         if (!current.has(event.request_id)) return current;
         const next = new Map(current);
         next.delete(event.request_id);
@@ -1138,6 +1158,7 @@ export function useDashboard(
     reloadDashboard,
     scheduleAnalysisRefresh,
     scheduleFinalAnalysisRefresh,
+    updateActiveScanTasks,
     updateCompletionBySite,
   ]);
 
@@ -1253,18 +1274,32 @@ export function useDashboard(
   }, [refreshTree]);
 
   const scan = useCallback(async (siteId?: string, onError?: (message: string) => void) => {
+    const workspaceName = workspaceNameRef.current;
+    if (!workspaceName) {
+      const message = "Workspace is still loading.";
+      setNotice(message);
+      onError?.(message);
+      return;
+    }
+    const scope = siteId ?? null;
+    const pending = pendingScanStartsRef.current;
+    if (pending.has(null) || (scope === null ? pending.size > 0 : pending.has(scope))) return;
+    if ([...activeScanTasksRef.current.values()].some(({ selector }) => scope === null || selector.all || selector.site_id === scope)) return;
+
+    // Claim the scope before IPC. A second surface can submit before React paints the pending state.
+    const token = Symbol();
+    pending.set(scope, token);
+    setPendingScanStarts(new Set(pending.keys()));
     setNotice(null);
     try {
-      const workspaceName = workspaceNameRef.current;
-      if (!workspaceName) throw new Error("Workspace is still loading.");
       const task = await startScan(
-        siteId ? { site_id: siteId } : { all: true },
+        scope === null ? { all: true } : { site_id: scope },
         workspaceName,
       );
       if (workspaceNameRef.current !== workspaceName || terminalRequestIdsRef.current.has(task.request_id)) return;
       dashboardRequestRef.current += 1;
       setActiveRequestIds((current) => new Set(current).add(task.request_id));
-      setActiveScanTasks((current) => current.has(task.request_id) ? current : new Map(current).set(task.request_id, task));
+      updateActiveScanTasks((current) => current.has(task.request_id) ? current : new Map(current).set(task.request_id, task));
       invalidateCleanupPreview("scan");
       const siteIds = siteId
         ? [siteId]
@@ -1289,11 +1324,17 @@ export function useDashboard(
         return next;
       });
     } catch (scanError) {
+      if (workspaceNameRef.current !== workspaceName) return;
       const message = errorMessage(scanError);
       setNotice(message);
       onError?.(message);
+    } finally {
+      if (pending.get(scope) === token) {
+        pending.delete(scope);
+        setPendingScanStarts(new Set(pending.keys()));
+      }
     }
-  }, [invalidateCleanupPreview, updateCompletionBySite]);
+  }, [invalidateCleanupPreview, updateActiveScanTasks, updateCompletionBySite]);
 
   const cancel = useCallback(async (
     requestId: number,
@@ -1902,6 +1943,20 @@ export function useDashboard(
     }
     return { scanning_site_ids, blocked_site_ids, request_by_site, scan_all_request_ids };
   }, [activeScanTasks, completionBySite, dashboard?.sites]);
+  const scanStarts = useMemo(() => {
+    const startingAll = pendingScanStarts.has(null) && backendScanState.scan_all_request_ids.size === 0;
+    const startingSiteIds = new Set<string>();
+    if (startingAll) {
+      for (const site of dashboard?.sites ?? []) startingSiteIds.add(site.id);
+    } else {
+      for (const scope of pendingScanStarts) {
+        if (scope !== null && !backendScanState.blocked_site_ids.has(scope)) startingSiteIds.add(scope);
+      }
+    }
+    return { startingAll, startingSiteIds };
+  }, [backendScanState, dashboard?.sites, pendingScanStarts]);
+  const activeTaskCount = Math.max(activeRequestIds.size,
+    activeScanTasks.size + (scanStarts.startingAll ? 1 : scanStarts.startingSiteIds.size));
   const cancellingTaskCount = useMemo(() => (
     [...activeRequestIds].filter((requestId) => cancellingRequestIds.has(requestId)).length
   ), [activeRequestIds, cancellingRequestIds]);
@@ -1974,10 +2029,11 @@ export function useDashboard(
     scanBlockedSiteIds: backendScanState.blocked_site_ids,
     scanRequestBySite: backendScanState.request_by_site,
     scanAllRequestIds: backendScanState.scan_all_request_ids,
+    scanStarts,
     cancellingRequestIds,
     scan,
     cancel,
-    activeTaskCount: activeRequestIds.size,
+    activeTaskCount,
     scanningTaskCount,
     cancellingTaskCount,
     contentRevision,
@@ -1994,7 +2050,7 @@ export function useDashboard(
     reviewError,
     runPreview,
   }), [
-    activeRequestIds.size,
+    activeTaskCount,
     activeScanTasks,
     activeSite,
     activeSiteId,
@@ -2010,6 +2066,7 @@ export function useDashboard(
     clearFolderLaunchFeedback,
     completionBySite,
     scanInterruptions,
+    scanStarts,
     cancellingRequestIds,
     cancellingTaskCount,
     coverageTargetSite,

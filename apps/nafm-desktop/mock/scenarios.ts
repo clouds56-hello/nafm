@@ -9,6 +9,7 @@ export const scenarioLabels = {
   "first-inventory": "First scan, slow map",
   scanning: "Scan in progress",
   "scan-failed": "Interrupted scan",
+  "slow-scan-start": "Slow scan start",
   slow: "Slow folder reads",
   recovery: "Interrupted navigation",
   "workspace-recovery": "Workspace switch recovery",

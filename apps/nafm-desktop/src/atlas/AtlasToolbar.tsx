@@ -73,10 +73,12 @@ export interface AtlasToolbarProps {
     ready: boolean;
     siteCount: number;
     activeScans: number;
+    scanStarting: boolean;
+    scanStartingAll: boolean;
     stagedCount: number;
     canFind: boolean;
     onFind: () => void;
-    onScanAll: () => void;
+    onScanAll: () => Promise<void>;
     onReview: () => void;
     onSettings: () => void;
     onSources: () => void;
@@ -246,6 +248,10 @@ function WorkspacePicker({ workspace, inActions, selectRef }: Pick<AtlasToolbarP
 function WorkspaceActions({ actions, navigation, workspace, extension, triggerRef }:
   Pick<AtlasToolbarProps, "actions" | "navigation" | "workspace" | "extension"> & { triggerRef: RefObject<HTMLButtonElement | null> }) {
   const parent = navigation.breadcrumbs.at(-2);
+  const scanUnavailable = !actions.siteCount || actions.activeScans > 0 || actions.scanStarting;
+  const scanStatusId = useId();
+  const scanStatus = actions.scanStartingAll ? "Starting…" : actions.activeScans > 0 ? `${formatCount(actions.activeScans)} active`
+    : actions.scanStarting ? "Site scan starting" : null;
   return (
     <ToolbarDisclosure
       label="Workspace actions"
@@ -266,10 +272,19 @@ function WorkspaceActions({ actions, navigation, workspace, extension, triggerRe
           >
             <SearchIcon /> Find files
           </button>
-          <button className="atlas-toolbar-panel-action" type="button" disabled={!actions.siteCount || actions.activeScans > 0} onClick={() => { close(); actions.onScanAll(); }}>
+          <button className="atlas-toolbar-panel-action" type="button" aria-label="Scan all" disabled={!actions.siteCount}
+            aria-disabled={scanUnavailable || undefined} aria-busy={actions.scanStartingAll || undefined}
+            aria-describedby={scanStatus ? scanStatusId : undefined}
+            onClick={async (event) => {
+              if (scanUnavailable) return;
+              const button = event.currentTarget;
+              button.focus({ preventScroll: true });
+              await actions.onScanAll();
+              if (button.isConnected && document.activeElement === button) close();
+            }}>
             <RefreshIcon />
             <span>Scan all</span>
-            {actions.activeScans > 0 && <small>{formatCount(actions.activeScans)} active</small>}
+            {scanStatus && <small id={scanStatusId}>{scanStatus}</small>}
           </button>
           <button className="atlas-toolbar-panel-action" type="button" disabled={!actions.ready} aria-haspopup="dialog" onClick={() => { close(); actions.onReview(); }}>
             <ToolbarIcon><path d="M6 5h8m-8 5h8m-8 5h5" /><rect x="3" y="2" width="14" height="16" rx="2" /></ToolbarIcon>
@@ -365,7 +380,7 @@ export function AtlasToolbar({ workspace, navigation, map, actions, scanActivity
           <SearchIcon /><span className="atlas-toolbar-label">Find</span>
         </button>
         {navigation.siteName && <MapOptions map={map} sourceName={navigation.siteName} />}
-        <ScanActivity {...scanActivity} />
+        <ScanActivity {...scanActivity} focusFallback={workspaceActions} />
         <WorkspaceActions actions={actions} navigation={navigation} workspace={workspace} extension={extension} triggerRef={workspaceActions} />
         {extension && (
           <ToolbarDisclosure label={extension.label} className="atlas-toolbar-extension" icon={extension.icon} summary={extension.label}>

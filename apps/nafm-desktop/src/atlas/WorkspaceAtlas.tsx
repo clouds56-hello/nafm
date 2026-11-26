@@ -321,6 +321,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
     ? {
       requestId,
       progress: scanProgress,
+      starting: state.scanStarts.startingSiteIds.has(site.id),
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       scanAll: requestId !== undefined && state.scanAllRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(site.id),
@@ -539,6 +540,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
     const progress = state.progressBySite.get(id);
     const interruption = state.scanInterruptions.get(id);
     return {
+      starting: state.scanStarts.startingSiteIds.has(id),
       running: requestId !== undefined,
       stopping: requestId !== undefined && state.cancellingRequestIds.has(requestId),
       blocked: state.scanBlockedSiteIds.has(id),
@@ -973,11 +975,13 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
         actions={{
           ready: dashboard !== null,
           siteCount: dashboard?.sites.length ?? 0,
-          activeScans: state.activeTaskCount,
+          activeScans: state.activeScanTasks.size,
+          scanStarting: state.scanStarts.startingAll || state.scanStarts.startingSiteIds.size > 0,
+          scanStartingAll: state.scanStarts.startingAll,
           stagedCount: dashboard?.staged.length ?? 0,
           canFind: findWorkspace !== null,
           onFind: openFileFinder,
-          onScanAll: () => void state.scan(),
+          onScanAll: () => state.scan(),
           onReview: openReview,
           onSettings: () => workspace.openManagement("workspaces"),
           onSources: () => setSourcesOpen(true),
@@ -985,6 +989,8 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
         scanActivity={{
           sites: dashboard?.sites ?? [],
           tasks: state.activeScanTasks,
+          startingAll: state.scanStarts.startingAll,
+          startingSiteIds: state.scanStarts.startingSiteIds,
           progressBySite: state.progressBySite,
           completionBySite: state.completionBySite,
           scanInterruptions: state.scanInterruptions,
@@ -1076,6 +1082,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
               openingSiteId={openingSiteId}
               switchRecovery={recoveryInSites && siteRailFailure ? { ...siteRailFailure, content: recovery } : undefined}
               addedSite={siteAddition?.origin === "sites" ? addedSite : undefined}
+              startingSiteIds={state.scanStarts.startingSiteIds}
               scanRequests={state.scanRequestBySite}
               blockedIds={state.scanBlockedSiteIds}
               scanAllRequests={state.scanAllRequestIds}
@@ -1282,6 +1289,7 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
           onSelect={(id) => void selectSite(id)}
           onClose={() => setSourcesOpen(false)}
           onAdd={addSiteLauncher("sources")}
+          startingSiteIds={state.scanStarts.startingSiteIds}
           scanRequests={state.scanRequestBySite}
           blockedIds={state.scanBlockedSiteIds}
           scanAllRequests={state.scanAllRequestIds}

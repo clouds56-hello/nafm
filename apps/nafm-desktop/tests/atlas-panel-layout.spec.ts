@@ -38,6 +38,45 @@ async function expectFullCompactChart(page: Page) {
 test.describe("compact Atlas panels", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
+  test("a rejected scan start restores focus only when its activity disclosure disappears from under the user", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 480 });
+    await page.goto("/mock/");
+    await expect(currentFolder(page)).toHaveText("Studio archive");
+    const message = "The drive disconnected before the scan started.";
+    const held = await page.evaluateHandle((diagnostic) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      };
+      const invoke = bridge.invoke.bind(bridge);
+      let rejectStart: (() => void) | undefined;
+      bridge.invoke = (command, args) => command === "start_scan"
+        ? new Promise((_, reject) => { rejectStart = () => reject(new Error(diagnostic)); })
+        : invoke(command, args);
+      return { reject: () => rejectStart?.() };
+    }, message);
+    const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+    const options = page.getByRole("button", { name: "Map options", exact: true });
+    const activity = page.getByRole("button", { name: "Scan activity", exact: true });
+    const scan = page.getByRole("button", { name: "Scan all", exact: true });
+
+    for (const moveFocus of [false, true]) {
+      await actions.press("Enter");
+      await scan.press("Enter");
+      await expect(scan).toBeFocused();
+      await expect(scan).toHaveAccessibleDescription("Starting…");
+      await activity.press("Enter");
+      const pending = page.getByRole("region", { name: "All sites", exact: true });
+      await expect(pending).toBeFocused();
+      await expect(pending.getByText("Starting…", { exact: true })).toBeInViewport({ ratio: 0.99 });
+      await expect(pending.getByRole("button")).toHaveCount(0);
+      if (moveFocus) await options.focus();
+      await held.evaluate((start) => start.reject());
+      await expect(activity).toBeHidden();
+      await expect(page.getByText(message, { exact: true })).toBeVisible();
+      await expect(moveFocus ? options : actions).toBeFocused();
+    }
+  });
+
   test("the narrow Contents header keeps the folder, count and first three rows readable", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 480 });
     await page.goto("/mock/?scenario=large");

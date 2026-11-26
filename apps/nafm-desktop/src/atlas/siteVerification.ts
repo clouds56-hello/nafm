@@ -11,8 +11,6 @@ export interface SiteScanAction {
   siteId: string;
   label: string;
   shortLabel: string;
-  startingLabel: string;
-  startingShortLabel: string;
   disabled: boolean;
 }
 
@@ -25,6 +23,7 @@ export interface SiteVerification {
 }
 
 interface SiteScanState {
+  starting: boolean;
   running: boolean;
   stopping: boolean;
   blocked: boolean;
@@ -35,6 +34,7 @@ interface SiteScanState {
 }
 
 function activeStatus(site: SiteOverview, scan: SiteScanState) {
+  if (scan.starting) return "Starting scan";
   const phase = site.scan_state;
   if (scan.stopping || phase === "cancelling") return "Stopping scan";
   if (scan.progress) {
@@ -54,6 +54,14 @@ function describeScanAction(
   site: SiteOverview, scan: SiteScanState, active: boolean,
   interruption: ReturnType<typeof scanRecovery>, role?: CoverageRole,
 ): SiteScanAction {
+  if (scan.starting) {
+    return {
+      siteId: site.id,
+      label: role ? `Starting ${role} scan…` : "Starting scan…",
+      shortLabel: role ? `Starting ${role}…` : "Starting scan…",
+      disabled: true,
+    };
+  }
   const verb = interruption?.shortAction ?? (site.hash_status === "pending" ? "Resume" : "Scan");
   const inactiveLabel = interruption?.action ?? (verb === "Resume" ? "Resume verification" : "Scan this site");
   const roleLabel = role ? `${verb} ${role}` : inactiveLabel;
@@ -63,8 +71,6 @@ function describeScanAction(
     siteId: site.id,
     label: active ? activeLabel : role && verb !== "Scan" ? `${roleLabel} scan` : roleLabel,
     shortLabel: active ? activeLabel : roleLabel,
-    startingLabel: role ? `Starting ${role} scan…` : "Starting scan…",
-    startingShortLabel: role ? `Starting ${role}…` : "Starting scan…",
     disabled: active || scan.blocked,
   };
 }

@@ -1,7 +1,7 @@
 import type { SiteOverview, StorageNode } from "../src/lib/types";
 
 export type PreviewScenario = "populated" | "large" | "deep" | "partial" | "empty" | "scanning"
-  | "first-inventory" | "scan-failed" | "slow" | "recovery" | "workspace-recovery";
+  | "first-inventory" | "scan-failed" | "slow" | "slow-scan-start" | "recovery" | "workspace-recovery";
 
 export const PREVIEW_WORKSPACE = "Studio workspace";
 

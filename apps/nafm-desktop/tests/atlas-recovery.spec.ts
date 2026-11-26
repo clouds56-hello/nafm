@@ -202,6 +202,80 @@ test("compact Sources returns focus to Workspace actions and preserves the Conte
   await expect(contents).toBeVisible();
 });
 
+test.describe("starting a scan from a compact source row", () => {
+  test.use({ viewport: { width: 390, height: 480 }, hasTouch: true });
+
+  for (const surface of ["Sites", "Sources"] as const) {
+    test(`${surface} shows a pending scan on its own row without starting it twice`, async ({ page }) => {
+      await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+      await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+      const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+      const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+      if (surface === "Sources") {
+        await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+        await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+      }
+      const chooser = surface === "Sites" ? rail : page.getByRole("dialog", { name: "Sources", exact: true });
+      const scan = chooser.getByRole("button", { name: "Scan Field drive", exact: true });
+      const otherScan = chooser.getByRole("button", { name: "Scan Studio archive", exact: true });
+      const row = chooser.getByRole("listitem").filter({
+        has: page.getByRole("button", { name: "Open Field drive in Atlas", exact: true }),
+      });
+      const starting = row.getByText("Starting scan…", { exact: true });
+
+      const request = await page.evaluateHandle(() => {
+        const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (command: string, args: { selector?: { site_id?: string } }) => Promise<unknown> };
+        };
+        const invoke = bridge.invoke.bind(bridge);
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const state = { calls: 0, pending: false, release };
+        bridge.invoke = async (command, args) => {
+          if (command !== "start_scan" || args.selector?.site_id !== "field-drive") return invoke(command, args);
+          state.calls += 1;
+          const reply = await invoke(command, args);
+          state.pending = true;
+          await gate;
+          return reply;
+        };
+        return state;
+      });
+      try {
+        if (surface === "Sites") await scan.press("Enter");
+        else await scan.tap();
+        await expect.poll(() => request.evaluate((state) => state.pending)).toBe(true);
+        await expect(starting).toBeInViewport();
+        await expect(scan).toBeInViewport();
+        await expect(scan).toBeDisabled();
+        await expect(scan).toBeFocused();
+        await expect(scan).toHaveAttribute("aria-busy", "true");
+        await expect(otherScan).toBeEnabled();
+
+        if (surface === "Sites") await page.keyboard.press("Enter");
+        else {
+          // Send the tap even though the control is marked aria-disabled.
+          const bounds = (await scan.boundingBox())!;
+          await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        }
+        expect(await request.evaluate((state) => state.calls)).toBe(1);
+        await expect(scan).toBeFocused();
+      } finally {
+        await request.evaluate((state) => state.release());
+      }
+      const stop = chooser.getByRole("button", { name: "Stop scan of Field drive", exact: true });
+      await expect(stop).toBeEnabled();
+      await expect(stop).toBeFocused();
+      await expect(starting).toBeHidden();
+      await expect(currentFolder(page)).toHaveText("Studio archive");
+      if (surface === "Sources") await page.keyboard.press("Escape");
+      await expect(rail).toBeVisible();
+      await expect(contents).toBeVisible();
+      await expect(page.getByText("A scan is already running for this selection.")).toBeHidden();
+    });
+  }
+});
+
 for (const surface of ["Sites", "Sources"] as const) {
   test(`${surface} shows which site is opening and lets another site supersede it`, async ({ page }) => {
     await page.goto("/mock/");

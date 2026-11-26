@@ -15,6 +15,7 @@ interface SourceLibraryProps {
   onClose: () => void;
   onAdd?: (event: MouseEvent<HTMLButtonElement>) => void;
   onScan: (site_id: string) => void;
+  startingSiteIds?: ReadonlySet<string>;
   scanRequests: ReadonlyMap<string, number>;
   blockedIds: ReadonlySet<string>;
   scanAllRequests: ReadonlySet<number>;
@@ -39,7 +40,7 @@ function inventoryLabel(site: SiteOverview, scanning: boolean): string {
 }
 
 export function SourceLibrary({
-  sites, workspaceName, activeId, openingSiteId, addedSite, onSelect, onClose, onAdd, onScan, scanRequests, blockedIds,
+  sites, workspaceName, activeId, openingSiteId, addedSite, onSelect, onClose, onAdd, onScan, startingSiteIds, scanRequests, blockedIds,
   scanAllRequests, cancellingRequests, progressBySite, scanInterruptions, onCancelScan, onManage, error, errorAction, recovery,
 }: SourceLibraryProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -101,7 +102,8 @@ export function SourceLibrary({
             </div>
             <ul className="source-list">
               {sites.map((site) => {
-                const requestId = scanRequests.get(site.id);
+                const starting = startingSiteIds?.has(site.id) ?? false;
+                const requestId = starting ? undefined : scanRequests.get(site.id);
                 const scanning = requestId !== undefined;
                 const stopping = scanning && cancellingRequests.has(requestId);
                 const scanAll = scanning && scanAllRequests.has(requestId);
@@ -112,7 +114,7 @@ export function SourceLibrary({
                 const scanRecoveryAction = scanRecovery(kind === "cancelled" && interruption?.has_inventory ? undefined : kind);
                 const hasInventory = siteHasInventory(site);
                 const resuming = !scanRecoveryAction && hasInventory && site.hash_status === "pending";
-                const scanUnavailable = stopping || (!scanning && blockedIds.has(site.id));
+                const scanUnavailable = starting || stopping || (!scanning && blockedIds.has(site.id));
                 const scanLabel = stopping ? "Stopping…" : scanning ? scanAll ? "Stop all" : "Stop scan"
                   : scanRecoveryAction?.shortAction ?? (resuming ? "Resume" : site.latest_inventory_at ? "Rescan" : "Scan");
                 const scanActionLabel = stopping ? `Scan is stopping for ${site.name}`
@@ -120,9 +122,10 @@ export function SourceLibrary({
                     : scanRecoveryAction ? `${scanRecoveryAction.action} of ${site.name}`
                       : resuming ? `Resume verification of ${site.name}` : `Scan ${site.name}`;
                 const justAdded = addedSite?.id === site.id;
-                const showAdded = justAdded && !scanning && !scanRecoveryAction && site.scan_state === "idle" && !hasInventory;
+                const showAdded = justAdded && !starting && !scanning && !scanRecoveryAction && site.scan_state === "idle" && !hasInventory;
                 const opening = openingSiteId === site.id;
                 const openingId = `source-opening-${site.id}`;
+                const inventoryId = `source-inventory-${site.id}`;
                 return (
                   <li key={site.id} className="source-row" data-added={showAdded || undefined}>
                     <button
@@ -133,7 +136,7 @@ export function SourceLibrary({
                       aria-label={`Open ${site.name} in Atlas`}
                       aria-busy={opening || undefined}
                       aria-disabled={opening || undefined}
-                      aria-describedby={`source-location-${site.id} source-inventory-${site.id}${opening ? ` ${openingId}` : ""}`}
+                      aria-describedby={`source-location-${site.id} ${inventoryId}${opening ? ` ${openingId}` : ""}`}
                       onClick={(event) => {
                         event.currentTarget.focus({ preventScroll: true });
                         if (!opening) onSelect(site.id);
@@ -146,10 +149,10 @@ export function SourceLibrary({
                           <small id={`source-location-${site.id}`} title={site.location}>{site.location}</small>
                         </span>
                       </span>
-                      <span id={`source-inventory-${site.id}`} className="source-inventory" data-scanning={scanning}>
+                      <span id={inventoryId} className="source-inventory" data-scanning={starting || scanning}>
                         {showAdded && <span className="source-added" role="status">Site added</span>}
-                        <span title={!scanning ? interruption?.message ?? undefined : undefined}>
-                          {stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase)
+                        <span title={starting || scanning ? undefined : interruption?.message ?? undefined}>
+                          {starting ? "Starting scan…" : stopping ? "Stopping" : progress ? scanPhaseLabel(progress.phase)
                             : scanning ? inventoryLabel(site, true) : scanRecoveryAction?.status ?? inventoryLabel(site, false)}
                         </span>
                         {progress ? (
@@ -162,6 +165,7 @@ export function SourceLibrary({
                     </button>
                     <div className="source-row-actions">
                       <button className="source-action" type="button" aria-label={scanActionLabel}
+                        aria-busy={starting || undefined} aria-describedby={starting ? inventoryId : undefined}
                         aria-disabled={scanUnavailable || undefined} onClick={(event) => {
                           event.currentTarget.focus({ preventScroll: true });
                           if (scanUnavailable) return;

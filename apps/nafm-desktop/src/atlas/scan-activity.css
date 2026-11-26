@@ -2,6 +2,9 @@
   width: min(328px, calc(100vw - 16px));
 }
 
+.atlas-toolbar-panel-action[aria-busy="true"] { opacity: 1; cursor: progress; }
+.atlas-toolbar-panel-action[aria-busy="true"] > small { color: var(--atlas-accent); }
+
 .atlas-scan-icon {
   position: relative;
   display: grid;

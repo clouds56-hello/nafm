@@ -1,4 +1,4 @@
-import { useCallback, useState, type RefObject } from "react";
+import { useCallback, type RefObject } from "react";
 import { RefreshIcon } from "../management/Icons";
 import type { ScanSite, SiteScanAction } from "./siteVerification";
 
@@ -16,7 +16,6 @@ interface VerificationScanButtonProps {
 export function VerificationScanButton({
   action, onScanSite, onScanError, focusTarget, className, compact, describedBy, siteName,
 }: VerificationScanButtonProps) {
-  const [starting, setStarting] = useState(false);
   const trackFocus = useCallback((button: HTMLButtonElement | null) => {
     if (!button || !focusTarget) return;
     return () => {
@@ -28,10 +27,7 @@ export function VerificationScanButton({
       });
     };
   }, [focusTarget]);
-  const disabled = action.disabled || starting;
-  const showStarting = starting && !action.disabled;
-  const label = showStarting ? action.startingLabel : action.label;
-  const shortLabel = showStarting ? action.startingShortLabel : action.shortLabel;
+  const { disabled, label, shortLabel } = action;
   const accessibleLabel = !siteName ? label : label === "Scan this site"
     ? `Scan ${siteName}` : `${label.replace(/…$/, "")} for ${siteName}`;
 
@@ -39,16 +35,11 @@ export function VerificationScanButton({
     <button
       ref={trackFocus} className={className} type="button"
       aria-label={accessibleLabel} aria-disabled={disabled || undefined} aria-describedby={describedBy}
-      onClick={async (event) => {
+      onClick={(event) => {
         if (disabled) return;
         event.currentTarget.focus({ preventScroll: true });
         onScanError?.(null);
-        setStarting(true);
-        try {
-          await onScanSite(action.siteId, onScanError);
-        } finally {
-          setStarting(false);
-        }
+        void onScanSite(action.siteId, onScanError);
       }}
     >
       <RefreshIcon />

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { ScanSelector, ScanTaskEvent } from "../src/lib/types";
 
 const studio = "Studio archive";
 const field = "Field drive";
@@ -28,6 +29,34 @@ async function openMock(page: Page, scenario = "", initialSite = studio) {
   await page.clock.pauseAt(new Date("2025-11-04T12:10:00Z"));
   await page.goto(scenario ? `/mock/?scenario=${scenario}` : "/mock/");
   await expect(currentFolder(page)).toHaveText(initialSite);
+}
+
+function holdFirstScanStart(page: Page, failure?: string) {
+  return page.evaluateHandle((failure) => {
+    type Call = { selector?: ScanSelector; event?: string; payload?: ScanTaskEvent };
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Call) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = { pending: false, calls: [] as ScanSelector[], started: [] as string[], release };
+    bridge.invoke = async (command, args) => {
+      const event = args?.payload;
+      if (command === "plugin:event|emit" && args.event === "task://scan/events" && event?.kind === "started" && event.site_id) {
+        read.started.push(event.site_id);
+      }
+      if (command !== "start_scan" || !args.selector) return invoke(command, args);
+      read.calls.push(args.selector);
+      if (read.calls.length !== 1) return invoke(command, args);
+      const response = failure ? undefined : await invoke(command, args);
+      read.pending = true;
+      await gate;
+      if (failure) throw new Error(failure);
+      return response;
+    };
+    return read;
+  }, failure);
 }
 
 async function addSurveySite(page: Page) {
@@ -591,6 +620,110 @@ test("a failed rescan stays retryable after another site finishes", async ({ pag
   await expect(currentFolder(page)).toHaveText("Projects");
   await expect(contents).toBeVisible();
   await expect(sites).toBeVisible();
+});
+
+test("a scan start reserves only its site across Sites and Sources until the reply", async ({ page }) => {
+  await openMock(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+  const start = rail.getByRole("button", { name: `Scan ${studio}`, exact: true });
+  const read = await holdFirstScanStart(page);
+  const activity = activityPanel(page);
+
+  try {
+    await start.press("Enter");
+    await expect.poll(() => read.evaluate((read) => read.pending && read.started.includes("studio-archive"))).toBe(true);
+    await expect(start).toBeDisabled();
+    await expect(start).toHaveAttribute("aria-busy", "true");
+    await activityTrigger(page).press("Enter");
+    const starting = activity.getByRole("region", { name: studio, exact: true });
+    await expect(starting.getByText("Starting…", { exact: true })).toBeVisible();
+    await expect(starting.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+    await expect(page.getByRole("button", { name: "Scan all", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: /^Sources\b/ }).press("Enter");
+    const sources = page.getByRole("dialog", { name: "Sources", exact: true });
+    const duplicate = sources.getByRole("button", { name: `Scan ${studio}`, exact: true });
+    await expect(duplicate).toBeDisabled();
+    await duplicate.press("Enter");
+    await sources.getByRole("button", { name: `Scan ${field}`, exact: true }).press("Enter");
+    await expect(sources.getByRole("button", { name: `Stop scan of ${field}`, exact: true })).toBeEnabled();
+    await expect(duplicate).toBeDisabled();
+    expect(await read.evaluate(({ calls }) => calls)).toEqual([{ site_id: "studio-archive" }, { site_id: "field-drive" }]);
+  } finally {
+    await read.evaluate((read) => read.release());
+  }
+
+  const sources = page.getByRole("dialog", { name: "Sources", exact: true });
+  await expect(sources.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
+  await expect(sources.getByRole("button", { name: `Stop scan of ${field}`, exact: true })).toBeEnabled();
+});
+
+test("a failed Scan all start releases the site controls without changing the folder", async ({ page }) => {
+  await openMock(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+  const actions = page.getByRole("button", { name: "Workspace actions", exact: true });
+  const scanAll = page.getByRole("button", { name: "Scan all", exact: true });
+  const scans = [studio, field, "Team share"].map((name) => rail.getByRole("button", { name: `Scan ${name}`, exact: true }));
+  const failure = "The scan service could not start the request.";
+  const read = await holdFirstScanStart(page, failure);
+
+  try {
+    await actions.press("Enter");
+    await scanAll.press("Enter");
+    await expect.poll(() => read.evaluate((read) => read.pending)).toBe(true);
+    for (const scan of scans) {
+      await expect(scan).toBeDisabled();
+      await expect(scan).toHaveAttribute("aria-busy", "true");
+    }
+    await scans[1].press("Enter");
+    await rail.getByRole("button", { name: `Open ${field} in Atlas`, exact: true }).press("Enter");
+    await expect(currentFolder(page)).toHaveText(field);
+    await actions.press("Enter");
+    await expect(scanAll).toBeDisabled();
+    await scanAll.press("Enter");
+    expect(await read.evaluate(({ calls }) => calls)).toEqual([{ all: true }]);
+  } finally {
+    await read.evaluate((read) => read.release());
+  }
+
+  await expect(page.getByText(failure, { exact: true })).toBeVisible();
+  await expect(scanAll).toBeEnabled();
+  await page.keyboard.press("Escape");
+  for (const scan of scans) await expect(scan).toBeEnabled();
+  await expect(currentFolder(page)).toHaveText(field);
+  await scans[1].press("Enter");
+  await expect(rail.getByRole("button", { name: `Stop scan of ${field}`, exact: true })).toBeEnabled();
+});
+
+test("completion before a scan start reply does not restore a finished scan", async ({ page }) => {
+  await openMock(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const rail = page.getByRole("complementary", { name: "Sites", exact: true });
+  const start = rail.getByRole("button", { name: `Scan ${studio}`, exact: true });
+  const read = await holdFirstScanStart(page);
+  const activity = activityPanel(page);
+
+  try {
+    await start.press("Enter");
+    await expect.poll(() => read.evaluate((read) => read.pending)).toBe(true);
+    await activityTrigger(page).press("Enter");
+    await page.clock.runFor(5_700);
+    await expect(activity.getByRole("region", { name: "Latest scan result", exact: true }))
+      .toContainText("Scan finished");
+    await expect(start).toBeDisabled();
+  } finally {
+    await read.evaluate((read) => read.release());
+  }
+
+  await expect(start).toBeEnabled();
+  await expect(activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await start.press("Enter");
+  await expect(rail.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
 });
 
 test("Scan all shows one Stop action for its sites and retains the result", async ({ page }) => {
