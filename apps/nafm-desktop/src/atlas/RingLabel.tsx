@@ -17,17 +17,16 @@ interface Label {
 const preferredSize = [15, 12.5, 11.5] as const;
 const graphemes = typeof Intl.Segmenter === "function" ? new Intl.Segmenter() : null;
 
-function fitName(name: string, available: number, measure: (text: string) => number, tier: number) {
-  if (measure(name) <= available) return name;
-  if (tier === 2 || !graphemes) return "";
+function fitPrefix(name: string, suffix: string, minimum: number, available: number, measure: (text: string) => number) {
+  if (!graphemes) return "";
   const letters = Array.from(graphemes.segment(name), (part) => part.segment);
   // A few isolated letters reveal little on a busy map. The full name remains in the preview.
-  let low = tier === 0 ? 4 : 7;
+  let low = minimum;
   let high = letters.length - 1;
   let fit = "";
   while (low <= high) {
     const count = Math.floor((low + high) / 2);
-    const candidate = letters.slice(0, count).join("").trimEnd() + "…";
+    const candidate = letters.slice(0, count).join("").trimEnd() + suffix;
     if (measure(candidate) <= available) {
       fit = candidate;
       low = count + 1;
@@ -36,6 +35,17 @@ function fitName(name: string, available: number, measure: (text: string) => num
     }
   }
   return fit;
+}
+
+function fitName(name: string, available: number, measure: (text: string) => number, sector: Sector) {
+  if (measure(name) <= available) return name;
+  const minimum = sector.tier === 0 ? 4 : 7;
+  const extension = sector.tier === 2 && sector.node.kind === "file" ? /\.([\p{L}\p{N}]{1,8})$/u.exec(name) : null;
+  if (extension?.index) {
+    const withExtension = fitPrefix(name.slice(0, extension.index), `…${extension[1]}`, minimum, available, measure);
+    if (withExtension) return withExtension;
+  }
+  return fitPrefix(name, "…", minimum, available, measure);
 }
 
 function ringValue(sector: Sector, metric: HealthMetric | null, targetCompleteness: number) {
@@ -74,7 +84,7 @@ function layoutLabels(
     }
     const padding = fontSize / 2;
     const available = arcLength - 2 * padding;
-    const name = fitName(fullName, available, measure, tier);
+    const name = fitName(fullName, available, measure, sector);
     if (!name) continue;
     let value = "";
     if (tier === 0 && name === fullName) {

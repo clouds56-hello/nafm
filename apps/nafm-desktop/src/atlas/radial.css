@@ -348,14 +348,23 @@
 .atlas-sector-preview[data-input="touch"] {
   position: relative;
   inset: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
   width: 100%;
-  max-height: 50dvh;
-  overflow-y: auto;
-  padding: 10px 8px 10px 14px;
+  max-height: 60dvh;
+  padding: 10px 14px;
   transform: none;
   pointer-events: auto;
 }
-.atlas-sector-preview[data-input="touch"] .atlas-sector-preview__body { flex: 1; }
+.atlas-sector-preview[data-input="touch"] .atlas-sector-preview__body {
+  grid-column: 1 / -1;
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 .atlas-sector-preview__open, .atlas-sector-preview__dismiss {
   display: inline-flex;
   flex: none;
@@ -365,6 +374,7 @@
   border-radius: 6px;
 }
 .atlas-sector-preview__open {
+  justify-self: start;
   padding: 4px 12px;
   border: 1px solid #5b6188;
   background: #2e324a;

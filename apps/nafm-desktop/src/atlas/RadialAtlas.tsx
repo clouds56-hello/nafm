@@ -400,7 +400,8 @@ function RadialPlot({
                   onPointerDown={(event) => { pointing.current = event.pointerType; }}
                   onPointerCancel={() => { pointing.current = null; }}
                   onPointerMove={(event) => {
-                    if (event.pointerType === "touch" || event.buttons || (preview?.input === "pointer" && preview.id === node.id)) return;
+                    if (event.pointerType === "touch" || event.buttons || preview?.input === "touch") return;
+                    if (preview?.input === "pointer" && preview.id === node.id) return;
                     showPreview(sector, "pointer", event);
                   }}
                   onPointerLeave={() => setPreview((current) => current?.input === "pointer" && current.id === node.id ? null : current)}

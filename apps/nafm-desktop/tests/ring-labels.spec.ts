@@ -54,6 +54,31 @@ test("ring labels fit their sectors when resized and open the item under the tex
     .toHaveText("Photo Library");
 });
 
+test("outer file labels keep their names and extensions recognizable on a crowded map", async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 700 });
+  await page.goto("/mock/?scenario=deep");
+  await page.getByRole("button", { name: "Sites", exact: true }).click();
+  await page.getByRole("button", { name: "Contents & details", exact: true }).click();
+  const map = page.getByRole("region", { name: "Circular storage map" }).getByRole("figure");
+  const fullName = "Trailer master.mov";
+  const copies = map.getByRole("button", { name: /^Trailer master\.mov,/ });
+  const labels = copies.locator(".radial-atlas__label text:visible");
+  await expect(labels).toHaveText([fullName, fullName]);
+
+  for (const width of [880, 390]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(labels).toHaveText([/^Trail.*….*mov$/, /^Trail.*….*mov$/]);
+    await expect.poll(() => labelsOutsideSector(labels)).toEqual([]);
+  }
+
+  await map.getByRole("button", { name: /^Projects,/ }).press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect(copies.first()).toBeFocused();
+  const preview = page.locator(".atlas-sector-preview");
+  await expect(preview.getByText(fullName, { exact: true })).toBeVisible();
+  await expect(preview.getByText("Projects / Brand campaign", { exact: true })).toBeVisible();
+});
+
 test("nested arcs identify the folders containing identical file copies", async ({ page }) => {
   await page.goto("/mock/");
   const map = page.getByRole("region", { name: "Circular storage map" });
@@ -298,9 +323,13 @@ test.describe("touch Atlas previews", () => {
         expect(film.y).toBeCloseTo(initialFilm.y, 1);
       }
 
+      const filmPreview = map.getByRole("group", { name: "Preview of Launch film.mov", exact: true });
+      await page.mouse.move(film.x, film.y);
+      await expect(projectPreview.getByRole("button", { name: "Open folder", exact: true })).toBeVisible();
+      await expect(filmPreview).toBeHidden();
+
       await page.touchscreen.tap(film.x, film.y);
       await expect(projectPreview).toBeHidden();
-      const filmPreview = map.getByRole("group", { name: "Preview of Launch film.mov", exact: true });
       await expect(filmPreview).toBeVisible();
       await expect(folder).toHaveText("Studio archive");
       await filmPreview.getByRole("button", { name: "View details", exact: true }).tap();
@@ -308,6 +337,69 @@ test.describe("touch Atlas previews", () => {
       if (viewport.width < 880) await expect(sites).toBeVisible();
     });
   }
+
+  test("a deep touch preview starts with the file visible and keeps both actions reachable", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 250 });
+    await page.goto("/mock/?scenario=deep");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    const folder = page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
+    for (const name of ["Production Archive", "2025 Campaigns", "Spring Launch", "Camera Originals"]) {
+      await map.getByRole("button", { name: new RegExp(`^${name},`) }).press("Enter");
+      await expect(folder).toHaveText(name);
+    }
+    const options = page.getByRole("button", { name: "Map options", exact: true });
+    await options.press("Enter");
+    await page.getByRole("button", { name: "Coverage", exact: true }).press("Enter");
+    if (await options.getAttribute("aria-expanded") === "true") await page.keyboard.press("Escape");
+
+    const file = map.getByRole("button", { name: /^Day 03 interview\.mxf,/ });
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+    await expect.poll(async () => (await arcMidpoint(file)).hittable).toBe(true);
+    const point = await arcMidpoint(file);
+    await page.touchscreen.tap(point.x, point.y);
+
+    const preview = map.getByRole("group", { name: "Preview of Day 03 interview.mxf", exact: true });
+    const summary = preview.locator(".atlas-sector-preview__body");
+    const open = preview.getByRole("button", { name: "View details", exact: true });
+    const dismiss = preview.getByRole("button", { name: "Dismiss preview", exact: true });
+    await expect(preview.getByText("File", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(preview.getByText("Day 03 interview.mxf", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(preview.getByText("Second Unit / Interview Selects", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    const layout = await preview.evaluate((card) => {
+      const summary = card.querySelector<HTMLElement>(".atlas-sector-preview__body")!;
+      const bounds = summary.getBoundingClientRect();
+      const top = bounds.top + summary.clientTop;
+      const bottom = top + summary.clientHeight;
+      const firstLines = summary.querySelectorAll(".atlas-sector-preview__kind, strong");
+      const actions = card.querySelectorAll("button");
+      return {
+        fullWidth: bounds.width > card.getBoundingClientRect().width * 0.75,
+        startsAtTop: summary.scrollTop === 0 && [...firstLines].every((line) => {
+          const rect = line.getBoundingClientRect();
+          return rect.top >= top && rect.bottom <= bottom;
+        }),
+        clearsActions: [...actions].every((button) => button.getBoundingClientRect().top >= bottom),
+      };
+    });
+    expect(layout).toEqual({ fullWidth: true, startsAtTop: true, clearsActions: true });
+    await expect(open).toBeInViewport({ ratio: 0.99 });
+    await expect(dismiss).toBeInViewport({ ratio: 0.99 });
+
+    const evidence = preview.getByText(/coverage health/i);
+    const outerScroll = await page.evaluate(() => window.scrollY);
+    await summary.evaluate((element) => element.focus({ preventScroll: true }));
+    await expect(summary).toBeFocused();
+    await page.keyboard.press("End");
+    await expect.poll(() => summary.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(evidence).toBeInViewport({ ratio: 0.98 });
+    expect(await page.evaluate(() => window.scrollY)).toBe(outerScroll);
+    await expect(open).toBeInViewport({ ratio: 0.99 });
+    await expect(dismiss).toBeInViewport({ ratio: 0.99 });
+    await open.tap();
+    await expect(preview).toBeHidden();
+    await expect(map.getByRole("complementary", { name: "Inspector" })
+      .getByRole("heading", { name: "Day 03 interview.mxf", exact: true })).toBeVisible();
+  });
 
   test("dismissing a touch preview brings the focused arc back into view", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 320 });

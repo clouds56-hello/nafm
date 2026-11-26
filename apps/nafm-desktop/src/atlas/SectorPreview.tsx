@@ -48,16 +48,17 @@ function focusAction(event: MouseEvent<HTMLButtonElement>) {
   event.currentTarget.focus({ preventScroll: true });
 }
 
-export function PreviewSummary({ node, root, metric, score, folderPath, awaitingInventory = false }: {
+export function PreviewSummary({ node, root, metric, score, folderPath, awaitingInventory = false, scrollable = false }: {
   node: StorageNode;
   root: StorageNode;
   metric: HealthMetric | null;
   score: HealthPresentation | null;
   folderPath?: string;
   awaitingInventory?: boolean;
+  scrollable?: boolean;
 }) {
   return (
-    <div className="atlas-sector-preview__body">
+    <div className="atlas-sector-preview__body" tabIndex={scrollable ? 0 : undefined}>
       <span className="atlas-sector-preview__kind">{kindLabel(node)}</span>
       <strong>{labelFor(node)}</strong>
       {folderPath && <span className="atlas-sector-preview__folder">{folderPath}</span>}
@@ -96,7 +97,15 @@ export function SectorPreview({ preview, sector, root, metric, targetCompletenes
         onClose();
       } : undefined}
     >
-      <PreviewSummary node={node} root={root} metric={metric} score={score} folderPath={sectorFolderPath(sector)} />
+      <PreviewSummary
+        key={node.id}
+        node={node}
+        root={root}
+        metric={metric}
+        score={score}
+        folderPath={sectorFolderPath(sector)}
+        scrollable={interactive}
+      />
       {interactive && (
         <>
           <button type="button" className="atlas-sector-preview__open" onMouseDown={focusAction} onClick={onOpen}>{action}</button>
