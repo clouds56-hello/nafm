@@ -125,6 +125,64 @@
   row-gap: 8px;
 }
 
+.atlas-cleanup-review .atlas-review-trash {
+  border-color: #975d6b;
+  background: #492d3b;
+  color: #f4dce4;
+}
+
+.atlas-cleanup-review button.atlas-review-trash:not([aria-disabled="true"]):hover {
+  border-color: #ba7c8a;
+  background: #643746;
+}
+
+.atlas-review-confirmation {
+  display: grid;
+  flex: 1 1 100%;
+  min-width: 0;
+  gap: 10px;
+}
+
+.atlas-review-confirmation h3 {
+  margin: 0;
+  color: var(--atlas-ink);
+  font-size: 13px;
+}
+
+.atlas-review-confirmation p,
+.atlas-review-receipt p,
+.atlas-review-result > p { margin: 3px 0 0; }
+
+.atlas-review-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.atlas-review-receipt:focus-visible { outline-offset: -2px; }
+
+.atlas-review-receipt summary { color: var(--atlas-accent); cursor: pointer; }
+.atlas-review-receipt details ul { margin-top: 7px; }
+
+.atlas-review-outcome-files {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.atlas-review-outcome-files li {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: var(--atlas-muted);
+  overflow-wrap: anywhere;
+}
+
+.atlas-review-outcome-files code { color: var(--atlas-ink); }
+
 .atlas-review-history { display: flex; align-items: center; gap: 4px; }
 .atlas-cleanup-review .atlas-review-history button { min-width: 44px; text-align: center; }
 

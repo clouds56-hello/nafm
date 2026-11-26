@@ -1374,6 +1374,10 @@ export function WorkspaceAtlas({ workspace, folderLaunches, siteAddition, browsi
           loadingPreview={state.previewLoading}
           error={state.reviewError}
           stagingBusy={state.stagingBusy}
+          cleanupBusy={state.cleanupBusy}
+          cleanupScansActive={state.activeTaskCount > 0}
+          cleanupReport={state.cleanupReport}
+          onMoveToTrash={state.moveStagedToTrash}
           onClose={closeReview}
           onPreview={() => void state.runPreview()}
           onRemove={(path) => void state.removeStaged(path)}

@@ -16,6 +16,7 @@ import type {
   CancelScanReport,
   CancelScanMode,
   CleanupPreview,
+  CleanupReport,
   Dashboard,
   DirectoryAdjacentFile,
   DirectoryAdjacentFileRequest,
@@ -365,6 +366,14 @@ export function unstagePath(path: string, expectedWorkspace: string): Promise<St
 
 export function previewCleanup(expectedWorkspace: string): Promise<CleanupPreview> {
   return invoke<CleanupPreview>("preview_cleanup", { expectedWorkspace });
+}
+
+export function moveCleanupToTrash(expectedWorkspace: string, planId: string): Promise<CleanupReport> {
+  return invoke<CleanupReport>("move_cleanup_to_trash", { expectedWorkspace, planId });
+}
+
+export function loadCleanupActivity(expectedWorkspace: string): Promise<CleanupReport | null> {
+  return invoke<CleanupReport | null>("load_cleanup_activity", { expectedWorkspace });
 }
 
 export function moveStageHistory(expectedWorkspace: string, request: StageHistoryRequest): Promise<CleanupPreview> {

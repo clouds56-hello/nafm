@@ -77,7 +77,17 @@ to compare against another source. A checkmark beside **100/100** marks a
 verified perfect score. Near-perfect scores show up to two decimal
 places, or **<100** when the difference is too small to show. An **≈**
 marks an estimate. Details lets you find similar folders or
-exact copies and stage verified duplicates. **Review** previews cleanup.
+exact copies and stage verified duplicates. Open **Review**, choose **Preview
+cleanup**, and check the staged and retained files. Choose **Move to Trash** and
+confirm to move the staged local copies. NAFM rechecks their contents and an
+independent retained local copy for each group before moving anything in that
+group. Direct SMB and SSH copies can be inspected in Review. Remove them from the
+staged list before moving local files to Trash.
+
+Review shows your latest cleanup, including any files that were skipped. Restore
+files from the system Trash or Recycle Bin, then rescan the affected site to add
+them back to the Atlas. Trashed files still occupy disk space until the system
+Trash is emptied.
 
 ### Interactive mock dashboard
 
@@ -91,7 +101,7 @@ to try changing destinations while a folder is loading. **Reset** reloads the
 current scenario from its starting location, and **App only** opens the app view.
 Reloading restores the sample data. The browser remembers each scenario's
 browsing location and each site's Contents sort order.
-Scans and SMB setup are simulated in the browser.
+Scans, SMB setup, and moving files to Trash are simulated in the browser.
 Open **Photo Library** and its **Contents** to scroll through 96 photo proofs.
 
 Use the mock for frontend review. Vite reloads it when the shared frontend

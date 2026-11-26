@@ -512,6 +512,27 @@ export interface StageHistoryRequest {
   target_snapshot_id: string;
 }
 
+export interface CleanupActionBlocker {
+  file_id: string;
+  reason: "unsupported_source" | "no_local_retained_copy";
+}
+
+export interface CleanupActionPreview {
+  plan_id: string | null;
+  blockers: CleanupActionBlocker[];
+}
+
+export interface CleanupFailure {
+  file: DuplicateFile;
+  message: string;
+}
+
+export interface CleanupReport {
+  operation_id: string;
+  moved_files: DuplicateFile[];
+  skipped_files: CleanupFailure[];
+}
+
 export interface CleanupPreview {
   staged_files: DuplicateFile[];
   hashes_pending: number;
@@ -526,6 +547,7 @@ export interface CleanupPreview {
   duplicate_file_count_before: number;
   duplicate_file_count_after: number;
   db_entry_count_stable: boolean;
+  action: CleanupActionPreview;
   review_groups: StageReviewGroup[];
   duplicate_groups_after: Array<{
     group_id: string;

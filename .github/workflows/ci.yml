@@ -136,7 +136,7 @@ jobs:
         run: pnpm build
 
   ssh-auth:
-    name: Desktop SSH authentication (${{ matrix.os }})
+    name: Desktop platform checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -167,3 +167,7 @@ jobs:
       - name: Test actual helper on Windows
         if: runner.os == 'Windows'
         run: node --experimental-strip-types scripts/test-ssh-askpass.ts target/debug/nafm-desktop.exe
+      - name: Verify a temporary file reaches the Windows Recycle Bin
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --locked -p nafm-core --lib repository::cleanup_trash::windows_recycles_synthetic_fixture -- --ignored --exact

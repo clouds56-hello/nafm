@@ -5,7 +5,7 @@ import type {
   CancelScanReport, Dashboard, ScanPhase, ScanSelector, ScanSummary, ScanTask, ScanTaskEvent, ScanTaskSiteState,
   SiteOverview, StorageNode,
 } from "../src/lib/types";
-import { buildFolder, createSampleTree, INVENTORY_DATE, type PreviewScenario } from "./fixtures";
+import { buildFolder, createSampleTree, type PreviewScenario } from "./fixtures";
 import { createManagementApi } from "./management";
 import { createStorageApi } from "./storage";
 import { checkWorkspace, getSite, getTree, numberArg, record, setTree, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
@@ -71,7 +71,7 @@ function verifiedInventory(root: StorageNode, count: number): StorageNode {
 function usedInventory(workspace: PreviewWorkspace, site: SiteOverview) {
   const root = getTree(workspace, site.id);
   const roots = root.children.map((child) => {
-    if (child.file_count > 0 || !child.path || workspace.folders.get(child.id)?.added_at === INVENTORY_DATE) return child;
+    if (!child.path || workspace.inventoried_roots.has(child.id)) return child;
     return createSampleTree({
       ...site, location: child.path, kind: child.kind === "smb_root" ? "smb" : "local",
     }, child.id).children[0];
@@ -306,6 +306,16 @@ export function installPreviewBackend(scenario: PreviewScenario) {
     preview_cleanup(args) {
       checkWorkspace(management.current(), args.expectedWorkspace);
       return storage.cleanup();
+    },
+    move_cleanup_to_trash(args) {
+      checkWorkspace(management.current(), args.expectedWorkspace);
+      if (scans.size) throw new Error("Finish the current scan, then preview cleanup again.");
+      return storage.moveCleanupToTrash(args);
+    },
+    load_cleanup_activity(args) {
+      const workspace = management.current();
+      checkWorkspace(workspace, args.expectedWorkspace);
+      return [...workspace.cleanup_operations.values()].at(-1) ?? null;
     },
     start_scan(args) {
       checkWorkspace(management.current(), args.expectedWorkspace);

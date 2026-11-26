@@ -9,7 +9,9 @@ import {
   getStorageFileReveal,
   getStorageNodeReveal,
   getStorageViewSnapshot,
+  loadCleanupActivity,
   loadDashboard,
+  moveCleanupToTrash,
   moveStageHistory,
   onScanTaskEvent,
   previewCleanup,
@@ -33,6 +35,7 @@ import {
 import type {
   CleanupPreview,
   CleanupPreviewInvalidation,
+  CleanupReport,
   CancelScanMode,
   Dashboard,
   DirectoryRefreshTarget,
@@ -325,6 +328,8 @@ export function useDashboard(
   const [cancellingRequestIds, setCancellingRequestIds] = useState<Set<number>>(new Set());
   const [stagingBusy, setStagingBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupActivity, setCleanupActivity] = useState<{ workspace: string; report: CleanupReport } | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<CleanupPreviewState>({ status: "idle" });
   const preview = cleanupPreview.status === "complete" ? cleanupPreview.report : null;
   const previewLoading = cleanupPreview.status === "checking";
@@ -364,6 +369,7 @@ export function useDashboard(
   const finalAnalysisRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalAnalysisRefreshSitesRef = useRef<Set<string>>(new Set());
   const cleanupPreviewRequestRef = useRef(0);
+  const cleanupActivityRequestRef = useRef(0);
   const stagingInProgress = useRef(false);
   const dashboardRequestRef = useRef(0);
   const workspaceNameRef = useRef(expectedWorkspace);
@@ -1936,6 +1942,62 @@ export function useDashboard(
     }
   }, [applyStagingReport]);
 
+  const reviewWorkspace = dashboard?.workspace_name;
+  const cleanupReport = cleanupActivity?.workspace === reviewWorkspace ? cleanupActivity?.report ?? null : null;
+  useEffect(() => {
+    if (!reviewOpen || !reviewWorkspace) return;
+    const requestId = ++cleanupActivityRequestRef.current;
+    let disposed = false;
+    void loadCleanupActivity(reviewWorkspace).then((report) => {
+      if (disposed || requestId !== cleanupActivityRequestRef.current || workspaceNameRef.current !== reviewWorkspace) return;
+      setCleanupActivity(report ? { workspace: reviewWorkspace, report } : null);
+    }).catch((error: unknown) => {
+      if (!disposed && requestId === cleanupActivityRequestRef.current && workspaceNameRef.current === reviewWorkspace) {
+        setReviewError(errorMessage(error));
+      }
+    });
+    return () => { disposed = true; };
+  }, [reviewOpen, reviewWorkspace]);
+
+  const moveStagedToTrash = useCallback(async (planId: string) => {
+    if (stagingInProgress.current) return false;
+    if (pendingScanStartsRef.current.size || activeScanTasksRef.current.size) {
+      setReviewError("Wait for scans to finish before moving files to Trash.");
+      return false;
+    }
+    setCleanupBusy(true);
+    cleanupActivityRequestRef.current += 1;
+    try {
+      return await runStageMutation(async (workspace) => {
+        setReviewError(null);
+        let report: CleanupReport;
+        try {
+          report = await moveCleanupToTrash(workspace, planId);
+        } catch (error: unknown) {
+          if (workspaceNameRef.current === workspace) {
+            await reloadDashboard();
+            scheduleFinalAnalysisRefresh([]);
+          }
+          throw error;
+        }
+        if (workspaceNameRef.current !== workspace) return;
+        setCleanupActivity({ workspace, report });
+        invalidateCleanupPreview("staging");
+        await reloadDashboard();
+        if (workspaceNameRef.current === workspace && report.moved_files.length) {
+          setContentRevision((current) => current + 1);
+          // Duplicates and coverage may change even on the site that kept its copies.
+          scheduleFinalAnalysisRefresh([]);
+        }
+      }, (message) => {
+        invalidateCleanupPreview("inventory");
+        setReviewError(message);
+      });
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [invalidateCleanupPreview, reloadDashboard, runStageMutation, scheduleFinalAnalysisRefresh]);
+
   const activeSite = dashboard?.sites.find((site) => site.id === activeSiteId) ?? null;
   const coverageTargetSite = dashboard?.sites.find((site) => site.id === coverageTargetSiteId) ?? null;
   const backendScanState = useMemo(() => {
@@ -2071,6 +2133,9 @@ export function useDashboard(
     previewLoading,
     reviewError,
     runPreview,
+    cleanupBusy,
+    cleanupReport,
+    moveStagedToTrash,
   }), [
     activeTaskCount,
     activeScanTasks,
@@ -2085,6 +2150,8 @@ export function useDashboard(
     childrenLoading,
     loadingMoreChildren,
     childrenPage,
+    cleanupBusy,
+    cleanupReport,
     clearFolderLaunchFeedback,
     completionBySite,
     scanInterruptions,
@@ -2110,6 +2177,7 @@ export function useDashboard(
     location,
     locationFailure,
     locationProgress,
+    moveStagedToTrash,
     notice,
     preview,
     previewInvalidation,

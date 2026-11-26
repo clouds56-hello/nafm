@@ -14,8 +14,9 @@ pub use error::{NafmError, Result};
 pub use hash::{Blake3HashAlgorithm, ContentHasher, HashAlgorithm, default_hash_algorithm};
 pub use installer::AgentInstallation;
 pub use model::{
-  AddSiteFolderRequest, AdjacentFileDirection, AdjacentStorageFile, AdjacentStorageFileRequest, DirectorySort,
-  DirectorySortField, DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus, FileContentMatchesPage,
+  AddSiteFolderRequest, AdjacentFileDirection, AdjacentStorageFile, AdjacentStorageFileRequest, CleanupActionBlocker,
+  CleanupActionBlockerReason, CleanupActionPreview, CleanupFailure, CleanupReport, DirectorySort, DirectorySortField,
+  DuplicateFile, DuplicateGroup, FileContentMatch, FileContentMatchStatus, FileContentMatchesPage,
   FolderContentSummary, FolderSimilarityAnchor, FolderSimilarityMatch, FolderSimilarityPage, HiddenPolicy,
   IndexedFileMatch, IndexedFileSearchPage, MissingContentGroup, RemoteMachine, RemotePathMapping, ScanEvent, ScanPhase,
   ScanProgress, ScanStarted, ScanSummary, Site, SiteFolder, SiteFolderKind, SiteHashStatus, SiteOverview,

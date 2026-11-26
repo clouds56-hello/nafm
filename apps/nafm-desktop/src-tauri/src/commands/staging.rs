@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nafm_core::{StageAddReport, StageCommitDryRun, StageHistoryRequest, StageRemoveReport};
+use nafm_core::{CleanupReport, StageAddReport, StageCommitDryRun, StageHistoryRequest, StageRemoveReport};
 use tauri::State;
 
 use crate::state::AppState;
@@ -41,6 +41,36 @@ pub async fn preview_cleanup(
   let repository = state.repository_for(&expected_workspace).await?;
   repository
     .stage_commit_dry_run()
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn move_cleanup_to_trash(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+  plan_id: String,
+) -> Result<CleanupReport, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&expected_workspace).await?;
+  if !state.scan_tasks.active_tasks().is_empty() {
+    return Err("Wait for scans to finish before moving files to Trash.".to_owned());
+  }
+  repository
+    .move_cleanup_to_trash(&plan_id)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn load_cleanup_activity(
+  state: State<'_, AppState>,
+  expected_workspace: String,
+) -> Result<Option<CleanupReport>, String> {
+  let _transition = state.transition_gate.lock().await;
+  let repository = state.repository_for(&expected_workspace).await?;
+  repository
+    .latest_cleanup_activity()
     .await
     .map_err(|error| error.to_string())
 }

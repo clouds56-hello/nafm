@@ -1,12 +1,12 @@
 import type {
-  CleanupPreview, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
+  CleanupActionBlocker, CleanupPreview, CleanupReport, DirectorySort, DuplicateFile, FileContentMatchesPage, FolderContentSummary, FolderSimilarityMatch, FolderSimilarityPage,
   IndexedFileSearchPage,
   SiteKind, SiteOverview, StageAddReport, StageHistoryState, StageRemoveReport, StageWarning, StorageChildrenPage,
   StorageDirectoryAnchor, StorageDirectoryFilter, StorageFileReveal, StorageLocation, StorageNode, StorageTree, StorageViewSnapshot,
 } from "../src/lib/types";
 import { DEFAULT_DIRECTORY_SORT } from "../src/lib/types";
 import { buildFolder, INVENTORY_DATE } from "./fixtures";
-import { checkWorkspace, compareText, getSite, getTree, numberArg, record, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
+import { checkWorkspace, compareText, getSite, getTree, numberArg, record, setTree, stringArg, type CommandArgs, type PreviewWorkspace } from "./workspace";
 
 interface IndexedFile extends DuplicateFile {
   node_id: string;
@@ -647,10 +647,35 @@ export function createStorageApi(current: () => PreviewWorkspace) {
         retained_files: group.filter((file) => !workspace.staged.has(file.file_id)).map(duplicateFile),
       }];
     }) : [];
+    const stage = stageHistory(workspace, fileById);
+    const blockers: CleanupActionBlocker[] = [];
+    const involvedSites = new Set<string>();
+    function local(file: DuplicateFile) {
+      const root = workspace.folders.get(file.site_folder_id);
+      return root?.kind === "local" && !/^(?:smb:|\/\/|\\\\)/i.test(root.path) && matchesPath(file.path, root.path);
+    }
+    for (const group of reviewGroups) {
+      for (const file of group.retained_files) involvedSites.add(file.site_id);
+      const hasLocalCopy = group.retained_files.some(local);
+      for (const id of group.staged_file_ids) {
+        const file = fileById.get(id)!;
+        involvedSites.add(file.site_id);
+        if (!local(file)) blockers.push({ file_id: id, reason: "unsupported_source" });
+        else if (!hasLocalCopy) blockers.push({ file_id: id, reason: "no_local_retained_copy" });
+      }
+    }
+    if (ready && staged.length && !blockers.length) {
+      const inventories = [...involvedSites].sort(compareText).map((id) => [id, getSite(workspace, id).latest_inventory_at]);
+      const signature = JSON.stringify([stage.snapshot_id, staged, reviewGroups, inventories]);
+      if (workspace.cleanup_plan?.signature !== signature) workspace.cleanup_plan = { signature, plan_id: crypto.randomUUID() };
+    } else {
+      workspace.cleanup_plan = null;
+    }
     return {
       staged_files: staged, hashes_pending: pending,
       cleanup_ready: ready, warnings,
-      stage_history: stageHistory(workspace, fileById),
+      stage_history: stage,
+      action: { plan_id: workspace.cleanup_plan?.plan_id ?? null, blockers },
       verification_blockers: [...verificationBySite].sort(([left], [right]) => compareText(left, right))
         .map(([site_id, fileIds]) => ({ site_id, staged_file_ids: [...fileIds].sort(compareText) })),
       tracked_file_count_before: files.length, tracked_file_count_after: remaining.length,
@@ -663,6 +688,33 @@ export function createStorageApi(current: () => PreviewWorkspace) {
       })),
       review_groups: reviewGroups,
     };
+  }
+
+  function moveCleanupToTrash(args: CommandArgs): CleanupReport {
+    const workspace = current();
+    checkWorkspace(workspace, args.expectedWorkspace);
+    const planId = stringArg(args.planId, "cleanup plan");
+    const existing = workspace.cleanup_operations.get(planId);
+    if (existing) return existing;
+    const preview = cleanup(workspace);
+    if (preview.action.plan_id !== planId) throw new Error("The cleanup preview changed. Review the staged copies again.");
+    const moved = new Set(preview.staged_files.map((file) => file.file_id));
+    function removeMoved(node: StorageNode): StorageNode[] {
+      if (node.kind === "file") return moved.has(`tracked:${node.id}`) ? [] : [node];
+      const children = node.children.flatMap(removeMoved);
+      if (children.length === node.children.length && children.every((child, i) => child === node.children[i])) return [node];
+      if (!children.length && node.kind === "directory") return [];
+      return [buildFolder(node.id, node.name, node.path, node.kind, children)];
+    }
+    for (const id of new Set(preview.staged_files.map((file) => file.site_id))) {
+      setTree(workspace, getSite(workspace, id), getTree(workspace, id).children.flatMap(removeMoved));
+    }
+    for (const id of moved) workspace.staged.delete(id);
+    recordStageSnapshot(workspace);
+    workspace.cleanup_plan = null;
+    const report = { operation_id: crypto.randomUUID(), moved_files: preview.staged_files, skipped_files: [] };
+    workspace.cleanup_operations.set(planId, report);
+    return report;
   }
 
   function siteInventory(site: SiteOverview): SiteOverview {
@@ -679,6 +731,6 @@ export function createStorageApi(current: () => PreviewWorkspace) {
   return {
     tree: (args: CommandArgs) => makeTree(model(args), args),
     location: (args: CommandArgs) => makeLocation(model(args), args),
-    children, adjacentFile, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, moveStageHistory, cleanup, siteInventory,
+    children, adjacentFile, snapshot, searchIndexedFiles, openFolderIn, reveal, revealNode, fileContentMatches, similarFolders, stage, unstage, moveStageHistory, cleanup, moveCleanupToTrash, siteInventory,
   };
 }

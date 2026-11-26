@@ -497,6 +497,38 @@ pub struct StageVerificationBlocker {
   pub staged_file_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CleanupActionPreview {
+  pub plan_id: Option<String>,
+  pub blockers: Vec<CleanupActionBlocker>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CleanupActionBlocker {
+  pub file_id: String,
+  pub reason: CleanupActionBlockerReason,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupActionBlockerReason {
+  UnsupportedSource,
+  NoLocalRetainedCopy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CleanupReport {
+  pub operation_id: String,
+  pub moved_files: Vec<DuplicateFile>,
+  pub skipped_files: Vec<CleanupFailure>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CleanupFailure {
+  pub file: DuplicateFile,
+  pub message: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StageCommitDryRun {
   pub staged_files: Vec<DuplicateFile>,
@@ -519,4 +551,6 @@ pub struct StageCommitDryRun {
   /// Verified groups affected by a ready cleanup, including groups with one remaining copy.
   #[serde(default)]
   pub review_groups: Vec<StageReviewGroup>,
+  #[serde(default)]
+  pub action: CleanupActionPreview,
 }

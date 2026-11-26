@@ -29,6 +29,9 @@ use crate::remote::{
   execute_remote_agent_cancellable, execute_remote_agent_with_handler,
 };
 
+mod cleanup;
+mod cleanup_plan;
+mod cleanup_trash;
 mod directory_projection;
 mod folder_similarity;
 mod indexed_file_search;
@@ -348,6 +351,7 @@ struct SiteScanSnapshot<'a> {
   site: &'a Site,
   site_folders: &'a [SiteFolder],
   expected_inventory_revision: u64,
+  cleanup_epoch: i64,
 }
 
 struct ScanPreparation {
@@ -1489,28 +1493,35 @@ impl Repository {
     let db_path = self.db_path.clone();
     let selector = selector.to_owned();
     let lookup_db_path = db_path.clone();
-    let (site, site_folders, expected_inventory_revision) = task::spawn_blocking(move || {
+    let (site, site_folders, expected_inventory_revision, cleanup_epoch) = task::spawn_blocking(move || {
       let conn = open_connection(&lookup_db_path)?;
-      let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
-      let site_folders = list_site_folders(&conn, Some(&site.id))?;
-      let expected_inventory_revision = conn
-        .query_row(
-          "select inventory_revision from site_scan_state where site_id = ?1",
-          params![site.id],
-          |row| row.get::<_, u64>(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-      Ok::<_, NafmError>((site, site_folders, expected_inventory_revision))
+      cleanup::recover_interrupted(&conn)?;
+      with_deferred_transaction(&conn, || {
+        let site = find_site(&conn, &selector)?.ok_or_else(|| NafmError::SiteNotFound(selector.clone()))?;
+        let site_folders = list_site_folders(&conn, Some(&site.id))?;
+        let expected_inventory_revision = conn
+          .query_row(
+            "select inventory_revision from site_scan_state where site_id = ?1",
+            params![site.id],
+            |row| row.get::<_, u64>(0),
+          )
+          .optional()?
+          .unwrap_or(0);
+        let epoch = cleanup::scan_epoch(&conn)?.ok_or(NafmError::CleanupInProgress)?;
+        Ok((site, site_folders, expected_inventory_revision, epoch))
+      })
     })
     .await??;
 
     if site_folders.iter().any(|folder| folder.kind == SiteFolderKind::Smb) {
       return self
         .scan_site_with_smb(
-          &site,
-          &site_folders,
-          expected_inventory_revision,
+          &SiteScanSnapshot {
+            site: &site,
+            site_folders: &site_folders,
+            expected_inventory_revision,
+            cleanup_epoch,
+          },
           progress_callback,
           cancellation_callback,
         )
@@ -1527,6 +1538,7 @@ impl Repository {
           site: &site,
           site_folders: &site_folders,
           expected_inventory_revision,
+          cleanup_epoch,
         },
         hash_algorithm.as_ref(),
         progress_callback.as_ref(),
@@ -1538,12 +1550,12 @@ impl Repository {
 
   async fn scan_site_with_smb(
     &self,
-    site: &Site,
-    site_folders: &[SiteFolder],
-    expected_inventory_revision: u64,
+    snapshot: &SiteScanSnapshot<'_>,
     progress_callback: Option<ScanProgressCallback>,
     cancellation_callback: Option<ScanCancellationCallback>,
   ) -> Result<ScanSummary> {
+    let site = snapshot.site;
+    let site_folders = snapshot.site_folders;
     check_scan_cancelled(cancellation_callback.as_ref())?;
     report_scan_phase(
       progress_callback.as_ref(),
@@ -1637,13 +1649,18 @@ impl Repository {
     let preparation_site_folders = site_folders.to_vec();
     let hash_algorithm_name = self.hash_algorithm.name().to_owned();
     let scan_time = Utc::now();
+    let expected_inventory_revision = snapshot.expected_inventory_revision;
+    let cleanup_epoch = snapshot.cleanup_epoch;
     let preparation = task::spawn_blocking(move || {
       let conn = open_connection(preparation_db_path)?;
       publish_inventory_atomically(
         &conn,
-        &preparation_site,
-        &preparation_site_folders,
-        expected_inventory_revision,
+        &SiteScanSnapshot {
+          site: &preparation_site,
+          site_folders: &preparation_site_folders,
+          expected_inventory_revision,
+          cleanup_epoch,
+        },
         files_by_path.into_values().collect(),
         &hash_algorithm_name,
         scan_time,
@@ -2080,6 +2097,7 @@ impl Repository {
     let db_path = self.db_path.clone();
     task::spawn_blocking(move || {
       let conn = open_connection(db_path)?;
+      cleanup::recover_interrupted(&conn)?;
       stage_commit_dry_run(&conn)
     })
     .await?
@@ -2254,6 +2272,15 @@ impl Repository {
           singleton integer primary key check (singleton = 1),
           current_snapshot_id integer references stage_snapshots(id)
         );
+
+        create table if not exists cleanup_operations (
+          sequence integer primary key autoincrement,
+          operation_id text not null unique,
+          plan_id text not null unique,
+          intent_json text not null,
+          report_json text
+        );
+        create unique index if not exists idx_cleanup_pending on cleanup_operations ((1)) where report_json is null;
         ",
       )?;
       ensure_site_folder_kind_column(&conn)?;
@@ -2269,6 +2296,7 @@ impl Repository {
       )?;
       backfill_site_scan_state(&conn)?;
       with_immediate_transaction(&conn, || initialize_stage_history(&conn))?;
+      cleanup::recover_interrupted(&conn)?;
       Ok(())
     })
     .await?
@@ -2483,7 +2511,11 @@ fn resolve_site_folder_location(
   if let Some((scheme, _)) = value.split_once("://") {
     return Err(NafmError::UnsupportedLocationScheme(scheme.to_owned()));
   }
-  Ok((SiteFolderKind::Local, std::fs::canonicalize(path)?))
+  let path = std::fs::canonicalize(path)?;
+  if cleanup_trash::is_system_trash_path(&path) {
+    return Err(NafmError::TrashSiteFolder);
+  }
+  Ok((SiteFolderKind::Local, path))
 }
 
 fn ensure_site_folder_does_not_overlap(conn: &Connection, folder: &SiteFolder) -> Result<()> {
@@ -2774,11 +2806,8 @@ fn scan_site_blocking(
   progress_callback: Option<&ScanProgressCallback>,
   cancellation_callback: Option<&ScanCancellationCallback>,
 ) -> Result<ScanSummary> {
-  let SiteScanSnapshot {
-    site,
-    site_folders,
-    expected_inventory_revision,
-  } = scan_snapshot;
+  let site = scan_snapshot.site;
+  let site_folders = scan_snapshot.site_folders;
   check_scan_cancelled(cancellation_callback)?;
   report_scan_phase(progress_callback, site, ScanPhase::Discovering, None, 0, None, 0, 0, 0);
   let files = discover_site_files(site_folders, cancellation_callback, Some((site, progress_callback)))?;
@@ -2797,15 +2826,7 @@ fn scan_site_blocking(
     0,
   );
   check_scan_cancelled(cancellation_callback)?;
-  let preparation = publish_inventory_atomically(
-    conn,
-    site,
-    site_folders,
-    *expected_inventory_revision,
-    files,
-    hash_algorithm.name(),
-    scan_time,
-  )?;
+  let preparation = publish_inventory_atomically(conn, scan_snapshot, files, hash_algorithm.name(), scan_time)?;
 
   let progress_context = Arc::new(ScanProgressContext {
     site_id: site.id.clone(),
@@ -2881,14 +2902,13 @@ fn scan_site_blocking(
 
 fn publish_inventory_atomically(
   conn: &Connection,
-  site: &Site,
-  expected_site_folders: &[SiteFolder],
-  expected_inventory_revision: u64,
+  snapshot: &SiteScanSnapshot<'_>,
   files: Vec<FileProbe>,
   hash_algorithm: &str,
   scan_time: DateTime<Utc>,
 ) -> Result<ScanPreparation> {
   with_immediate_transaction(conn, || {
+    let site = snapshot.site;
     let previous_revision = conn
       .query_row(
         "select inventory_revision from site_scan_state where site_id = ?1",
@@ -2898,8 +2918,9 @@ fn publish_inventory_atomically(
       .optional()?
       .unwrap_or(0);
     let current_site_folders = list_site_folders(conn, Some(&site.id))?;
-    if previous_revision != expected_inventory_revision
-      || !site_folder_configuration_matches(expected_site_folders, &current_site_folders)
+    if previous_revision != snapshot.expected_inventory_revision
+      || cleanup::scan_epoch(conn)? != Some(snapshot.cleanup_epoch)
+      || !site_folder_configuration_matches(snapshot.site_folders, &current_site_folders)
     {
       return Err(NafmError::ScanSuperseded(site.id.clone()));
     }
@@ -3219,6 +3240,9 @@ fn discover_site_files(
 }
 
 fn should_visit(entry: &DirEntry, hidden_policy: HiddenPolicy) -> bool {
+  if entry.file_type().is_dir() && cleanup_trash::is_system_trash_path(entry.path()) {
+    return false;
+  }
   if entry.depth() == 0 {
     return true;
   }
@@ -4014,6 +4038,14 @@ fn stage_commit_dry_run(conn: &Connection) -> Result<StageCommitDryRun> {
 }
 
 fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun> {
+  let (report, _) = cleanup_review_snapshot(conn, cleanup::current_epoch(conn)?)?;
+  Ok(report)
+}
+
+fn cleanup_review_snapshot(
+  conn: &Connection,
+  action_epoch: i64,
+) -> Result<(StageCommitDryRun, cleanup_plan::CleanupPlan)> {
   let tracked_file_count_before = total_file_record_count(conn)?;
   let duplicate_groups_before = find_duplicates(conn, None)?;
   let duplicate_group_count_before = duplicate_groups_before.len() as u64;
@@ -4157,12 +4189,26 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
   let tracked_file_count_after = tracked_file_count_before.saturating_sub(staged_ids.len() as u64);
   let db_entry_count_stable = tracked_file_count_before == total_file_record_count(conn)?;
 
-  Ok(StageCommitDryRun {
+  let stage_history = stage_history_state(conn)?;
+  let mut action_plan = cleanup_plan::derive(
+    conn,
+    &staged_files,
+    &review_groups,
+    cleanup_ready,
+    &stage_history.snapshot_id,
+  )?;
+  if let Some(id) = &mut action_plan.preview.plan_id {
+    *id = blake3::hash(format!("{id}:{action_epoch}").as_bytes())
+      .to_hex()
+      .to_string();
+  }
+
+  let report = StageCommitDryRun {
     staged_files,
     hashes_pending,
     cleanup_ready,
     warnings,
-    stage_history: stage_history_state(conn)?,
+    stage_history,
     verification_blockers,
     tracked_file_count_before,
     tracked_file_count_after,
@@ -4173,7 +4219,9 @@ fn stage_commit_dry_run_snapshot(conn: &Connection) -> Result<StageCommitDryRun>
     db_entry_count_stable,
     duplicate_groups_after,
     review_groups,
-  })
+    action: action_plan.preview.clone(),
+  };
+  Ok((report, action_plan))
 }
 
 fn list_staged_files(conn: &Connection) -> Result<Vec<StagedFileRecord>> {

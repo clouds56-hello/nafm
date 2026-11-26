@@ -1,5 +1,5 @@
 import type {
-  DuplicateFile, ManagedSiteFolder, RemoteMachine, RemotePathMapping, SiteOverview, StorageNode,
+  CleanupReport, DuplicateFile, ManagedSiteFolder, RemoteMachine, RemotePathMapping, SiteOverview, StorageNode,
 } from "../src/lib/types";
 import { buildFolder, createFixtures, INVENTORY_DATE, type PreviewScenario } from "./fixtures";
 
@@ -17,6 +17,9 @@ export interface PreviewWorkspace {
   mappings: Map<string, RemotePathMapping>;
   staged: Map<string, DuplicateFile>;
   stage_history: { snapshots: StageSnapshot[]; current_index: number; next_id: number };
+  cleanup_plan: { signature: string; plan_id: string } | null;
+  cleanup_operations: Map<string, CleanupReport>;
+  inventoried_roots: Set<string>;
 }
 
 export function makeWorkspace(name: string, scenario: PreviewScenario): PreviewWorkspace {
@@ -35,6 +38,7 @@ export function makeWorkspace(name: string, scenario: PreviewScenario): PreviewW
     name, sites: new Map(sites.map((site) => [site.id, site])), trees, folders,
     machines: new Map(), mappings: new Map(), staged: new Map(),
     stage_history: { snapshots: [{ id: "1", file_ids: [] }], current_index: 0, next_id: 2 },
+    cleanup_plan: null, cleanup_operations: new Map(), inventoried_roots: new Set(folders.keys()),
   };
 }
 
@@ -50,6 +54,7 @@ export function getTree(workspace: PreviewWorkspace, id: string) {
 }
 
 export function setTree(workspace: PreviewWorkspace, site: SiteOverview, roots: StorageNode[]) {
+  for (const root of roots) if (root.file_count) workspace.inventoried_roots.add(root.id);
   const tree = buildFolder(`site:${site.id}`, site.name, null, "site", roots);
   workspace.trees.set(site.id, tree);
   workspace.sites.set(site.id, {

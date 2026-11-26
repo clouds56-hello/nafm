@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefCallback, type RefObject } from "react";
 import { fileName, formatBytes, formatCount } from "../../lib/format";
 import type {
-  CleanupPreview, CleanupPreviewInvalidation, DuplicateFile, ReviewPosition, SiteOverview, StageHistoryDirection, StageHistoryRequest, StageHistoryState,
+  CleanupActionBlocker, CleanupPreview, CleanupPreviewInvalidation, CleanupReport, DuplicateFile, ReviewPosition, SiteOverview,
+  StageHistoryDirection, StageHistoryRequest, StageHistoryState,
   StageVerificationBlocker, StageWarning, StageWarningReason,
 } from "../../lib/types";
 import type { ScanSite, SiteVerification } from "../siteVerification";
@@ -24,10 +25,14 @@ interface ReviewDrawerProps {
   previewInvalidation: CleanupPreviewInvalidation | null;
   loadingPreview: boolean;
   stagingBusy?: boolean;
+  cleanupBusy: boolean;
+  cleanupScansActive?: boolean;
+  cleanupReport: CleanupReport | null;
   error: string | null;
   position: ReviewPosition | null;
   onClose: () => void;
   onPreview: () => void;
+  onMoveToTrash: (planId: string) => Promise<boolean>;
   onScanSite: ScanSite;
   onRemove: (path: string) => void;
   onHistoryStep: (request: StageHistoryRequest) => Promise<boolean>;
@@ -48,6 +53,17 @@ const previewMessages: Record<CleanupPreviewInvalidation, string> = {
   inventory: "Workspace inventory was refreshed. Run a new preview.",
   scan: "A scan started. Run a new preview.",
 };
+
+const cleanupBlockerLabels: Record<CleanupActionBlocker["reason"], string> = {
+  unsupported_source: "This source does not support moving files to the system Trash.",
+  no_local_retained_copy: "Keep at least one verified local copy.",
+};
+
+interface TrashConfirmation {
+  planId: string;
+  fileCount: number;
+  bytes: number;
+}
 
 interface ReviewFileProps {
   file: DuplicateFile;
@@ -156,10 +172,14 @@ function OpenReviewDrawer({
   previewInvalidation,
   loadingPreview,
   stagingBusy,
+  cleanupBusy,
+  cleanupScansActive = false,
+  cleanupReport,
   error,
   position,
   onClose,
   onPreview,
+  onMoveToTrash,
   onScanSite,
   onRemove,
   onHistoryStep,
@@ -169,6 +189,17 @@ function OpenReviewDrawer({
   const results = useRef<HTMLDivElement>(null);
   const previewButton = useRef<HTMLButtonElement>(null);
   const previewSummary = useRef<HTMLElement>(null);
+  const moveButton = useRef<HTMLButtonElement>(null);
+  const cancelMoveButton = useRef<HTMLButtonElement>(null);
+  const confirmationPanel = useRef<HTMLElement>(null);
+  const cleanupReceipt = useRef<HTMLElement>(null);
+  const moving = useRef(false);
+  const confirmationFocus = useRef<{
+    target: "move" | "preview" | "receipt";
+    owner: Element;
+    previousOperation?: string;
+  } | null>(null);
+  const [confirmation, setConfirmation] = useState<TrashConfirmation | null>(null);
   const undoButton = useRef<HTMLButtonElement>(null);
   const redoButton = useRef<HTMLButtonElement>(null);
   const removalFocus = useRef<{ id: string; button: HTMLButtonElement } | null>(null);
@@ -176,6 +207,9 @@ function OpenReviewDrawer({
   const blockedMessageId = useId();
   const previewMessageId = useId();
   const verificationHeadingId = useId();
+  const confirmationHeadingId = useId();
+  const scanMessageId = useId();
+  const receiptHeadingId = useId();
   const initialPosition = useRef(position);
   const pendingReturn = useRef<{ body: HTMLElement; owner: HTMLElement; initialTop: number; moved: boolean } | null>(null);
   const previousPreview = useRef<CleanupPreview | null | undefined>(undefined);
@@ -184,6 +218,19 @@ function OpenReviewDrawer({
     onClose,
     onInspected,
   );
+
+  const trackMoveButton = useCallback((button: HTMLButtonElement | null) => {
+    moveButton.current = button;
+    if (!button) return;
+    return () => {
+      moveButton.current = null;
+      if (document.activeElement !== button) return;
+      queueMicrotask(() => {
+        const preview = previewButton.current;
+        if (preview?.isConnected && !preview.hidden && document.activeElement === document.body) preview.focus();
+      });
+    };
+  }, []);
 
   const trackHistoryFocus = useCallback((controls: HTMLDivElement | null) => {
     if (!controls) return;
@@ -306,7 +353,9 @@ function OpenReviewDrawer({
     return files.length ? [{ siteId: blocker.site_id, files }] : [];
   });
   const effectiveReady = cleanupReady && (preview?.cleanup_ready ?? true) && pending === 0 && activeBlockers.length === 0;
-  const busy = Boolean(loadingPreview || stagingBusy || navigation.opening);
+  const busy = Boolean(loadingPreview || stagingBusy || cleanupBusy || navigation.opening);
+  const moveDisabled = busy || cleanupScansActive;
+  const rowActionsDisabled = busy || Boolean(confirmation);
   const canPreview = staged.length > 0 && effectiveReady && !busy;
   const showPreviewPrompt = canPreview && !preview && !error;
   const undoSnapshot = stageHistory?.undo_snapshot_id;
@@ -329,10 +378,61 @@ function OpenReviewDrawer({
     }
   }
   const readyPreview = effectiveReady && preview?.db_entry_count_stable ? preview : null;
+  const planId = readyPreview?.action?.plan_id;
+  const previewBytes = readyPreview?.staged_files.reduce((sum, file) => sum + file.size_bytes, 0) ?? 0;
+  const cleanupBlockers = new Map(readyPreview?.action?.blockers.map(({ file_id, reason }) => [file_id, cleanupBlockerLabels[reason]]));
   const groups = readyPreview?.review_groups ?? [];
   const retainedCount = groups.reduce((count, group) => count + group.retained_files.length, 0);
   const groupedIds = new Set(groups.flatMap((group) => group.staged_file_ids));
   const ungrouped = staged.filter((file) => !groupedIds.has(file.file_id));
+
+  function dismissConfirmation(target: "move" | "preview" | "receipt", previousOperation?: string) {
+    const owner = document.activeElement;
+    if (owner && confirmationPanel.current?.contains(owner)) {
+      confirmationFocus.current = { target, owner, previousOperation };
+    }
+    setConfirmation(null);
+  }
+
+  useLayoutEffect(() => {
+    if (confirmation) {
+      if (!moving.current && !cleanupBusy && confirmation.planId !== planId) {
+        dismissConfirmation("preview");
+      }
+      return;
+    }
+    const pending = confirmationFocus.current;
+    if (!pending) return;
+    if (pending.target === "receipt" && cleanupReport?.operation_id === pending.previousOperation) return;
+    const target = pending.target === "move" ? moveButton.current ?? previewButton.current
+      : pending.target === "preview" ? previewButton.current : cleanupReceipt.current;
+    if (!target) return;
+    confirmationFocus.current = null;
+    if (document.activeElement === document.body || document.activeElement === pending.owner) target.focus();
+  }, [confirmation, planId, cleanupBusy, cleanupReport]);
+
+  useLayoutEffect(() => {
+    if (confirmation) cancelMoveButton.current?.focus({ preventScroll: true });
+  }, [confirmation]);
+
+  function closeReview() {
+    if (cleanupBusy || moving.current) return;
+    if (confirmation) dismissConfirmation("move");
+    else navigation.close();
+  }
+
+  async function confirmMoveToTrash(button: HTMLButtonElement) {
+    if (!confirmation || confirmation.planId !== planId || moveDisabled || moving.current) return;
+    button.focus({ preventScroll: true });
+    moving.current = true;
+    const previousOperation = cleanupReport?.operation_id;
+    try {
+      const completed = await onMoveToTrash(confirmation.planId);
+      dismissConfirmation(completed ? "receipt" : "preview", previousOperation);
+    } finally {
+      moving.current = false;
+    }
+  }
 
   function inspectFile(file: DuplicateFile) {
     const body = results.current?.closest(".atlas-analysis-body");
@@ -356,7 +456,7 @@ function OpenReviewDrawer({
   }
 
   function handleHistoryKeys(event: KeyboardEvent<HTMLDialogElement>) {
-    if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey || event.nativeEvent.isComposing) return;
+    if (confirmation || event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey || event.nativeEvent.isComposing) return;
     if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
     const key = event.key.toLowerCase();
     if (key === "z" || (key === "y" && event.ctrlKey && !event.shiftKey)) {
@@ -370,13 +470,29 @@ function OpenReviewDrawer({
       title="Cleanup review"
       className="atlas-cleanup-review"
       drawer
-      onClose={navigation.close}
+      onClose={closeReview}
       onKeyDown={handleHistoryKeys}
       footer={
         <>
           {navigation.error && <p className="atlas-review-inspect-error" role="alert">{navigation.error}</p>}
           {navigation.opening && <span role="status">Opening file…</span>}
-          {(undoSnapshot || redoSnapshot) ? (
+          {confirmation && (
+            <section className="atlas-review-confirmation" ref={confirmationPanel}
+              aria-labelledby={confirmationHeadingId} aria-busy={cleanupBusy || undefined}>
+              <div>
+                <h3 id={confirmationHeadingId}>Move {formatCount(confirmation.fileCount)} {confirmation.fileCount === 1 ? "copy" : "copies"} to Trash?</h3>
+                <p>{formatBytes(confirmation.bytes)}. The retained copies will stay in place. Restore moved files through the system Trash or Recycle Bin.</p>
+              </div>
+              <div className="atlas-review-confirmation-actions">
+                <button ref={cancelMoveButton} type="button" aria-disabled={cleanupBusy || undefined}
+                  onClick={() => { if (!cleanupBusy && !moving.current) dismissConfirmation("move"); }}>Cancel</button>
+                <button type="button" className="atlas-review-trash" aria-disabled={moveDisabled || !planId || undefined}
+                  aria-describedby={cleanupScansActive ? scanMessageId : undefined}
+                  onClick={(event) => void confirmMoveToTrash(event.currentTarget)}>{cleanupBusy ? "Moving to Trash…" : "Move to Trash"}</button>
+              </div>
+            </section>
+          )}
+          {!confirmation && (undoSnapshot || redoSnapshot) && (
             <div ref={trackHistoryFocus} className="atlas-review-history" role="group" aria-label="Staging history">
               <button ref={undoButton} type="button" aria-label="Undo staging change"
                 aria-keyshortcuts="Meta+Z Control+Z"
@@ -385,11 +501,11 @@ function OpenReviewDrawer({
                 aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z Control+Y"
                 aria-disabled={busy || !redoSnapshot || undefined} onClick={() => void stepHistory("redo")}>Redo</button>
             </div>
-          ) : !navigation.opening && <span>Preview only</span>}
+          )}
           <span className="atlas-scan-announcement" role="status">{historyAnnouncement}</span>
           <button
-            type="button" className="atlas-analysis-primary" ref={previewButton}
-            onClick={canPreview ? (event) => {
+            type="button" className={planId ? undefined : "atlas-analysis-primary"} ref={previewButton} hidden={Boolean(confirmation)}
+            onClick={canPreview && !confirmation ? (event) => {
               event.currentTarget.focus({ preventScroll: true });
               onPreview();
             } : undefined} aria-disabled={!canPreview || undefined}
@@ -398,10 +514,44 @@ function OpenReviewDrawer({
           >
             {loadingPreview ? "Checking…" : "Preview cleanup"}
           </button>
+          {planId && readyPreview && !confirmation && (
+            <button ref={trackMoveButton} type="button" className="atlas-review-trash" aria-disabled={moveDisabled || undefined}
+              aria-describedby={cleanupScansActive ? scanMessageId : undefined}
+              onClick={() => { if (!moveDisabled) setConfirmation({ planId, fileCount: readyPreview.staged_files.length, bytes: previewBytes }); }}>
+              Move to Trash…
+            </button>
+          )}
         </>
       }
     >
       <div className="atlas-analysis-results" ref={results}>
+        {cleanupReport && (
+          <section className="atlas-comparison-details atlas-review-receipt" aria-labelledby={receiptHeadingId} tabIndex={-1} ref={cleanupReceipt}>
+            <h3 id={receiptHeadingId}>Cleanup result</h3>
+            <dl className="atlas-analysis-values">
+              <div><dt>Moved to Trash</dt><dd>{formatCount(cleanupReport.moved_files.length)}</dd></div>
+              <div><dt>Skipped</dt><dd>{formatCount(cleanupReport.skipped_files.length)}</dd></div>
+            </dl>
+            {cleanupReport.moved_files.length > 0 && (
+              <>
+                <p>To recover moved files, restore them from the system Trash or Recycle Bin and rescan their sites.</p>
+                <details>
+                  <summary>Moved files</summary>
+                  <ul className="atlas-review-outcome-files" aria-label="Moved files">
+                    {cleanupReport.moved_files.map(({ file_id, path }) => <li key={file_id}><code>{path}</code></li>)}
+                  </ul>
+                </details>
+              </>
+            )}
+            {cleanupReport.skipped_files.length > 0 && (
+              <ul className="atlas-review-outcome-files" aria-label="Skipped files">
+                {cleanupReport.skipped_files.map(({ file, message }) => (
+                  <li key={file.file_id}><code>{file.path}</code><span>{message}</span></li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
         <dl className="atlas-analysis-facts">
           <div><dt>Staged copies</dt><dd>{formatCount(staged.length)}</dd></div>
           <div><dt>Staged file size</dt><dd>{formatBytes(totalBytes)}</dd></div>
@@ -440,17 +590,23 @@ function OpenReviewDrawer({
         {preview && (
           <section
             className="atlas-comparison-details atlas-review-result" aria-label="Cleanup preview" ref={trackPreviewSummary} tabIndex={-1}
-            data-ready={readyPreview ? "" : undefined}
+            data-ready={planId ? "" : undefined}
           >
             {readyPreview ? (
               <>
-                <h3>Preview passed</h3>
+                <h3>{cleanupBlockers.size ? "Move to Trash unavailable" : "Preview passed"}</h3>
                 <dl className="atlas-analysis-values">
-                  <div><dt>Estimated space reclaimed</dt><dd>{formatBytes(readyPreview.staged_files.reduce((sum, file) => sum + file.size_bytes, 0))}</dd></div>
+                  <div><dt>Staged file size</dt><dd>{formatBytes(previewBytes)}</dd></div>
                   <div><dt>Copies that would remain</dt><dd>{formatCount(retainedCount)}</dd></div>
                   <div><dt>Tracked files</dt><dd>{formatCount(readyPreview.tracked_file_count_before)} → {formatCount(readyPreview.tracked_file_count_after)}</dd></div>
                   <div><dt>Duplicate groups</dt><dd>{formatCount(readyPreview.duplicate_group_count_before)} → {formatCount(readyPreview.duplicate_group_count_after)}</dd></div>
                 </dl>
+                {cleanupBlockers.size > 0 && (
+                  <p className="atlas-review-file-warning" role="status">Review the marked copies before moving files to Trash.</p>
+                )}
+                {planId && cleanupScansActive && (
+                  <p id={scanMessageId} role="status">Wait for scans to finish before moving files to Trash.</p>
+                )}
               </>
             ) : preview.cleanup_ready && !preview.db_entry_count_stable ? (
               <p role="status">The index changed during the check. Run another preview.</p>
@@ -468,7 +624,7 @@ function OpenReviewDrawer({
                 <ul className="atlas-review-files" aria-label="Would remain">
                   {group.retained_files.map((file) => (
                     <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
-                      disabled={busy} focusRef={trackReviewFocus} onInspect={inspectFile} />
+                      disabled={rowActionsDisabled} focusRef={trackReviewFocus} onInspect={inspectFile} />
                   ))}
                 </ul>
               </div>
@@ -477,7 +633,8 @@ function OpenReviewDrawer({
                 <ul className="atlas-review-files" aria-label="Staged for cleanup">
                   {removing.map((file) => (
                     <ReviewFile key={file.file_id} file={file} site={siteNames.get(file.site_id)}
-                      disabled={busy} focusRef={trackReviewFocus} onInspect={inspectFile} onRemove={removeFile} />
+                      warning={cleanupBlockers.get(file.file_id)}
+                      disabled={rowActionsDisabled} focusRef={trackReviewFocus} onInspect={inspectFile} onRemove={removeFile} />
                   ))}
                 </ul>
               </div>
@@ -494,7 +651,7 @@ function OpenReviewDrawer({
               return (
                 <ReviewFile
                   key={file.file_id} file={file} site={siteNames.get(file.site_id)} warning={warningLabel}
-                  disabled={busy} focusRef={trackReviewFocus}
+                  disabled={rowActionsDisabled} focusRef={trackReviewFocus}
                   onInspect={warning === "not_tracked" ? undefined : inspectFile} onRemove={removeFile}
                 />
               );

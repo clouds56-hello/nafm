@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { CleanupPreview } from "../src/lib/types";
+import type { CleanupPreview, CleanupReport } from "../src/lib/types";
 
 const fileName = "Trailer master.mov";
 const sourcePath = "/demo/Studio Archive/Projects/Brand campaign/Trailer master.mov";
@@ -125,8 +125,8 @@ test("cleanup review can undo and redo a removal before running a fresh preview"
   await previewButton.click();
 
   await expect(preview).toBeFocused();
-  await expect(preview.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
-  await expect(preview).toContainText("Estimated space reclaimed");
+  await expect(preview.getByRole("heading", { name: "Move to Trash unavailable", exact: true })).toBeVisible();
+  await expect(preview).toContainText("Staged file size");
   await expect(preview).toContainText("184 GB");
   const staged = dialog.getByRole("list", { name: "Staged for cleanup", exact: true });
   const retained = dialog.getByRole("list", { name: "Would remain", exact: true });
@@ -135,6 +135,8 @@ test("cleanup review can undo and redo a removal before running a fresh preview"
   await expect(retained.getByRole("listitem")).toHaveCount(1);
   await expect(retained).toContainText("Team share");
   await expect(retained).toContainText(sharedPath);
+  await expect(staged.getByText("Keep at least one verified local copy.")).toHaveCount(2);
+  await expect(dialog.getByRole("button", { name: "Move to Trash…", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(openReview).toBeFocused();
@@ -445,7 +447,8 @@ test("pending hashes block a previously eligible cleanup preview", async ({ page
   await expect(recovery.getByText("Studio archive", { exact: true })).toBeVisible();
   await expect(recovery.getByRole("button", { name: /Studio archive/ })).toBeEnabled();
   await expect(dialog).toContainText(sourcePath);
-  await expect(dialog.getByText("Estimated space reclaimed", { exact: true })).toHaveCount(0);
+  await expect(preview.getByText("Staged file size", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Move to Trash…", exact: true })).toHaveCount(0);
   await expect(dialog.getByRole("list", { name: "Would remain", exact: true })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Preview cleanup", exact: true })).toBeDisabled();
 });
@@ -535,7 +538,7 @@ test("cleanup review verifies the potential retained copy in place before a fres
   await expect(dialog.getByRole("region", { name: "Cleanup preview", exact: true })).toHaveCount(0);
 
   await previewButton.press("Enter");
-  await expect(dialog.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Move to Trash unavailable", exact: true })).toBeVisible();
   const staged = dialog.getByRole("list", { name: "Staged for cleanup", exact: true });
   await expect(staged).toContainText(sourcePath);
   await expect(staged).toContainText(backupPath);
@@ -548,6 +551,153 @@ test("cleanup review verifies the potential retained copy in place before a fres
 
 test.describe("compact cleanup review inspection", () => {
   test.use({ viewport: { width: 390, height: 580 }, hasTouch: true });
+
+  test("moving to Trash requires confirmation and reports the result", async ({ page }) => {
+    await stageCopy(page, "Backup campaign");
+    const request = await page.evaluateHandle(() => {
+      type MoveRequest = { expectedWorkspace: string; planId: string };
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: MoveRequest) => Promise<unknown> };
+      };
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => { release = resolve; });
+      const calls: MoveRequest[] = [];
+      const invoke = bridge.invoke.bind(bridge);
+      bridge.invoke = async (command, args) => {
+        if (command === "move_cleanup_to_trash") {
+          calls.push(args);
+          await waiting;
+        }
+        return invoke(command, args);
+      };
+      return { calls, release };
+    });
+
+    await inspector(page).getByRole("button", { name: "Open review", exact: true }).tap();
+    const dialog = review(page);
+    const action = dialog.getByRole("button", { name: "Move to Trash…", exact: true });
+    await expect(action).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Preview cleanup", exact: true }).tap();
+    const preview = dialog.getByRole("region", { name: "Cleanup preview", exact: true });
+    await expect(preview).toContainText("Preview passed");
+    await expect(dialog.getByRole("list", { name: "Would remain", exact: true })).toContainText(sourcePath);
+    await expect(action).toBeEnabled();
+
+    await action.press("Enter");
+    const confirmation = dialog.getByRole("region", { name: "Move 1 copy to Trash?", exact: true });
+    const cancel = confirmation.getByRole("button", { name: "Cancel", exact: true });
+    await expect(cancel).toBeFocused();
+    await expect(cancel).toBeInViewport();
+    await expect(confirmation).toContainText("92 GB");
+    await expect(confirmation).toContainText("The retained copies will stay in place.");
+    await expect(inspectCopy(dialog, "Would remain", sourcePath)).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toBeHidden();
+    await expect(action).toBeFocused();
+    expect(await request.evaluate(({ calls }) => calls)).toEqual([]);
+    await expect(preview).toContainText("Preview passed");
+
+    await action.tap();
+    const confirm = confirmation.getByRole("button", { name: "Move to Trash", exact: true });
+    await confirm.tap();
+    const moving = confirmation.getByRole("button", { name: "Moving to Trash…", exact: true });
+    await expect(moving).toBeDisabled();
+    await expect(moving).toBeFocused();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+    expect(await request.evaluate(({ calls }) => calls)).toEqual([{
+      expectedWorkspace: "Studio workspace", planId: expect.any(String),
+    }]);
+    await request.evaluate(({ release }) => release());
+
+    const receipt = dialog.getByRole("region", { name: "Cleanup result", exact: true });
+    await expect(receipt).toBeFocused();
+    await expect(receipt.getByText("Moved to Trash", { exact: true }).locator("..").locator("dd")).toHaveText("1");
+    await expect(receipt.getByText("Skipped", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+    await expect(receipt).toContainText("restore them from the system Trash or Recycle Bin");
+    await receipt.getByText("Moved files", { exact: true }).tap();
+    await expect(receipt.getByRole("list", { name: "Moved files", exact: true })).toContainText(backupPath);
+    await expect(dialog).toContainText("No copies staged.");
+    await expect(action).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Close cleanup review", exact: true }).tap();
+    await page.getByRole("button", { name: "Workspace actions", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Review", exact: true }).press("Enter");
+    await expect(receipt).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(currentFolder(page)).toHaveText("Backup campaign");
+    const map = page.getByRole("region", { name: "Circular storage map" });
+    await expect(map.getByRole("button", { name: /^Trailer master\.mov,/ })).toHaveCount(0);
+    await expect(map.getByRole("button", { name: /^Campaign assembly\.mov,/ })).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+f");
+    const finder = page.getByRole("dialog", { name: "Find files", exact: true });
+    await finder.getByRole("searchbox", { name: "File name", exact: true }).fill(fileName);
+    await expect(finder.getByText(sourcePath, { exact: true })).toBeVisible();
+    await expect(finder.getByText(backupPath, { exact: true })).toHaveCount(0);
+  });
+
+  test("a changed staging set requires a new cleanup preview", async ({ page }) => {
+    await stageCopy(page, "Backup campaign");
+    await inspector(page).getByRole("button", { name: "Open review", exact: true }).tap();
+    const dialog = review(page);
+    const preview = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
+    await preview.tap();
+    const action = dialog.getByRole("button", { name: "Move to Trash…", exact: true });
+    await action.press("Enter");
+
+    await page.evaluate(async (path) => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+      };
+      await bridge.invoke("unstage_path", { expectedWorkspace: "Studio workspace", path });
+    }, backupPath);
+
+    await dialog.getByRole("button", { name: "Move to Trash", exact: true }).press("Enter");
+    await expect(dialog.getByRole("alert")).toContainText(/staged|preview/i);
+    await expect(dialog.getByRole("region", { name: "Move 1 copy to Trash?", exact: true })).toHaveCount(0);
+    await expect(action).toHaveCount(0);
+    await expect(preview).toBeFocused();
+    await expect(dialog.getByRole("region", { name: "Cleanup result", exact: true })).toHaveCount(0);
+    await expect(dialog).toContainText("No copies staged.");
+  });
+
+  test("cleanup result explains a skipped copy that remains staged", async ({ page }) => {
+    await stageCopy(page, "Backup campaign");
+    await page.evaluate(() => {
+      const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+      };
+      let ready: CleanupPreview | null = null;
+      const invoke = bridge.invoke.bind(bridge);
+      bridge.invoke = async (command, args) => {
+        if (command === "move_cleanup_to_trash" && ready) {
+          return {
+            operation_id: "sample-skipped-cleanup",
+            moved_files: [],
+            skipped_files: [{ file: ready.staged_files[0], message: "The file changed on disk." }],
+          } satisfies CleanupReport;
+        }
+        const response = await invoke(command, args);
+        if (command === "preview_cleanup") ready = response as CleanupPreview;
+        return response;
+      };
+    });
+
+    await inspector(page).getByRole("button", { name: "Open review", exact: true }).tap();
+    const dialog = review(page);
+    await dialog.getByRole("button", { name: "Preview cleanup", exact: true }).tap();
+    await dialog.getByRole("button", { name: "Move to Trash…", exact: true }).press("Enter");
+    await dialog.getByRole("button", { name: "Move to Trash", exact: true }).press("Enter");
+
+    const receipt = dialog.getByRole("region", { name: "Cleanup result", exact: true });
+    await expect(receipt.getByText("Moved to Trash", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+    const skipped = receipt.getByRole("list", { name: "Skipped files", exact: true });
+    await expect(skipped).toContainText(backupPath);
+    await expect(skipped).toContainText("The file changed on disk.");
+    await expect(dialog.getByRole("list", { name: "Staged copies", exact: true })).toContainText(backupPath);
+    await expect(dialog.getByRole("button", { name: "Preview cleanup", exact: true })).toBeEnabled();
+  });
 
   test("inspecting retained and staged copies returns to the same preview and row", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 350 });
@@ -605,7 +755,7 @@ test.describe("compact cleanup review inspection", () => {
     await expect(details.getByText(backupPath, { exact: true })).toBeVisible();
     await backToReview.press("Enter");
     await expect(staged).toBeFocused();
-    await expect(preview.getByRole("heading", { name: "Preview passed", exact: true })).toBeVisible();
+    await expect(preview.getByRole("heading", { name: "Move to Trash unavailable", exact: true })).toBeVisible();
     expect(await requests.jsonValue()).toEqual(["preview_cleanup", "get_storage_file_reveal", "get_storage_file_reveal"]);
   });
 
@@ -623,10 +773,10 @@ test.describe("compact cleanup review inspection", () => {
       const preview = dialog.getByRole("button", { name: "Preview cleanup", exact: true });
       const checking = dialog.getByRole("button", { name: "Checking…", exact: true });
       const close = dialog.getByRole("button", { name: "Close cleanup review", exact: true });
-      const passed = dialog.getByRole("heading", { name: "Preview passed", exact: true });
+      const unavailable = dialog.getByRole("heading", { name: "Move to Trash unavailable", exact: true });
       const retained = inspectCopy(dialog, "Would remain", sharedPath);
       await preview.press("Enter");
-      await expect(passed).toBeVisible();
+      await expect(unavailable).toBeVisible();
       await retained.scrollIntoViewIfNeeded();
       await retained.focus();
       const savedScroll = await body.evaluate((element) => element.scrollTop);
@@ -679,7 +829,7 @@ test.describe("compact cleanup review inspection", () => {
         await hold.evaluate((read) => read.release());
       }
 
-      await expect(passed).toBeVisible();
+      await expect(unavailable).toBeVisible();
       if (newer === "none") {
         await expect(retained).toBeFocused();
         await expect(retained).toBeInViewport({ ratio: 0.99 });
@@ -828,6 +978,9 @@ for (const action of ["staged Inspect", "staged Remove", "retained Inspect", "pr
       .getByRole("button", { name: `Remove ${fileName} from review`, exact: true });
     await previewButton.press("Enter");
     await expect(preview.getByRole("heading", { name: "Preview passed" })).toBeVisible();
+    const move = dialog.getByRole("button", { name: "Move to Trash…", exact: true });
+    await expect(move).toBeDisabled();
+    await expect(move).toHaveAccessibleDescription("Wait for scans to finish before moving files to Trash.");
     const targets = {
       "staged Inspect": [inspectCopy(dialog, "Staged for cleanup", sourcePath), inspectCopy(dialog, "Staged copies", sourcePath)],
       "staged Remove": [removeCopy("Staged for cleanup"), removeCopy("Staged copies")],

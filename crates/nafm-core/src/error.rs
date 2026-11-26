@@ -42,6 +42,14 @@ pub enum NafmError {
   StageHistoryUnavailable(&'static str),
   #[error("The staged list changed. Review the updated list before using Undo or Redo.")]
   StageHistoryChanged,
+  #[error("The cleanup preview changed. Run another preview before moving files to Trash.")]
+  CleanupPreviewChanged,
+  #[error("A cleanup is in progress. Wait for it to finish before scanning or trying again.")]
+  CleanupInProgress,
+  #[error("This file changed since its last verification. Rescan it before trying again.")]
+  CleanupFileChanged,
+  #[error("Choose a folder outside the system Trash to add this site.")]
+  TrashSiteFolder,
   #[error("site name cannot be empty")]
   EmptySiteName,
   #[error("cache path has no parent directory: {0}")]

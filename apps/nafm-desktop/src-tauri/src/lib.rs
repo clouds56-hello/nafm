@@ -63,6 +63,8 @@ pub fn run() {
       commands::staging::stage_path,
       commands::staging::unstage_path,
       commands::staging::preview_cleanup,
+      commands::staging::move_cleanup_to_trash,
+      commands::staging::load_cleanup_activity,
       commands::staging::move_stage_history,
       commands::management::load_management,
       commands::management::create_workspace,

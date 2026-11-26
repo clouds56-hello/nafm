@@ -44,6 +44,12 @@ impl Fixture {
   }
 
   fn publish(&self) -> ScanPreparation {
+    self
+      .publish_at(cleanup::scan_epoch(&self.conn).unwrap().unwrap())
+      .unwrap()
+  }
+
+  fn publish_at(&self, cleanup_epoch: i64) -> Result<ScanPreparation> {
     let revision = self
       .conn
       .query_row(
@@ -56,14 +62,16 @@ impl Fixture {
       .unwrap_or(0);
     publish_inventory_atomically(
       &self.conn,
-      &self.site,
-      &self.folders,
-      revision,
+      &SiteScanSnapshot {
+        site: &self.site,
+        site_folders: &self.folders,
+        expected_inventory_revision: revision,
+        cleanup_epoch,
+      },
       self.files.clone(),
       "blake3",
       Utc::now(),
     )
-    .unwrap()
   }
 
   fn hash(&self, preparation: &ScanPreparation, count: usize) {
@@ -79,6 +87,20 @@ impl Fixture {
       .unwrap();
     }
   }
+}
+
+#[tokio::test]
+async fn a_scan_cannot_publish_discovery_captured_before_cleanup() {
+  let fixture = Fixture::new().await;
+  let before_cleanup = cleanup::scan_epoch(&fixture.conn).unwrap().unwrap();
+  fixture.conn.execute(
+    "insert into cleanup_operations (operation_id, plan_id, intent_json, report_json) values ('op', 'plan', '[]', '{}')",
+    [],
+  ).unwrap();
+
+  let result = fixture.publish_at(before_cleanup);
+  assert!(matches!(result, Err(NafmError::ScanSuperseded(_))));
+  assert_eq!(fixture.publish().files_seen, 2);
 }
 
 #[tokio::test]
