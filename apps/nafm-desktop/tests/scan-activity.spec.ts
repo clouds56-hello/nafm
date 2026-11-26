@@ -226,6 +226,53 @@ test("stopping the first verification keeps its inventory browsable", async ({ p
 test.describe("compact scan activity", () => {
   test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
 
+  test("reopening skips a stopping scan and shrinking the panel keeps recovery visible", async ({ page }) => {
+    await openMock(page, "scanning");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+    for (const name of [field, "Team share"]) {
+      await sites.getByRole("button", { name: `Scan ${name}`, exact: true }).press("Enter");
+    }
+
+    const trigger = activityTrigger(page);
+    const activity = activityPanel(page);
+    const stop = activity.getByRole("button", { name: `Stop scan of ${studio}`, exact: true });
+    const other = activity.getByRole("button", { name: `Stop scan of ${field}`, exact: true });
+    await trigger.press("Enter");
+    await expect(stop).toBeFocused();
+    await stop.press("Enter");
+    await expect(stop).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    await trigger.press("Enter");
+    await expect(other).toBeFocused();
+    await expect(other).toBeEnabled();
+
+    await page.clock.runFor(500);
+    const latest = activity.getByRole("region", { name: "Latest scan result", exact: true });
+    const resume = latest.getByRole("button", { name: `Resume verification of ${studio}`, exact: true });
+    await expect(resume).toBeEnabled();
+    await expect(other).toBeFocused();
+    await resume.focus();
+    await expect(resume).toBeInViewport({ ratio: 0.99 });
+    const outsideScroll = await page.evaluate(() => window.scrollY);
+
+    await page.setViewportSize({ width: 320, height: 245 });
+    await page.clock.runFor(40);
+    await expect(resume).toBeFocused();
+    await expect(resume).toBeInViewport({ ratio: 0.99 });
+    expect(await activity.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(outsideScroll);
+
+    await page.keyboard.press("Enter");
+    await expect(activity.getByRole("region", { name: studio, exact: true })).toBeFocused();
+    await expect(other).toBeEnabled();
+    await expect(currentFolder(page)).toHaveText(studio);
+    await expect(sites).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+  });
+
   test("stopping the focused scan reveals its result while the other requests keep running", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 310 });
     await openMock(page, "scanning");
@@ -364,6 +411,143 @@ test("a failed scan can be retried without leaving the current folder", async ({
   await expect(result.getByText("156 files verified", { exact: true })).toBeVisible();
   await expect(retry).toHaveCount(0);
   await expect(currentFolder(page)).toHaveText("Projects");
+});
+
+test("a retry-start failure stays visible with Retry focused in compact Scan activity", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 360 });
+  await openMock(page, "scan-failed");
+  await openProjects(page);
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  await sites.getByRole("button", { name: `Scan ${field}`, exact: true }).press("Enter");
+  await activityTrigger(page).press("Enter");
+  const activity = activityPanel(page);
+  const fieldStop = activity.getByRole("button", { name: `Stop scan of ${field}`, exact: true });
+  await expect(fieldStop).toBeEnabled();
+  await page.clock.runFor(4_100);
+  const latest = activity.getByRole("region", { name: "Latest scan result", exact: true });
+  await expect(latest.getByText("Scan failed", { exact: true })).toBeVisible();
+
+  const diagnostic = "Studio archive disconnected. Reconnect the drive before retrying verification.";
+  const attempts = await page.evaluateHandle((message) => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: { selector?: { site_id?: string } }) => Promise<unknown> };
+    };
+    const invoke = bridge.invoke.bind(bridge);
+    const state = { count: 0 };
+    bridge.invoke = async (command, args) => {
+      if (command === "start_scan" && args.selector?.site_id === "studio-archive") {
+        state.count += 1;
+        if (state.count === 1) throw new Error(message);
+      }
+      return invoke(command, args);
+    };
+    return state;
+  }, diagnostic);
+
+  const retry = latest.getByRole("button", { name: `Retry scan of ${studio}`, exact: true });
+  await retry.click();
+  const alert = activity.getByRole("alert").filter({ hasText: diagnostic });
+  await expect(alert).toHaveText(diagnostic);
+  await expect(alert).toBeInViewport({ ratio: 0.99 });
+  await expect(retry).toBeFocused();
+  await expect(retry).toBeInViewport({ ratio: 0.99 });
+  await expect(retry).toBeEnabled();
+  await expect(retry).toHaveAccessibleDescription(diagnostic);
+  await expect(fieldStop).toBeEnabled();
+
+  await retry.press("Enter");
+  const studioRequest = activity.getByRole("region", { name: studio, exact: true });
+  await expect(studioRequest).toBeFocused();
+  await expect(studioRequest.getByRole("button", { name: `Stop scan of ${studio}`, exact: true })).toBeEnabled();
+  await expect(alert).toHaveCount(0);
+  await expect(fieldStop).toBeEnabled();
+  expect(await attempts.evaluate((state) => state.count)).toBe(2);
+  await expect(sites).toBeVisible();
+  await expect(currentFolder(page)).toHaveText("Projects");
+});
+
+test("stopping a retry after inventory publishes leaves only its current verification to resume", async ({ page }) => {
+  await openMock(page, "scan-failed");
+  await openProjects(page);
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Brand campaign,/ }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await map.getByRole("button", { name: /^Trailer master\.mov,/ }).press("Enter");
+  const file = page.getByRole("complementary", { name: "Inspector" })
+    .getByRole("heading", { name: "Trailer master.mov", exact: true });
+  await expect(file).toBeVisible();
+
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  const sites = page.getByRole("complementary", { name: "Sites", exact: true });
+  const openStudio = sites.getByRole("button", { name: `Open ${studio} in Atlas`, exact: true });
+  const openField = sites.getByRole("button", { name: `Open ${field} in Atlas`, exact: true });
+  const activity = activityPanel(page);
+  const latest = activity.getByRole("region", { name: "Latest scan result", exact: true });
+  const reason = "Couldn’t read a folder in Studio archive.";
+  const retry = `Retry scan of ${studio}`;
+  const resume = `Resume verification of ${studio}`;
+  await activityTrigger(page).press("Enter");
+  await page.clock.runFor(4_100);
+  await expect(latest.getByText(reason, { exact: true })).toBeVisible();
+
+  // Add mock files for the retry to publish, leaving some new hashes pending when stopped.
+  await page.evaluate(async () => {
+    const { __TAURI_INTERNALS__: bridge } = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (command: string, args: Record<string, unknown>) => Promise<unknown> };
+    };
+    await bridge.invoke("add_site_folder", {
+      workspaceName: "Studio workspace", siteId: "studio-archive", path: "/demo/New intake", hiddenPolicy: "include",
+    });
+  });
+  await latest.getByRole("button", { name: retry, exact: true }).press("Enter");
+  const activeStudio = activity.getByRole("region", { name: studio, exact: true });
+  const stopStudio = activeStudio.getByRole("button", { name: `Stop scan of ${studio}`, exact: true });
+  await expect(stopStudio).toBeEnabled();
+  await expect(latest.getByText("Previous attempt", { exact: true })).toBeVisible();
+  await expect(latest.getByText(reason, { exact: true })).toBeVisible();
+  await expect(latest.getByRole("button", { name: retry, exact: true })).toHaveCount(0);
+
+  await sites.getByRole("button", { name: `Scan ${field}`, exact: true }).press("Enter");
+  await expect(activity).toBeHidden();
+  await activityTrigger(page).press("Enter");
+  const stopField = activity.getByRole("button", { name: `Stop scan of ${field}`, exact: true });
+  await expect(stopField).toBeEnabled();
+  await page.clock.runFor(2_800);
+  await expect(activeStudio.getByRole("progressbar", { name: `Scan progress for ${studio}`, exact: true }))
+    .toHaveAttribute("aria-valuetext", "Verifying files, 158 of 162 files");
+  await stopStudio.press("Enter");
+  await page.clock.runFor(500);
+  await expect(latest.getByText("Scan stopped", { exact: true })).toBeVisible();
+  await expect(latest.getByText("4 files awaiting verification", { exact: true })).toBeVisible();
+  await expect(latest.getByRole("button", { name: resume, exact: true })).toBeEnabled();
+  await expect(activity.getByText(reason, { exact: true })).toHaveCount(0);
+  await expect(activity.getByRole("button", { name: retry, exact: true })).toHaveCount(0);
+  await expect(sites.getByRole("button", { name: retry, exact: true })).toHaveCount(0);
+  await expect(sites.getByRole("listitem").filter({ has: openStudio }).getByText("Scan failed", { exact: true })).toHaveCount(0);
+  await expect(sites.getByRole("button", { name: resume, exact: true })).toBeEnabled();
+  await expect(stopField).toBeEnabled();
+
+  await openField.press("Enter");
+  await expect(currentFolder(page)).toHaveText(field);
+  await openStudio.press("Enter");
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(file).toBeVisible();
+  await activityTrigger(page).press("Enter");
+  await page.clock.runFor(2_600);
+  await expect(latest.getByText("Scan finished", { exact: true })).toBeVisible();
+  await expect(latest.getByText(field, { exact: true })).toBeVisible();
+  const pending = activity.getByRole("region", { name: "Verification pending", exact: true });
+  await expect(pending.getByText("4 files awaiting verification", { exact: true })).toBeVisible();
+  await expect(activity.getByText(reason, { exact: true })).toHaveCount(0);
+
+  await pending.getByRole("button", { name: resume, exact: true }).press("Enter");
+  await expect(stopStudio).toBeEnabled();
+  await page.clock.runFor(5_700);
+  await expect(latest.getByText("162 files verified", { exact: true })).toBeVisible();
+  await expect(activity.getByRole("button", { name: resume, exact: true })).toHaveCount(0);
+  await expect(currentFolder(page)).toHaveText("Brand campaign");
+  await expect(file).toBeVisible();
 });
 
 test("a failed rescan stays retryable after another site finishes", async ({ page }) => {

@@ -71,6 +71,7 @@
 .atlas-scan-site { display: grid; gap: 3px; min-width: 0; }
 .atlas-scan-recovery-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .atlas-scan-recovery-row > div { display: grid; gap: 3px; }
+.atlas-scan-start-error { grid-column: 1 / -1; color: #f3a492; }
 .atlas-scan-site strong { font-weight: 500; }
 .atlas-scan-site-status {
   display: flex;
@@ -88,6 +89,8 @@
 }
 
 .atlas-scan-result p { margin: 6px 0 0; color: var(--atlas-muted); }
+.atlas-scan-result-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.atlas-scan-result-heading > span { color: var(--atlas-muted); font-size: 11px; }
 .atlas-scan-request:focus-visible, .atlas-scan-activity-panel:focus-visible { outline-offset: -2px; }
 
 @media (max-width: 760px), (pointer: coarse) {

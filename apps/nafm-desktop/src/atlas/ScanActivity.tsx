@@ -1,10 +1,11 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import { formatCount } from "../lib/format";
 import { scanRecovery, scanPhaseLabel, scanSitePublishedInventory } from "../lib/scanView";
 import type {
   ScanActivityResult, ScanCompletionView, ScanInterruption, ScanProgressView, ScanTask, ScanTaskSiteState, SiteOverview,
 } from "../lib/types";
 import { CheckIcon, RefreshIcon, WarningIcon } from "../management/Icons";
+import type { ScanSite } from "./siteVerification";
 import { ToolbarDisclosure } from "./ToolbarDisclosure";
 import "./scan-activity.css";
 
@@ -18,7 +19,7 @@ export interface ScanActivityProps {
   scanInterruptions: ReadonlyMap<string, ScanInterruption>;
   lastResult: ScanActivityResult | null;
   onStop: (requestId: number) => void;
-  onScan: (siteId: string) => Promise<void>;
+  onScan: ScanSite;
 }
 
 const resultLabels = {
@@ -70,9 +71,8 @@ function scanRecoveries({ sites, blockedSiteIds, scanInterruptions, lastResult }
       continue;
     }
     const state = latestStates.get(site.id);
-    if (state?.status === "completed" && state.hashes_pending === 0) continue;
-    const pending = site.latest_inventory_at ? site.pending_hash_count
-      : state && scanSitePublishedInventory(state) ? state.hashes_pending : 0;
+    const pending = state && scanSitePublishedInventory(state) ? state.hashes_pending
+      : site.latest_inventory_at ? site.pending_hash_count : 0;
     if (pending > 0) {
       recoveries.set(site.id, {
         site, action: "Resume verification", summary: verificationSummary(null, pending),
@@ -117,18 +117,21 @@ function SiteProgress({ name, showName, snapshot, progress, completion, stopping
   );
 }
 
-function focusActivityItem(item: HTMLElement | null | undefined) {
-  if (!item) return;
-  item.focus({ preventScroll: true });
-  const scroller = item.closest<HTMLElement>(".atlas-toolbar-panel");
-  if (!scroller) return;
+function revealActivityItem(item: HTMLElement, scroller: HTMLElement) {
   const top = scroller.getBoundingClientRect().top + scroller.clientTop;
   const bounds = item.getBoundingClientRect();
   const above = bounds.top - top;
   const below = bounds.bottom - (top + scroller.clientHeight);
   // Reveal the nearest edge inside the disclosure, including for results taller than its viewport.
-  if (above < 0 && below < 0) scroller.scrollTop += Math.max(above, below);
-  if (above > 0 && below > 0) scroller.scrollTop += Math.min(above, below);
+  if (above < 0 && below < 0) scroller.scrollTop += Math.floor(Math.max(above, below));
+  if (above > 0 && below > 0) scroller.scrollTop += Math.ceil(Math.min(above, below));
+}
+
+function focusActivityItem(item: HTMLElement | null | undefined) {
+  if (!item) return;
+  item.focus({ preventScroll: true });
+  const scroller = item.closest<HTMLElement>(".atlas-toolbar-panel");
+  if (scroller) revealActivityItem(item, scroller);
 }
 
 function ActivityPanel({
@@ -139,6 +142,8 @@ function ActivityPanel({
   const restoreFocus = useRef<RemovedActivityFocus | null>(null);
   const focusAfterStart = useRef<{ siteId: string; button: HTMLButtonElement } | null>(null);
   const [startingIds, setStartingIds] = useState<ReadonlySet<string>>(new Set());
+  const [startErrors, setStartErrors] = useState(() => new Map<string, string>());
+  const startErrorPrefix = useId();
   const trackRequest = useCallback((request: HTMLElement | null) => {
     if (!request) return;
     return () => {
@@ -154,6 +159,18 @@ function ActivityPanel({
   }, []);
 
   useLayoutEffect(() => {
+    const activity = panel.current;
+    const scroller = activity?.closest<HTMLElement>(".atlas-toolbar-panel");
+    if (!activity || !scroller) return;
+    const observer = new ResizeObserver(() => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && activity.contains(focused)) revealActivityItem(focused, scroller);
+    });
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
     const start = focusAfterStart.current;
     const activeTask = start && [...tasks.values()].find((task) => task.selector.site_id === start.siteId);
     if (activeTask) {
@@ -164,6 +181,11 @@ function ActivityPanel({
       }
     } else if (start && !startingIds.has(start.siteId)) {
       focusAfterStart.current = null;
+      if (startErrors.has(start.siteId) && document.activeElement === start.button) {
+        const row = start.button.closest<HTMLElement>(".atlas-scan-recovery-row");
+        const scroller = row?.closest<HTMLElement>(".atlas-toolbar-panel");
+        if (row && scroller) revealActivityItem(row, scroller);
+      }
     }
     const removed = restoreFocus.current;
     restoreFocus.current = null;
@@ -172,10 +194,20 @@ function ActivityPanel({
       ? panel.current?.querySelector<HTMLButtonElement>(`[data-scan-recovery="${CSS.escape(removed.siteId)}"]`)
       : null;
     focusActivityItem(recovery ?? result.current ?? panel.current);
-  }, [tasks, lastResult, startingIds, recoveries]);
+  }, [tasks, lastResult, startingIds, startErrors, recoveries]);
 
   const names = new Map(sites.map((site) => [site.id, site.name]));
   const siteName = (id: string | undefined) => (id && names.get(id)) || "Storage site";
+  const activeRequests = [...tasks.values()].map((task) => {
+    const states = new Map(task.site_states.map((state) => [state.site_id, state]));
+    const selectedId = task.selector.site_id;
+    const siteIds = states.size ? [...states.keys()] : task.selector.all ? [...names.keys()] : selectedId ? [selectedId] : [];
+    return { task, states, siteIds };
+  });
+  const rescanning = new Set(activeRequests
+    .filter(({ task }) => lastResult && task.request_id > lastResult.request_id)
+    .flatMap(({ siteIds }) => siteIds));
+  const previousAttempt = Boolean(lastResult?.site_states.length && lastResult.site_states.every((site) => rescanning.has(site.site_id)));
   const reportedSiteIds = new Set(lastResult?.site_states.map((state) => state.site_id));
   const belongsInLatestResult = ({ site, interruption }: ScanRecovery) => reportedSiteIds.has(site.id)
     && (!interruption || interruption.request_id === lastResult?.request_id);
@@ -186,6 +218,8 @@ function ActivityPanel({
   function recoveryRow({ site, action, summary, interruption }: ScanRecovery, resultSummary = summary, inLatestResult = false) {
     const starting = startingIds.has(site.id);
     const reason = interruption?.message;
+    const startError = startErrors.get(site.id);
+    const errorId = `${startErrorPrefix}-${site.id}`;
     return (
       <li key={site.id} className="atlas-scan-site atlas-scan-recovery-row">
         <div>
@@ -194,14 +228,21 @@ function ActivityPanel({
           {reason && (!inLatestResult || reason !== lastResult?.message) && <div className="atlas-scan-site-status">{reason}</div>}
         </div>
         <button ref={trackRecovery} data-scan-recovery={site.id} className="atlas-scan-action atlas-scan-resume" type="button"
-          aria-label={`${action} of ${site.name}`} aria-disabled={starting || undefined} onClick={async (event) => {
+          aria-label={`${action} of ${site.name}`} aria-describedby={startError ? errorId : undefined}
+          aria-disabled={starting || undefined} onClick={async (event) => {
             if (starting) return;
             const button = event.currentTarget;
             button.focus({ preventScroll: true });
             focusAfterStart.current = { siteId: site.id, button };
             setStartingIds((ids) => new Set(ids).add(site.id));
+            setStartErrors((errors) => {
+              if (!errors.has(site.id)) return errors;
+              const next = new Map(errors);
+              next.delete(site.id);
+              return next;
+            });
             try {
-              await onScan(site.id);
+              await onScan(site.id, (message) => setStartErrors((errors) => new Map(errors).set(site.id, message)));
             } finally {
               setStartingIds((ids) => {
                 const next = new Set(ids);
@@ -213,16 +254,14 @@ function ActivityPanel({
         >
           {starting ? "Starting…" : action}
         </button>
+        {startError && <span id={errorId} className="atlas-scan-start-error" role="alert">{startError}</span>}
       </li>
     );
   }
 
   return (
     <div className="atlas-scan-activity-panel" ref={panel} tabIndex={-1}>
-      {[...tasks.values()].map((task) => {
-        const states = new Map(task.site_states.map((site) => [site.site_id, site]));
-        const selectedId = task.selector.site_id;
-        const siteIds = states.size ? [...states.keys()] : task.selector.all ? [...names.keys()] : selectedId ? [selectedId] : [];
+      {activeRequests.map(({ task, states, siteIds }) => {
         const name = task.selector.all ? "All sites" : siteName(siteIds[0]);
         const stopping = activityIsStopping(task, cancellingRequestIds);
         const stopLabel = task.selector.all ? "Stop all scans" : `Stop scan of ${name}`;
@@ -257,7 +296,10 @@ function ActivityPanel({
       })}
       {lastResult && (
         <section className="atlas-scan-request atlas-scan-result" ref={result} tabIndex={-1} aria-label="Latest scan result">
-          <strong>{resultLabels[lastResult.kind]}</strong>
+          <div className="atlas-scan-result-heading">
+            {previousAttempt && <span>Previous attempt</span>}
+            <strong>{resultLabels[lastResult.kind]}</strong>
+          </div>
           {lastResult.message && <p>{lastResult.message}</p>}
           <ul className="atlas-scan-site-list" role="list">
             {lastResult.site_states.map((state) => {
@@ -268,7 +310,10 @@ function ActivityPanel({
               if (recovery && belongsInLatestResult(recovery)) return recoveryRow(recovery, summary ?? recovery.summary, true);
               return (
                 <li key={state.site_id} className="atlas-scan-site">
-                  <strong>{siteName(state.site_id)}</strong>
+                  <div className="atlas-scan-result-heading">
+                    <strong>{siteName(state.site_id)}</strong>
+                    {!previousAttempt && rescanning.has(state.site_id) && <span>Previous attempt</span>}
+                  </div>
                   {summary && <div className="atlas-scan-site-status">{summary}</div>}
                 </li>
               );
@@ -318,6 +363,7 @@ export function ScanActivity(props: ScanActivityProps) {
       </span>
       {summary && (
         <ToolbarDisclosure label="Scan activity" className="atlas-scan-disclosure" summary={summary} description={summary}
+          initialFocusSelector='button:not(:disabled, [aria-disabled="true"])'
           icon={<span className="atlas-scan-icon" data-state={state}><Icon /></span>}
         >
           {() => <ActivityPanel {...props} recoveries={recoveries} />}

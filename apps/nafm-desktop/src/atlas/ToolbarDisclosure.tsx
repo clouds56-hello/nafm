@@ -7,11 +7,12 @@ interface ToolbarDisclosureProps {
   description?: string;
   icon: ReactNode;
   summary?: ReactNode;
+  initialFocusSelector?: string;
   triggerRef?: RefObject<HTMLButtonElement | null>;
   children: (close: () => void) => ReactNode;
 }
 
-export function ToolbarDisclosure({ label, className, description, icon, summary, triggerRef, children }: ToolbarDisclosureProps) {
+export function ToolbarDisclosure({ label, className, description, icon, summary, initialFocusSelector, triggerRef, children }: ToolbarDisclosureProps) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -28,10 +29,10 @@ export function ToolbarDisclosure({ label, className, description, icon, summary
     if (!open) return;
     const body = panel.current;
     const first = body?.querySelector<HTMLElement>(
-      "button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]",
+      initialFocusSelector ?? "button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]",
     );
     (first ?? body)?.focus({ preventScroll: true });
-  }, [open]);
+  }, [open, initialFocusSelector]);
 
   useEffect(() => {
     if (!open) return;

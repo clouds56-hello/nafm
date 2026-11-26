@@ -1043,7 +1043,8 @@ export function useDashboard(
               (next ??= new Map(current)).set(site.site_id, {
                 request_id: event.request_id, kind, has_inventory: hasInventory(site), message: event.message,
               });
-            } else if (previous && site.status === "completed") {
+            } else if (previous && (site.status === "completed" || (kind === "cancelled" && scanSitePublishedInventory(site)))) {
+              // A retry that saved new inventory can resume verification from that inventory.
               (next ??= new Map(current)).delete(site.site_id);
             }
           }
