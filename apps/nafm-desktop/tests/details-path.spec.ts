@@ -9,15 +9,20 @@ const fileEntry = /^Day 03 interview\.mxf/;
 
 test.use({ viewport: { width: 320, height: 640 }, hasTouch: true });
 
-async function openInterviewFolder(page: Page) {
+async function openDeepFolder(page: Page, folderNames: string[]) {
   await page.goto("/mock/?scenario=deep");
   const current = page.getByRole("navigation", { name: "Folder path" }).locator('[aria-current="location"]');
   await expect(current).toHaveText("Studio archive");
   const map = page.getByRole("region", { name: "Circular storage map" });
-  for (const folder of folders) {
+  for (const folder of folderNames) {
     await map.getByRole("button", { name: new RegExp(`^${folder},`) }).press("Enter");
     await expect(current).toHaveText(folder);
   }
+  return { current, map };
+}
+
+async function openInterviewFolder(page: Page) {
+  const { current } = await openDeepFolder(page, folders);
   await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
   const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
   const contents = inspector.getByRole("tabpanel", { name: "Contents", exact: true });
@@ -26,6 +31,35 @@ async function openInterviewFolder(page: Page) {
   await expect(file).toBeVisible();
   return { current, inspector, contents, details, file };
 }
+
+test("revealing a nested map file names its destination and closes back to that file’s arc", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  const { current, map } = await openDeepFolder(page, folders.slice(0, 4));
+  await expect(current).toHaveText("Camera Originals");
+  await page.getByRole("button", { name: "Sites", exact: true }).tap();
+  await page.getByRole("button", { name: "Contents & details", exact: true }).tap();
+  const arc = map.getByRole("figure").getByRole("button", { name: /^Day 03 interview\.mxf,/ });
+  await expect(arc).toHaveAttribute("data-tier", "2");
+  await arc.press("Enter");
+
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  await expect(inspector.getByRole("button", { name: "Back to Contents", exact: true })).toBeVisible();
+  const show = inspector.getByRole("button", { name: "Show in Contents", exact: true });
+  await expect(show).toHaveAccessibleDescription("Interview Selects");
+  await expect(show.getByText("Interview Selects", { exact: true })).toBeInViewport({ ratio: 0.99 });
+  await show.tap();
+  await expect(current).toHaveText("Interview Selects");
+  await expect(inspector.getByRole("grid").getByRole("button", { name: fileEntry })).toBeFocused();
+  await inspector.getByRole("button", { name: "Close inspector" }).tap();
+  await expect(arc).toHaveAttribute("data-tier", "0");
+  await expect(arc).toBeFocused();
+  await expect.poll(() => arc.locator(".radial-atlas__ring").evaluate((element) => {
+    const ring = element as SVGPathElement;
+    const point = ring.getPointAtLength(ring.getTotalLength() / 2).matrixTransform(ring.getScreenCTM()!);
+    return document.elementFromPoint(point.x, point.y)?.closest("[data-node-id]") === ring.parentElement;
+  })).toBe(true);
+  await expect(page.getByRole("complementary", { name: "Sites", exact: true })).toBeVisible();
+});
 
 async function stubClipboard(page: Page, { failFirstWrite = false, holdFirstWrite = false } = {}) {
   return page.evaluateHandle(({ failFirstWrite, holdFirstWrite }) => {

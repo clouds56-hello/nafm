@@ -60,6 +60,7 @@
 }
 
 .atlas-readout .atlas-detail-action {
+  max-width: 100%;
   padding-inline: 8px;
   border: 1px solid var(--atlas-border);
   border-radius: 5px;
@@ -67,6 +68,14 @@
 }
 
 .atlas-detail-action svg { flex: none; }
+.atlas-detail-reveal-label { display: grid; min-width: 0; gap: 2px; text-align: start; }
+.atlas-detail-reveal-label small {
+  overflow: hidden;
+  color: var(--atlas-muted);
+  font: 500 11px/1.2 var(--atlas-sans, system-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .atlas-readout .atlas-detail-action:hover:not([aria-disabled]) { border-color: #626891; }
 .atlas-detail-action[aria-disabled="true"] { opacity: .65; }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { formatBytes, formatCount, formatFileEquivalent, formatShare } from "../lib/format";
 import { estimatedHealthEvidence, formatHealthScore, isPerfectHealth, nodeHealthPresentation, verificationStatus, type HealthPresentation } from "../lib/health";
 import type { FolderOpenDestination, HealthMetric, StorageNode } from "../lib/types";
@@ -22,6 +22,7 @@ interface StorageDetailsProps {
   onOpenFolder: (node: StorageNode, destination: FolderOpenDestination) => Promise<void>;
   returnAction?: { label: string; shortLabel?: string; run: () => void };
   onShowInContents?: () => void;
+  revealFolderName?: string;
   revealing: boolean;
   children?: ReactNode;
 }
@@ -46,9 +47,10 @@ function HealthDetail({
 
 export function StorageDetails({
   node, parent, fileUnavailable, announceFileChange, listPosition, focusRequested, onFocusHandled, metric, targetCompleteness, targetName, onOpenFolder,
-  returnAction, onShowInContents, revealing, children,
+  returnAction, onShowInContents, revealFolderName, revealing, children,
 }: StorageDetailsProps) {
   const panelRef = useRef<HTMLElement>(null);
+  const destinationId = useId();
   const lostActionFocus = useRef(false);
   const removableAction = useCallback((element: HTMLElement | null) => {
     if (!element) return;
@@ -71,6 +73,7 @@ export function StorageDetails({
   }, [focusRequested, onFocusHandled]);
 
   const verification = verificationStatus(node);
+  const revealLabel = revealing ? "Finding file…" : "Show in Contents";
   const space = nodeHealthPresentation(node, "space_health");
   const coverage = nodeHealthPresentation(node, "coverage_health", targetCompleteness);
   const heading = listPosition
@@ -112,6 +115,8 @@ export function StorageDetails({
               className="atlas-text-button atlas-detail-action" type="button"
               ref={removableAction}
               aria-disabled={revealing || undefined} aria-busy={revealing || undefined}
+              aria-label={revealFolderName ? revealLabel : undefined}
+              aria-describedby={revealFolderName ? destinationId : undefined}
               onClick={(event) => {
                 event.currentTarget.focus({ preventScroll: true });
                 onShowInContents();
@@ -120,7 +125,12 @@ export function StorageDetails({
               <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M1.5 5.5v-2a1 1 0 0 1 1-1h3.7l1.7 2h5.6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM5 9h6m-2-2 2 2-2 2" />
               </svg>
-              {revealing ? "Finding file…" : "Show in Contents"}
+              {revealFolderName ? (
+                <span className="atlas-detail-reveal-label">
+                  {revealLabel}
+                  <small id={destinationId} title={revealFolderName}>{revealFolderName}</small>
+                </span>
+              ) : revealLabel}
             </button>
           )}
         </div>

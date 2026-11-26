@@ -71,6 +71,7 @@ interface FolderSearch {
 
 interface RevealedContentsVisit {
   id: string;
+  searchViewportId?: string;
   pausedSearch?: FolderSearch;
 }
 
@@ -95,8 +96,8 @@ function directoryKey(
   return JSON.stringify([workspace, site, folder, sort.field, sort.direction, anchor, query]);
 }
 
-function contentsVisitKey(key: string, visit?: RevealedContentsVisit) {
-  return visit ? `${key}:${visit.id}` : key;
+function contentsVisitKey(key: string, visitId?: string) {
+  return visitId ? `${key}:${visitId}` : key;
 }
 
 function fileParent(root: StorageNode, fileId: string): StorageNode | null {
@@ -232,13 +233,14 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const searchScope = directoryScope(dashboard?.workspace_name, location?.site_id, folder?.id);
   const savedSearch = folderSearches.get(searchScope);
   const revealedContentsVisit = inspection ? revealedContentsVisits.get(inspection) : undefined;
+  const searchViewportId = revealedContentsVisit?.searchViewportId;
   // A reveal only pauses the search that was active when it opened.
   const searchPaused = Boolean(savedSearch?.text.trim())
     && (state.contentsGroup || revealedContentsVisit?.pausedSearch === savedSearch);
   const searchText = searchPaused ? null : savedSearch?.text ?? null;
   const searchQuery = searchText?.trim() ?? "";
   function searchContentsKey(sort: DirectorySort, query: string) {
-    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query), revealedContentsVisit);
+    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, 0, query), searchViewportId);
   }
   const searchKey = searchContentsKey(state.directorySort, searchQuery);
   const returnFileId = visit?.source === "contents" && visit.fileId === selectedNode?.id && !state.selectedFileUnavailable
@@ -340,7 +342,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     state.setReviewOpen(false);
   }
   function contentsKeyFor(sort: DirectorySort, anchor: number) {
-    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor), revealedContentsVisit);
+    return contentsVisitKey(directoryKey(dashboard?.workspace_name, siteId, folder?.id, sort, anchor), revealedContentsVisit?.id);
   }
   const contentsKey = search.enabled ? searchKey
     : contentsKeyFor(state.directorySort, state.contentsAnchorOffset);
@@ -681,19 +683,21 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
           if (match) {
             search.prime({ scope, targetId: destination.target_site_id ?? undefined, query: match.query, sort: destination.sort }, match.page);
           }
-          // Same-folder history entries retain their own viewport and paused-search state.
+          const visitId = revealedContentsVisits.get(revealInspection)?.id ?? `${contentsId}-${++nextContentsVisitId.current}`;
+          // Matching reveals get their own viewport. A paused search keeps the viewport it left.
           const nextVisit: RevealedContentsVisit = {
-            id: revealedContentsVisits.get(revealInspection)?.id ?? `${contentsId}-${++nextContentsVisitId.current}`,
+            id: visitId,
+            searchViewportId: match ? visitId : scope === searchScope ? searchViewportId : undefined,
             pausedSearch: match ? undefined : folderSearches.get(scope),
           };
           setRevealedContentsVisits((saved) => new Map(saved).set(revealInspection, nextVisit));
           const key = contentsVisitKey(directoryKey(
             dashboard?.workspace_name, destination.site_id, destination.node_id,
             destination.sort, match ? 0 : destination.anchor_offset, match?.query,
-          ), nextVisit);
+          ), visitId);
           // A previous visit to this list may have scrolled away from the file.
           contentsScroll.current.set(key, match?.row ?? destination.anchor_offset);
-          inspectorOrigin.current = null;
+          if (inspectorOrigin.current?.dataset.nodeId !== file.id) inspectorOrigin.current = null;
           if (siteId && revealInspection.kind === "file") {
             setInspectorBySite((saved) => saved.get(siteId) === "contents" ? saved : new Map(saved).set(siteId, "contents"));
           }
@@ -756,12 +760,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
     openedFile.current = nextInspection;
     state.selectNode(node, { inspection: nextInspection, directoryPage: search.enabled ? undefined : step?.page });
     const view = "details";
-    if (origin) {
-      inspectorOrigin.current = origin;
-      if (inspectorView === view) {
-        revealInCompactAtlas(mapRegion.current?.querySelector('[data-atlas-panel="inspector"]') ?? null);
-      }
-    }
+    if (origin) inspectorOrigin.current = origin;
     if (!origin || inspectorView === "contents" || currentVisit) {
       if (!origin) inspectorOrigin.current = null;
       const row = origin ? -1 : directoryPage?.children.findIndex((entry) => entry.id === node.id) ?? -1;
@@ -957,6 +956,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                     node={selected ?? location.root}
                     onOpenFolder={state.openFolderExternally}
                     parent={detailsParent}
+                    revealFolderName={selected?.kind === "file" && detailsParent?.id !== folder?.id ? detailsParent?.name : undefined}
                     fileUnavailable={state.selectedFileUnavailable}
                     announceFileChange={Boolean(finderStep ?? fileStep)}
                     listPosition={listPosition}

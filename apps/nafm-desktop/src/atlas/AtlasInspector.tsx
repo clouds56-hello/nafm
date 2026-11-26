@@ -2,7 +2,7 @@ import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, typ
 import type { AtlasInspection } from "../hooks/useDashboard";
 import type { DirectoryFileDirection } from "../lib/types";
 import { CloseIcon } from "../management/Icons";
-import { restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
+import { isCompactAtlas, restoreAtlasPanelFocus, revealInCompactAtlas } from "./compactAtlasScroll";
 import "./inspector.css";
 import "./atlas-inspector-drawer.css";
 
@@ -92,8 +92,9 @@ export function AtlasInspector({
     const leavingFile = previous.screen === "file" && screen === "contents" && previous.inspection !== inspection;
     const movedDuringReveal = screen === "contents" && contentsRevealOrigin && active && active !== document.body
       && active !== contentsRevealOrigin && !detailsPane.current?.contains(active);
-    if ((previous.screen === screen && !changedFile)
-      || inspectionHistory
+    const reopenedFromArc = screen === "details" && openedHere && origin.current !== null && isCompactAtlas();
+    const sameScreen = previous.screen === screen && !changedFile;
+    if ((!reopenedFromArc && (sameScreen || inspectionHistory))
       || movedDuringReveal
       || (focusedOutside && (previous.siteId !== siteId || restoringFile || leavingFile))) return;
     if (screen && (!previous.screen || origin.current || inspectingFile)) revealInCompactAtlas(drawer.current);

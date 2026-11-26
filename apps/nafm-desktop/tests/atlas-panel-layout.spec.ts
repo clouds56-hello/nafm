@@ -177,6 +177,40 @@ test.describe("compact Atlas panels", () => {
     await expect(page.getByRole("tooltip")).toBeHidden();
   });
 
+  test("opening another Atlas file puts focus in visible Details and returns to the new arc", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 520 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/mock/?scenario=deep");
+    await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+    const map = atlas(page);
+    const details = inspector(page);
+    const detailsTab = details.getByRole("tab", { name: "Details", exact: true });
+
+    await map.getByRole("button", { name: /^Trailer master\.mov,/ }).first().press("Enter");
+    await expect(details.getByRole("heading", { name: "Trailer master.mov", exact: true })).toBeInViewport();
+    await expect(detailsTab).toBeFocused();
+
+    const camera = map.getByRole("button", { name: /^Camera originals\.mxf,/ });
+    await camera.evaluate((element) => {
+      window.scrollTo({ top: 0, behavior: "instant" });
+      (element as SVGGElement).focus({ preventScroll: true });
+    });
+    await expect(camera).toBeInViewport();
+    await page.keyboard.press("Enter");
+    await expect(details.getByRole("heading", { name: "Camera originals.mxf", exact: true })).toBeInViewport();
+    await expect(detailsTab).toBeFocused();
+    await expect(detailsTab).toBeInViewport({ ratio: 0.99 });
+    await expect(sites(page)).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(details).toBeHidden();
+    await expect(camera).toBeFocused();
+    await expect(camera).toBeInViewport();
+    await page.keyboard.press("ArrowRight");
+    await expect(map.getByRole("button", { name: /^Campaign assembly\.mov,/ }).first()).toBeFocused();
+    await expect(sites(page)).toBeVisible();
+  });
+
   test("a retry stays between the full-size Atlas and both open panels", async ({ page }) => {
     await page.goto("/mock/?scenario=recovery");
     await expect(currentFolder(page)).toHaveText("Studio archive");

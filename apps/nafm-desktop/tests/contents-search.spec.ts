@@ -662,6 +662,43 @@ for (const firstRead of ["succeeds", "fails"] as const) {
   });
 }
 
+test("Back to Contents finds the same unfiltered file after its sort rank changes", async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 820 });
+  const contents = await openPhotoLibrary(page, "large");
+  const grid = contents.getByRole("grid");
+  const row = grid.getByRole("row").filter({ hasText: "Harbor survey 2431.jpg" });
+  const file = entry(contents, /^Harbor survey 2431\.jpg/);
+  const rowHeight = await grid.evaluate((list) =>
+    Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, (2440 - 4) * rowHeight);
+  await expect(file).toBeInViewport({ ratio: 0.99 });
+  await expect(row).toHaveAttribute("aria-rowindex", "2440");
+  const fileId = (await file.getAttribute("data-entry-id"))!;
+
+  await file.press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const heading = inspector.getByRole("heading", { name: "Harbor survey 2431.jpg", exact: true });
+  await expect(heading).toBeVisible();
+  const path = page.getByRole("navigation", { name: "Folder path" });
+  await path.getByRole("button", { name: "Studio archive", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Studio archive");
+  await sortByName(page, contents, "Ascending");
+
+  await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
+  await expect(currentFolder(page)).toHaveText("Photo Library");
+  await expect(heading).toBeVisible();
+  await inspector.getByRole("button", { name: "Back to Contents", exact: true }).press("Enter");
+
+  await expect(contents.getByRole("button", { name: "Sort contents", exact: true })).toHaveAttribute("title", "Name, ascending");
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  await expect(row).toHaveAttribute("aria-rowindex", "1739");
+  await expect(file).toHaveAttribute("data-entry-id", fileId);
+  await expect(file).toBeInViewport({ ratio: 0.99 });
+  await expect(file).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(grid.locator('[aria-rowindex="1740"] [data-entry-id]')).toBeFocused();
+});
+
 test("Show in Contents keeps the folder search and reveals a late match", async ({ page }) => {
   const contents = await openPhotoLibrary(page);
   const search = searchInput(contents);
@@ -713,6 +750,37 @@ test("Show in Contents can restore an excluding search and keeps the Finder jump
 
   await path.getByRole("button", { name: "Previous location", exact: true }).press("Enter");
   await expect(currentFolder(page)).toHaveText("Studio archive");
+});
+
+test("Restore search returns to the filtered cursor after revealing an excluded Atlas file", async ({ page }) => {
+  const { contents, search, grid, query, cursor, cursorId } = await focusHarborCursor(page);
+  const scroll = await contents.evaluate((pane) => pane.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const map = page.getByRole("figure");
+  await map.getByRole("button", { name: /^Rooftop portraits 0168\.tif,/ }).press("Enter");
+  await expect(inspector.getByRole("heading", { name: "Rooftop portraits 0168.tif", exact: true })).toBeVisible();
+  await inspector.getByRole("button", { name: "Show in Contents", exact: true }).press("Enter");
+  await expect(entry(contents, /^Rooftop portraits 0168\.tif /)).toBeFocused();
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+
+  await contents.getByRole("button", { name: "Restore search", exact: true }).press("Enter");
+
+  await expect(search).toHaveValue(query);
+  await expect(search).toBeFocused();
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  await expect(cursor).toHaveAttribute("data-entry-id", cursorId);
+  await expect(cursor).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+
+  const closeSearch = contents.getByRole("button", { name: "Close search", exact: true });
+  await closeSearch.evaluate((button) => button.focus({ preventScroll: true }));
+  await page.keyboard.press("Tab");
+  await expect(cursor).toBeFocused();
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(scroll);
+  await page.keyboard.press("ArrowDown");
+  await expect(grid.locator('[aria-rowindex="441"] [data-entry-id]')).toBeFocused();
 });
 
 const portraitsQuery = "  Studio portraits  ";

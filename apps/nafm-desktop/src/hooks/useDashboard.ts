@@ -1394,13 +1394,19 @@ export function useDashboard(
         const entry = history.at(-1);
         if (!entry) return false;
         const sort = readSiteDirectorySort(workspaceNameRef.current, entry.site_id);
-        const result = await loadFolderLocation(entry.atlas_group ? entry : withDirectorySort(entry, sort), direction, {
+        const destination = entry.atlas_group ? entry : withDirectorySort(entry, sort);
+        // A new order invalidates the saved page offset. Load the inspected row's new page for Back to Contents.
+        const anchor = destination !== entry && entry.inspection?.kind === "file"
+          && entry.inspection.direct_child && entry.selected_file
+          ? inspectFileAnchor(entry.selected_file.id) : undefined;
+        const result = await loadFolderLocation(destination, direction, {
           action: {
             title: direction === "back" ? "Couldn’t open the previous location" : "Couldn’t open the next location",
             progress: direction === "back" ? "Opening previous location…" : "Opening next location…",
             retry: () => navigateHistory(direction, true),
           },
           retrying,
+          anchor,
         });
         if (result !== "unavailable") return result === "loaded";
 
