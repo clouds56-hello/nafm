@@ -157,7 +157,8 @@ jobs:
       - name: Check desktop platform-specific authentication code
         run: cargo clippy --locked -p nafm-desktop --all-targets -- -D warnings
       - name: Test SSH prompts and session lifecycle with offline fixtures
-        run: cargo test --locked -p nafm-desktop --lib ssh::
+        run: |
+          cargo test --locked -p nafm-desktop --lib ssh::
       - name: Build actual askpass executable
         run: cargo build --locked -p nafm-desktop
       - name: Test actual helper on macOS
