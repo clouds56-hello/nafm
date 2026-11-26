@@ -19,7 +19,7 @@ Install Xcode command-line tools, LLVM, Zig, cargo-zigbuild and cargo-xwin:
 rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-msvc aarch64-apple-darwin
 brew install llvm
 cargo install --locked cargo-zigbuild --version 0.23.3
-cargo install --locked cargo-xwin --version 0.23.0
+cargo install --locked cargo-xwin --version 0.23.1
 # Ensure LLVM and Zig are on PATH. CI pins Zig 0.16.0 via the ziglang package.
 cd apps/nafm-desktop
 pnpm tauri build
