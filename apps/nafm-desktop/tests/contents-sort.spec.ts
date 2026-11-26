@@ -193,6 +193,106 @@ test("keyboard selections in both groups survive an earlier sort finishing late"
   await expect(page.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
 });
 
+test("a delayed Contents sort keeps keyboard navigation on a visible row", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.goto("/mock/?scenario=large");
+  const map = page.getByRole("region", { name: "Circular storage map" });
+  await map.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const grid = contents.getByRole("grid", { name: "Photo Library entries" });
+  await expect(grid).toHaveAttribute("aria-rowcount", "4096");
+  const row = (index: number) => grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+  const oldRow = row(2440);
+  const rowHeight = await grid.evaluate((list) =>
+    Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 2436 * rowHeight);
+  await expect(oldRow).toHaveAccessibleName(/^Harbor survey 2431\.jpg/);
+  await oldRow.focus();
+  await expect(oldRow).toHaveAttribute("tabindex", "0");
+
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  const search = contents.getByRole("button", { name: "Search this folder", exact: true });
+  const read = await delaySortRead(page, { field: "name", direction: "desc" });
+  try {
+    await sort.press("Space");
+    await expect(page.getByRole("radio", { name: "Size", exact: true })).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => read.evaluate((state) => state.pending)).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(sort).toBeFocused();
+    await page.keyboard.press("Tab");
+    if (await search.evaluate((button) => button === document.activeElement)) await page.keyboard.press("Tab");
+    await expect(oldRow).toBeFocused();
+    await expect(oldRow).toBeInViewport({ ratio: 0.99 });
+  } finally {
+    await read.evaluate((state) => state.release());
+  }
+
+  await expect(row(1)).toHaveAccessibleName(/^Studio session 3995\.jpg/);
+  await expect(oldRow).toHaveCount(0);
+  await expect.poll(() => contents.evaluate((pane) => pane.scrollTop)).toBe(0);
+  await expect(row(1)).toBeInViewport({ ratio: 0.99 });
+  await expect(row(1)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(row(2)).toBeFocused();
+});
+
+test("a filter typed during sorting starts at the top of the new order", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.goto("/mock/?scenario=large");
+  await page.getByRole("figure").getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details", exact: true }).press("Enter");
+
+  const contents = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const search = contents.getByLabel("Find in folder", { exact: true });
+  const sort = contents.getByRole("button", { name: "Sort contents", exact: true });
+  const grid = contents.getByRole("grid");
+  const entry = (index: number) => grid.locator(`[aria-rowindex="${index}"] [data-entry-id]`);
+  const scrollTop = () => contents.evaluate((pane) => pane.scrollTop);
+  async function chooseSort(name: "Size" | "Name") {
+    await sort.press("Enter");
+    await page.getByRole("radio", { name, exact: true }).press("Space");
+    await page.keyboard.press("Escape");
+  }
+
+  const query = "  HaRbOr SuRvEy  ";
+  await contents.getByRole("button", { name: "Search this folder", exact: true }).press("Enter");
+  await search.fill(query);
+  await expect(entry(1)).toHaveAccessibleName(/^Harbor survey 0163\.tif/);
+  await chooseSort("Name");
+  await expect(entry(1)).toHaveAccessibleName(/^Harbor survey 3991\.jpg/);
+  const rowHeight = await grid.evaluate((list) => Number.parseFloat(getComputedStyle(list).getPropertyValue("--directory-row-height")));
+  await contents.evaluate((pane, top) => { pane.scrollTop = top; }, 436 * rowHeight);
+  await expect(entry(440)).toBeInViewport({ ratio: 0.99 });
+  await entry(440).evaluate((row) => row.focus({ preventScroll: true }));
+
+  await chooseSort("Size");
+  await expect(entry(1)).toHaveAccessibleName(/^Harbor survey 0163\.tif/);
+  await search.fill("Glasshouse");
+  await expect(entry(1)).toHaveAccessibleName(/^Glasshouse /);
+
+  const delayed = await delaySortRead(page, { field: "name", direction: "desc" });
+  try {
+    await chooseSort("Name");
+    await expect.poll(() => delayed.evaluate((read) => read.pending)).toBe(true);
+    await search.fill(query);
+    await expect(entry(1)).toHaveAccessibleName(/^Harbor survey 0163\.tif/);
+    await expect.poll(scrollTop).toBe(0);
+  } finally {
+    await delayed.evaluate((read) => read.release());
+  }
+
+  await expect(search).toHaveValue(query);
+  await expect(search).toBeFocused();
+  await expect(grid).toHaveAttribute("aria-rowcount", "666");
+  await expect(entry(1)).toHaveAccessibleName(/^Harbor survey 3991\.jpg/);
+  await expect(entry(1)).toBeInViewport({ ratio: 0.99 });
+  await expect.poll(scrollTop).toBe(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(entry(1)).toBeFocused();
+});
+
 for (const keepSitesFocus of [false, true]) {
   const handoff = keepSitesFocus ? "keeps newer Sites focus" : "returns focus to Sort";
   test(`retrying a failed Contents sort ${handoff}`, async ({ page }) => {
@@ -269,6 +369,8 @@ for (const keepSitesFocus of [false, true]) {
 
       await retry.press("Enter");
       await expect.poll(() => reads.evaluate((read) => read.count)).toBe(2);
+      await expect(sort).toHaveAccessibleDescription("Sorting Z–A…");
+      await expect(sort).toHaveAttribute("title", "Size, descending");
       if (keepSitesFocus) await closeSites.evaluate((button) => button.focus({ preventScroll: true }));
     } finally {
       await reads.evaluate((read) => { read.releaseFirst(); read.releaseRetry(); });
@@ -390,6 +492,53 @@ test("closing while Contents is still sorting saves the latest choice", async ({
   await contents.getByRole("button", { name: "Sort contents" }).click();
   await expect(reopened.getByRole("radio", { name: "Date modified", exact: true })).toBeChecked();
   await expect(reopened.getByRole("radio", { name: "Ascending", exact: true })).toBeChecked();
+});
+
+test("a scrolled Contents header distinguishes the applied sort from the requested order", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/mock/?scenario=large");
+  const chart = page.getByRole("figure");
+  await chart.getByRole("button", { name: /^Photo Library,/ }).press("Enter");
+  await page.getByRole("button", { name: "Sites", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Contents & details" }).press("Enter");
+  const pane = page.getByRole("tabpanel", { name: "Contents", exact: true });
+  const sort = pane.getByRole("button", { name: "Sort contents" });
+  const grid = pane.getByRole("grid");
+  await pane.getByRole("button", { name: "Search this folder" }).press("Enter");
+  await pane.getByLabel("Find in folder", { exact: true }).fill("harbor survey");
+  const count = pane.getByText("666 matches", { exact: true });
+  await expect(count).toBeVisible();
+  const rowHeight = await grid.evaluate((el) => Number.parseFloat(getComputedStyle(el).getPropertyValue("--directory-row-height")));
+  await pane.evaluate((el, top) => { el.scrollTop = top; }, 438 * rowHeight);
+  const row = grid.locator('[aria-rowindex="440"] [data-entry-id]');
+  await expect(row).toBeInViewport({ ratio: 0.99 });
+  const header = pane.locator("header");
+  const height = await header.evaluate((el) => el.offsetHeight);
+  const read = await delaySortRead(page, { field: "date", direction: "desc" });
+  const pending = pane.getByRole("status").filter({ hasText: "Sorting newest first…" });
+  try {
+    await sort.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Sort contents" });
+    await dialog.getByRole("radio", { name: "Date modified" }).check();
+    await expect.poll(() => read.evaluate((state) => state.pending)).toBe(true);
+    await expect(dialog.getByText("Sorting…", { exact: true })).toBeInViewport({ ratio: 0.99 });
+    await expect(dialog.getByRole("radio", { name: "Date modified" })).toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(sort).toBeFocused();
+    await expect(sort).toHaveText("Size");
+    await expect(sort).toHaveAccessibleDescription("Sorting newest first…");
+    await expect(pending).toBeInViewport({ ratio: 0.99 });
+    expect(await header.evaluate((el) => el.offsetHeight)).toBe(height);
+    await expect(row).toBeInViewport({ ratio: 0.99 });
+    await expect(row.locator("time")).toHaveCount(0);
+  } finally {
+    await read.evaluate((state) => state.release());
+  }
+  await expect(sort).toHaveText("Modified");
+  await expect(sort).toBeFocused();
+  await expect(pending).toHaveCount(0);
+  await expect(count).toBeInViewport({ ratio: 0.99 });
+  await expect(grid.locator("time").first()).toBeVisible();
 });
 
 test("Contents previews match the atlas colors across ordering and health modes", async ({ page }) => {

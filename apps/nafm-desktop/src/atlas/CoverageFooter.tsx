@@ -17,6 +17,7 @@ interface CoverageFooterProps {
   targetVerification: SiteVerification | null;
   navigationBusy?: boolean;
   navigationProgress?: string;
+  announceProgress?: boolean;
   onTargetChange: (id: string) => void;
   onSwap: () => void;
   onScanSite: (siteId: string) => Promise<void>;
@@ -50,7 +51,7 @@ function unavailableReason(
 
 export function CoverageFooter({
   source, target, targets, coverage, hasFolderContent, sourceVerification, targetVerification, navigationBusy,
-  navigationProgress, onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, children,
+  navigationProgress, announceProgress = true, onTargetChange, onSwap, onScanSite, onAddSite, addedTarget, children,
 }: CoverageFooterProps) {
   const sourceStatusId = useId();
   const targetStatusId = useId();
@@ -128,7 +129,7 @@ export function CoverageFooter({
         )}
       </div>
       <div className="atlas-coverage-info">
-        <div className="atlas-coverage-status" role="status">
+        <div className="atlas-coverage-status" role={navigationBusy && !announceProgress ? undefined : "status"}>
           <span data-tone={navigationBusy ? "active" : result.tone}>
             {navigationBusy ? navigationProgress ?? "Updating comparison…" : result.text}
           </span>

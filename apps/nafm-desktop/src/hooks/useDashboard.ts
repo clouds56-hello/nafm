@@ -139,6 +139,7 @@ interface LocationAction {
 interface LocationProgress {
   message: string;
   opening_site_id?: string;
+  contents_sort?: DirectorySort;
 }
 
 interface LocationFailure {
@@ -509,6 +510,7 @@ export function useDashboard(
       setLocationProgress({
         message: action?.progress ?? "Reading inventory…",
         opening_site_id: action?.sourceSwitch ? entry.site_id : undefined,
+        contents_sort: action?.contentsSort ? entry.sort : undefined,
       });
       setChildrenError(null);
       setTreeError(null);
@@ -636,15 +638,17 @@ export function useDashboard(
     return locationFailure.retry();
   }, [locationFailure]);
 
-  const setDirectorySort = useCallback(async (sort: DirectorySort) => {
+  const setDirectorySort = useCallback(async (sort: DirectorySort, onArrival: () => void) => {
     const workspace = workspaceNameRef.current;
     const current = currentNavigationEntry();
     if (!workspace || !current) return;
     writeSiteDirectorySort(workspace, current.site_id, sort);
     const destination = withDirectorySort(current, sort);
     if (destination !== current || childrenLoadingRef.current) {
+      const fileAnchor = current.selected_file ? inspectFileAnchor(current.selected_file.id, true) : undefined;
       await loadFolderLocation(destination, "preserve", {
         action: { title: "Couldn’t change the Contents order", progress: "Sorting Contents…", contentsSort: true },
+        anchor: { ...fileAnchor, onArrival },
       });
     }
   }, [currentNavigationEntry, loadFolderLocation]);

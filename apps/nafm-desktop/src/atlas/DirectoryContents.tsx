@@ -6,7 +6,7 @@ import type {
 } from "../lib/types";
 import { CloseIcon, SearchIcon } from "../management/Icons";
 import { revealInCompactAtlas } from "./compactAtlasScroll";
-import { DirectorySortControl } from "./DirectorySortControl";
+import { DirectorySortControl, pendingSortLabel } from "./DirectorySortControl";
 import { canOpenFolder, FolderOpenControl } from "./FolderOpenControl";
 import { DirectoryEntryLabel, useDirectoryPreview } from "./useDirectoryPreview";
 import { useDirectoryViewport } from "./useDirectoryViewport";
@@ -22,6 +22,7 @@ interface DirectoryContentsProps {
   onRestoreSearch?: () => void;
   selection: StorageNode | null;
   sort: DirectorySort;
+  pendingSort?: DirectorySort;
   onSort: (sort: DirectorySort) => Promise<void>;
   sortRecovery?: ReactNode;
   metric: HealthMetric | null;
@@ -55,7 +56,7 @@ function entryTabStop(list: HTMLUListElement | null) {
 }
 
 export function DirectoryContents({
-  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, onSort, sortRecovery, metric, targetCompleteness,
+  location, page, total, directoryTotal, searchText, onSearchChange, onRestoreSearch, selection, sort, pendingSort, onSort, sortRecovery, metric, targetCompleteness,
   scrollPane, scrollPositions, cursorPositions, contentsKey, anchorIndex, reveal, refreshHandler, returnEntryId, revealedEntry, resumeVisibleRow,
   contentsFocusOrigin, onContentsFocusHandled,
   active, loading, loadingMore, awaitingInventory, error, onSelect, onOpenFolder, onGoUp, onLoadRange, onRetry,
@@ -220,7 +221,10 @@ export function DirectoryContents({
       onContentsFocusHandled();
       return;
     }
-    if (loading || (total > 0 && !ready)) return;
+    if (loading || (total > 0 && !ready)) {
+      if (originRemoved) scrollPane.current?.focus({ preventScroll: true });
+      return;
+    }
     const row = entryTabStop(listRef.current);
     if (!row && total && hasVisibleRows && !error) return;
     (row ?? (error ? retryButton.current : null) ?? searchInput.current ?? headingRef.current)?.focus({ preventScroll: true });
@@ -392,6 +396,17 @@ export function DirectoryContents({
     }
   }
 
+  const missingEntry = missingRefreshKey === contentsKey;
+  const progressId = pendingSort ? labelId + "-sort-progress" : undefined;
+  let summary: string | undefined;
+  if (pendingSort) {
+    summary = pendingSortLabel(pendingSort);
+  } else if (filtering && !loading && !error) {
+    summary = missingEntry ? "Previous match unavailable" : `${formatCount(total)} ${total === 1 ? "match" : "matches"}`;
+  } else if (!filtering && (total > 0 || missingEntry)) {
+    summary = missingEntry ? "Previous entry unavailable" : `${formatCount(total)} ${total === 1 ? "entry" : "entries"}`;
+  }
+
   return (
     <section className="atlas-directory" aria-labelledby={labelId} onBlurCapture={(event) => {
       if (event.target === folderFocus.current?.origin && event.relatedTarget && event.relatedTarget !== listRef.current) {
@@ -423,19 +438,20 @@ export function DirectoryContents({
         )}
         <div className="atlas-directory-heading">
           <h2 id={labelId} ref={headingRef} tabIndex={-1} title={location.root.name}>{location.root.name || "Contents"}</h2>
-          {filtering && !loading && !error && (
-            <span className="atlas-directory-total" role="status">
-              {missingRefreshKey === contentsKey ? "Previous match unavailable" : `${formatCount(total)} ${total === 1 ? "match" : "matches"}`}
-            </span>
-          )}
-          {!filtering && (total > 0 || missingRefreshKey === contentsKey) && (
-            <span className="atlas-directory-total" role={missingRefreshKey === contentsKey ? "status" : undefined}>
-              {missingRefreshKey === contentsKey ? "Previous entry unavailable" : `${formatCount(total)} ${total === 1 ? "entry" : "entries"}`}
+          {summary && (
+            <span className="atlas-directory-total" id={progressId} data-sorting={pendingSort ? true : undefined}
+              role={pendingSort || filtering || missingEntry ? "status" : undefined} aria-label={pendingSort ? summary : undefined}>
+              {pendingSort ? (
+                <>
+                  <span className="atlas-sort-pending-label">{summary}</span>
+                  <span className="atlas-sort-pending-short" aria-hidden="true">Sorting…</span>
+                </>
+              ) : summary}
             </span>
           )}
         </div>
         <FolderOpenControl node={location.root} onOpen={onOpenFolder} />
-        {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} onChange={onSort} />}
+        {directoryTotal > 1 && <DirectorySortControl key={location.root.id} sort={sort} pendingSort={pendingSort} progressId={progressId} onChange={onSort} />}
         {directoryTotal > 0 && !searchOpen && !onRestoreSearch && !awaitingInventory && (
           <button
             type="button" className="atlas-directory-search-toggle" ref={searchTrigger}

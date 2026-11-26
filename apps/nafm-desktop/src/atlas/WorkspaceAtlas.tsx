@@ -359,7 +359,11 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
       void state.leaveContentsGroup().then((left) => { if (left) saveFolderSearch(searchScope, text); });
     } else {
       const query = text?.trim();
-      if (query && query !== searchQuery) contentsScroll.current.delete(searchContentsKey(state.directorySort, query));
+      if (query && query !== searchQuery) {
+        contentsScroll.current.delete(searchContentsKey(state.directorySort, query));
+        const pendingSort = state.locationProgress?.contents_sort;
+        if (pendingSort) contentsScroll.current.delete(searchContentsKey(pendingSort, query));
+      }
       saveFolderSearch(searchScope, text);
     }
   }
@@ -376,7 +380,13 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   }, [contentsKey, revealedRow]);
   function changeDirectorySort(sort: DirectorySort) {
     contentsScroll.current.delete(search.enabled ? searchContentsKey(sort, searchQuery) : contentsKeyFor(sort, 0));
-    return state.setDirectorySort(sort);
+    return state.setDirectorySort(sort, () => {
+      // The user can move focus while the sort is pending.
+      const focus = document.activeElement;
+      if (focus instanceof HTMLElement && focus.closest(".atlas-directory-list") && contentsPane.current?.contains(focus)) {
+        setContentsFocusOrigin(focus);
+      }
+    });
   }
   const currentVisit = visit?.fileId === selected?.id && (visit?.view === "details" || visit?.contentsKey === contentsKey)
     ? visit : null;
@@ -504,6 +514,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
   const recoveryOnMap = !recoveryInSources && !recoveryInContents && Boolean(state.locationFailure) && !state.treeError && !state.error;
   const openingSiteId = state.locationProgress?.opening_site_id;
   const openingSiteInPanel = (sitesOpen || sourcesOpen) && dashboard?.sites.some((candidate) => candidate.id === openingSiteId);
+  const sortingInContents = inspectorView === "contents" && Boolean(state.locationProgress?.contents_sort);
   const coverageFooterVisible = sourceVerification && folder && !state.treeError && !state.error && !recoveryOnMap;
   const atlasNotice = state.notice ?? state.folderLaunchFeedback;
 
@@ -918,7 +929,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 ) : undefined}
               />
             )}
-            {folder && state.locationProgress && (
+            {folder && state.locationProgress && !sortingInContents && (
               <span className="atlas-location-progress" role={openingSiteInPanel || coverageFooterVisible ? undefined : "status"}>
                 {state.locationProgress.message}
               </span>
@@ -938,6 +949,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                 sourceVerification={sourceVerification} targetVerification={targetVerification}
                 navigationBusy={state.childrenLoading}
                 navigationProgress={state.locationProgress?.message}
+                announceProgress={!sortingInContents}
                 onTargetChange={changeCoverageTarget} onSwap={swapCoverageSites}
                 onScanSite={state.scan} onAddSite={addSiteLauncher("coverage")}
                 addedTarget={siteAddition?.origin === "coverage" ? addedSite : undefined}
@@ -1060,6 +1072,7 @@ export function WorkspaceAtlas({ workspace, siteAddition, browsingScope, onAddSi
                       onRestoreSearch={searchPaused ? () => void restoreSearch() : undefined}
                       selection={selected}
                       sort={state.directorySort}
+                      pendingSort={state.locationProgress?.contents_sort}
                       onSort={changeDirectorySort}
                       sortRecovery={recoveryInContents ? recovery : undefined}
                       metric={metric}

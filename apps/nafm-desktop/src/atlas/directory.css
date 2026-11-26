@@ -25,6 +25,7 @@
 }
 
 .atlas-directory-heading {
+  container: directory-heading / inline-size;
   min-width: 0;
   flex: 1;
 }
@@ -177,6 +178,13 @@
 .atlas-sort-popover fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .atlas-sort-popover fieldset + fieldset { margin-top: 12px; }
 .atlas-sort-popover legend { margin-bottom: 6px; padding: 0; color: var(--atlas-muted); font-size: 12px; font-weight: 600; }
+.atlas-directory-total[data-sorting], .atlas-sort-popover legend small { color: var(--atlas-accent); }
+.atlas-sort-popover legend small { margin-inline-start: 8px; font-weight: 500; }
+.atlas-sort-pending-short { display: none; }
+@container directory-heading (max-width: 145px) {
+  .atlas-sort-pending-label { display: none; }
+  .atlas-sort-pending-short { display: inline; }
+}
 .atlas-sort-choices {
   display: flex;
   gap: 2px;
