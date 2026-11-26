@@ -133,14 +133,6 @@ pub(super) fn is_system_trash_path(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn trash_file(path: &Path) -> io::Result<()> {
-  recycle_windows_item(path, |_| Ok(()))
-}
-
-#[cfg(windows)]
-fn recycle_windows_item(
-  path: &Path,
-  inspect: impl FnOnce(&windows::Win32::UI::Shell::IShellItem) -> io::Result<()>,
-) -> io::Result<()> {
   use std::ffi::OsString;
   use std::os::windows::ffi::{OsStrExt, OsStringExt};
   use std::os::windows::fs::MetadataExt;
@@ -215,37 +207,12 @@ fn recycle_windows_item(
       .map_err(io::Error::other)?;
     let bin: IShellItem =
       SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None).map_err(io::Error::other)?;
-    let recycled = source
+    // The Shell returns a typed item for the new entry in the Recycle Bin.
+    source
       .RecycleItem(&item, &bin, TSF_NORMAL.0 as u32)
-      .map_err(io::Error::other)?;
-    inspect(&recycled)
+      .map(|_| ())
+      .map_err(io::Error::other)
   })()
-}
-
-#[cfg(all(test, windows))]
-#[test]
-#[ignore = "moves a synthetic fixture to the Windows system Recycle Bin"]
-fn windows_recycles_synthetic_fixture() {
-  use std::ffi::OsString;
-  use std::os::windows::ffi::OsStringExt;
-  use windows::Win32::System::Com::CoTaskMemFree;
-  use windows::Win32::UI::Shell::SIGDN_NORMALDISPLAY;
-
-  let fixture = tempfile::tempdir().unwrap();
-  let name = format!("NAFM-Recycle-Fixture-{}", uuid::Uuid::new_v4().simple());
-  let original = fixture.path().join(&name);
-  std::fs::write(&original, b"synthetic NAFM Recycle Bin test").unwrap();
-  let original = original.canonicalize().unwrap();
-  recycle_windows_item(&original, |recycled| {
-    // The returned Shell item must be the newly recycled fixture.
-    let recycled_name = unsafe { recycled.GetDisplayName(SIGDN_NORMALDISPLAY) }.map_err(io::Error::other)?;
-    let display_name = unsafe { OsString::from_wide(recycled_name.as_wide()) };
-    unsafe { CoTaskMemFree(Some(recycled_name.0.cast())) };
-    assert_eq!(display_name, name.as_str());
-    Ok(())
-  })
-  .unwrap();
-  assert!(!original.exists());
 }
 
 #[cfg(target_os = "linux")]

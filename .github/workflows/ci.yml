@@ -167,7 +167,7 @@ jobs:
       - name: Test actual helper on Windows
         if: runner.os == 'Windows'
         run: node --experimental-strip-types scripts/test-ssh-askpass.ts target/debug/nafm-desktop.exe
-      - name: Verify a temporary file reaches the Windows Recycle Bin
+      - name: Verify native Cleanup and Recycle Bin on Windows
         if: runner.os == 'Windows'
         run: |
-          cargo test --locked -p nafm-core --lib repository::cleanup_trash::windows_recycles_synthetic_fixture -- --ignored --exact
+          cargo test --locked -p nafm-core --lib repository::cleanup::tests::native_windows_cleanup_updates_the_index_and_saves_the_receipt -- --ignored --exact

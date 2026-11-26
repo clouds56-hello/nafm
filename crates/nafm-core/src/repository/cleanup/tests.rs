@@ -82,6 +82,44 @@ impl Fixture {
   }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "moves a synthetic fixture to the Windows system Recycle Bin"]
+async fn native_windows_cleanup_updates_the_index_and_saves_the_receipt() {
+  let fixture = Fixture::new().await;
+  let preview = fixture.repo.stage_commit_dry_run().await.unwrap();
+  assert_eq!(preview.staged_files.len(), 1);
+  assert_eq!(preview.staged_files[0].path, fixture.staged);
+  assert_eq!(preview.review_groups[0].retained_files[0].path, fixture.retained);
+
+  let receipt = fixture
+    .execute(&preview.action.plan_id.unwrap(), move_file_to_trash)
+    .unwrap();
+  assert!(receipt.skipped_files.is_empty(), "{:?}", receipt.skipped_files);
+  assert_eq!(receipt.moved_files.len(), 1);
+  assert_eq!(receipt.moved_files[0].path, fixture.staged);
+  assert!(!fixture.staged.exists());
+  assert_eq!(fs::read(&fixture.retained).unwrap(), b"same bytes");
+
+  let reopened = Repository::open(RepositoryOptions {
+    cache_path: fixture.repo.db_path().to_path_buf(),
+    hash_algorithm: None,
+  })
+  .await
+  .unwrap();
+  let saved = reopened.latest_cleanup_activity().await.unwrap().unwrap();
+  assert_eq!(saved.operation_id, receipt.operation_id);
+  assert_eq!(saved.moved_files[0].path, fixture.staged);
+  assert_eq!(
+    reopened.site_overview("Local archive").await.unwrap().total_file_count,
+    1
+  );
+  assert!(reopened.stage_commit_dry_run().await.unwrap().staged_files.is_empty());
+  let scan = reopened.scan_site("Local archive").await.unwrap();
+  assert_eq!(scan.files_seen, 1);
+  assert_eq!(scan.files_removed, 0);
+}
+
 #[tokio::test]
 async fn progress_checks_each_selected_file_before_attempting_the_move() {
   use CleanupProgressPhase::{Moving, Verifying};
